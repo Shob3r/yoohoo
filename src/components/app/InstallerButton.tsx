@@ -94,7 +94,7 @@ export const InstallerButton = () => {
 				variant="primary"
 				width={13.75}
 				height={4.06}
-				disabled={(downloadActive && !gameInstalled) || state.isSettingUpProton}
+				disabled={downloadActive || state.isSettingUpProton}
 				onClick={async () => {
 					if (!protonAvailable) {
 						await updateAllProtonComponents((event) => {
