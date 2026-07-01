@@ -217,28 +217,18 @@ export const DownloadProgress = () => {
 					<Progressbar progress={derived.calcPct} game={game} />
 				</div>
 			)}
-			{(isDownloading || isPaused) && state.downloadTotal > 0 && (
+			{(isDownloading || isPaused) && (
 				<div class="flex min-w-full flex-col gap-y-1 text-left">
 					<h2 class="ml-1 text-sm text-white">
-						{state.downloadType === "update" ? "Updated" : "Downloaded"}{" "}
-						{derived.downloadedGB}GB of {derived.totalGB}GB (
-						{derived.downloadPct.toFixed(2)}%)
-						{derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}
-						{derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}
+						{state.downloadTotal > 0
+							? `Downloaded ${derived.downloadedGB}GB of ${derived.totalGB}GB (${derived.downloadPct.toFixed(2)}%)${derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}${derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}`
+							: isFetchingManifest
+								? "Fetching manifest..."
+								: isCalculatingDownloads
+									? "Calculating downloads..."
+									: "Starting..."}
 					</h2>
 					<Progressbar progress={derived.downloadPct} game={game} />
-				</div>
-			)}
-			{(isDownloading || isPaused) && state.downloadTotal === 0 && (
-				<div class="flex min-w-full flex-col gap-y-1 text-left">
-					<h2 class="ml-1 text-sm text-white">
-						{isFetchingManifest
-							? "Fetching manifest..."
-							: isCalculatingDownloads
-								? "Calculating downloads..."
-								: "Starting..."}
-					</h2>
-					<Progressbar progress={0} game={game} />
 				</div>
 			)}
 			{isAssembling && state.totalFiles > 0 && (
