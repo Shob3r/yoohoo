@@ -5,6 +5,7 @@ description = "Universal 'Anime Game' Launcher for Linux Hosts"
 authors = ["The Elysiae Project"]
 edition = "2024"
 rust-version = "1.92.0"
+default-run = "elysiae"
 
 [lib]
 name = "elysiae_lib"
@@ -80,6 +81,15 @@ tauri-plugin-window-state = "2.4.1"
 [dev-dependencies]
 tempfile = "3.27.0"
 wiremock = "0.6.5"
+
+[[bin]]
+name = "elysiae"
+path = "src/main.rs"
+
+[[bin]]
+name = "download_version"
+path = "src/bin/download_version.rs"
+required-features = ["pipeline-profiling"]
 
 [profile.release]
 opt-level = 3

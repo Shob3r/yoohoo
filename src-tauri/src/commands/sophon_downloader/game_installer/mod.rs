@@ -158,7 +158,7 @@ pub use error::SophonError;
 pub use handle::DownloadHandle;
 pub use installer::{
     InstallCallbacks, InstallOptions, ResumeContext, StateSaver, build_installers,
-    build_update_installers, install, verify_integrity,
+    build_installers_for_tag, build_update_installers, install, verify_integrity,
 };
 pub use plugin_install::{install_channel_sdks, install_plugins};
 pub use preinstall::{apply_preinstall, build_preinstall_plan, preinstall_download};

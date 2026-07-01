@@ -536,6 +536,122 @@ fn make_state_saver(app: &AppHandle, state: &DownloadState) -> game_installer::S
     })
 }
 
+/// Downloads a specific game version by tag, replacing any existing
+/// installation.
+#[command]
+pub async fn sophon_download_version(
+    game_id: String,
+    vo_lang: String,
+    output_path: String,
+    tag: String,
+    app_handle: AppHandle,
+    client: State<'_, HttpClient>,
+    active: State<'_, ActiveDownload>,
+) -> Result<(), String> {
+    let game_dir = app_handle
+        .path()
+        .resolve(&output_path, BaseDirectory::AppData)
+        .map_err(|err| err.to_string())?;
+
+    if game_dir.exists() {
+        tokio::task::spawn_blocking({
+            let gd = game_dir.clone();
+            move || {
+                if let Err(err) = fs::remove_dir_all(&gd) {
+                    log::warn!("Failed to remove existing game dir: {err}");
+                }
+            }
+        })
+        .await
+        .map_err(|err| err.to_string())?;
+    }
+
+    log::warn!("Fetching manifest for game_id={game_id} tag={tag}");
+    emit(&app_handle, SophonProgress::FetchingManifest);
+
+    let (installers, resolved_tag, manifest_hash) =
+        game_installer::build_installers_for_tag(&client.0, &game_id, &vo_lang, &tag)
+            .await
+            .map_err(|err| {
+                log::warn!("build_installers_for_tag failed: {err}");
+                emit_error(&app_handle, &err);
+                err.to_string()
+            })?;
+
+    let state = DownloadState {
+        game_id: game_id.clone(),
+        vo_lang: vo_lang.clone(),
+        output_path: output_path.clone(),
+        download_type: DownloadType::Fresh,
+        current_tag: None,
+        manifest_hash,
+        downloaded_chunks: HashMap::new(),
+    };
+    save_download_state(&app_handle, &state)?;
+
+    let handle = DownloadHandle::new();
+    *active.0.lock().await = Some(handle.clone());
+
+    let saver = make_state_saver(&app_handle, &state);
+    let app_clone = app_handle.clone();
+    let vo_langs: Vec<String> = vec![vo_lang.clone()];
+    let result = game_installer::install(
+        installers,
+        &game_dir,
+        vec![],
+        &resolved_tag,
+        game_installer::ResumeContext {
+            prev_manifest_hash: String::new(),
+            prev_downloaded_chunks: HashMap::new(),
+        },
+        game_installer::InstallOptions {
+            is_preinstall: false,
+            is_resume: false,
+            handle,
+        },
+        game_installer::InstallCallbacks {
+            updater: Arc::new(move |p| emit(&app_clone, p)),
+            state_saver: saver,
+        },
+        &game_id,
+        &vo_langs,
+    )
+    .await;
+
+    clear_download_state(&app_handle);
+    *active.0.lock().await = None;
+
+    match result {
+        Ok(()) => {
+            let plugin_emit = app_handle.clone();
+            let plugin_updater: Arc<dyn Fn(SophonProgress) + Send + Sync> =
+                Arc::new(move |p| emit(&plugin_emit, p));
+            if let Err(err) = game_installer::install_plugins(&client.0, &game_dir, &game_id, {
+                let u = plugin_updater.clone();
+                move |p| u(p)
+            })
+            .await
+            {
+                log::warn!("Plugin installation failed: {err}");
+                emit_error(&app_handle, &err);
+            }
+            if let Err(err) =
+                game_installer::install_channel_sdks(&client.0, &game_dir, &game_id, {
+                    let u = plugin_updater.clone();
+                    move |p| u(p)
+                })
+                .await
+            {
+                log::warn!("Channel SDK installation failed: {err}");
+                emit_error(&app_handle, &err);
+            }
+            emit(&app_handle, SophonProgress::Finished);
+            Ok(())
+        }
+        Err(err) => install_result(Err(err), &app_handle),
+    }
+}
+
 /// Downloads a fresh game installation.
 #[command]
 pub async fn sophon_download(
@@ -659,13 +775,19 @@ pub async fn sophon_update(
     emit(&app_handle, SophonProgress::FetchingManifest);
 
     let (installers, deleted_files, new_tag, manifest_hash) =
-        game_installer::build_update_installers(&client.0, &game_id, &vo_lang, &current_tag)
-            .await
-            .map_err(|err| {
-                log::warn!("build_update_installers failed: {err}");
-                emit_error(&app_handle, &err);
-                err.to_string()
-            })?;
+        game_installer::build_update_installers(
+            &client.0,
+            &game_id,
+            &vo_lang,
+            &current_tag,
+            &game_dir,
+        )
+        .await
+        .map_err(|err| {
+            log::warn!("build_update_installers failed: {err}");
+            emit_error(&app_handle, &err);
+            err.to_string()
+        })?;
 
     let state = DownloadState {
         game_id: game_id.clone(),
@@ -954,6 +1076,7 @@ pub async fn sophon_resume_download(
                     &state.game_id,
                     &state.vo_lang,
                     &ct,
+                    &game_dir,
                 )
                 .await
                 .map_err(|err| {

@@ -4,7 +4,7 @@ use std::time::Duration;
 use tauri::{Manager, command};
 
 use crate::commands::{file_downloader, file_manager};
-mod commands;
+pub mod commands;
 use crate::commands::sophon_downloader::ActiveDownload;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -68,6 +68,7 @@ pub fn run() {
             file_manager::extract_file,
             file_manager::get_dir_size,
             commands::sophon_downloader::sophon_download,
+            commands::sophon_downloader::sophon_download_version,
             commands::sophon_downloader::sophon_update,
             commands::sophon_downloader::sophon_preinstall,
             commands::sophon_downloader::sophon_apply_preinstall,

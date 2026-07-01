@@ -191,11 +191,32 @@ pub async fn build_installers(
     Ok((installers, tag, manifest_hash))
 }
 
+pub async fn build_installers_for_tag(
+    client: &Client,
+    game_id: &str,
+    vo_lang: &str,
+    tag: &str,
+) -> SophonResult<(Vec<SophonInstaller>, String, String)> {
+    let (branch, _) = fetch_front_door(client, game_id).await?;
+
+    let build = fetch_build(
+        client,
+        branch.main.as_ref().ok_or(SophonError::NoGameManifest)?,
+        Some(tag),
+    )
+    .await?;
+
+    let installers = build_installers_from_data(client, &build, vo_lang).await?;
+    let manifest_hash = combine_manifest_hashes(&installers);
+    Ok((installers, tag.to_string(), manifest_hash))
+}
+
 pub async fn build_update_installers(
     client: &Client,
     game_id: &str,
     vo_lang: &str,
     from_tag: &str,
+    game_dir: &Path,
 ) -> SophonResult<(Vec<SophonInstaller>, Vec<String>, String, String)> {
     let (branch, _) = fetch_front_door(client, game_id).await?;
 
@@ -214,7 +235,7 @@ pub async fn build_update_installers(
 
     let new_tag = new_build.tag.clone();
     let (installers, deleted_files) =
-        build_diff_installers(client, &old_build, &new_build, vo_lang).await?;
+        build_diff_installers(client, &old_build, &new_build, vo_lang, game_dir).await?;
     let manifest_hash = combine_manifest_hashes(&installers);
     Ok((installers, deleted_files, new_tag, manifest_hash))
 }
@@ -308,6 +329,7 @@ async fn build_diff_installers(
     old_build: &SophonBuildData,
     new_build: &SophonBuildData,
     vo_lang: &str,
+    game_dir: &Path,
 ) -> SophonResult<(Vec<SophonInstaller>, Vec<String>)> {
     let old_by_field: HashMap<&str, &SophonManifestMeta> = old_build
         .manifests
@@ -371,7 +393,45 @@ async fn build_diff_installers(
                     })
                     .collect();
 
-                let old_md5_map = build_old_md5_map(old_result.manifest);
+                let old_file_sizes: Vec<(String, u64)> = old_result
+                    .manifest
+                    .assets
+                    .iter()
+                    .filter(|f| !f.is_directory())
+                    .map(|f| (f.asset_name.clone(), f.asset_size))
+                    .collect();
+
+                let mut old_md5_map = build_old_md5_map(old_result.manifest);
+                let mut old_chunk_offsets = old_chunk_offsets;
+                let gd = game_dir.to_path_buf();
+                let corrupted: HashSet<String> = tokio::task::spawn_blocking(move || {
+                    let mut bad = HashSet::new();
+                    for (name, expected_size) in &old_file_sizes {
+                        let path = gd.join(name);
+                        match std::fs::metadata(&path) {
+                            Ok(meta) => {
+                                if meta.len() != *expected_size {
+                                    bad.insert(name.clone());
+                                }
+                            }
+                            Err(_) => {
+                                bad.insert(name.clone());
+                            }
+                        }
+                    }
+                    bad
+                })
+                .await?;
+
+                if !corrupted.is_empty() {
+                    log::warn!(
+                        "Excluding {count} corrupted old files from chunk reuse (wrong size on disk)",
+                        count = corrupted.len()
+                    );
+                    old_md5_map.retain(|name, _| !corrupted.contains(name));
+                    old_chunk_offsets.retain(|(name, _), _| !corrupted.contains(name));
+                }
+
                 (old_md5_map, old_chunk_offsets)
             }
             None => (HashMap::new(), HashMap::new()),
