@@ -47,7 +47,8 @@ export const InstallerButton = () => {
 	const canResume =
 		state.isResumable &&
 		state.resumeInfo !== null &&
-		variantToGameCode[game] === state.resumeInfo.gameId;
+		variantToGameCode[game] === state.resumeInfo.gameId &&
+		(state.resumeInfo.downloadType !== "fresh" || !gameInstalled);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -101,7 +102,7 @@ export const InstallerButton = () => {
 							setProtonSetupProgress(event);
 						});
 						setProtonAvailable(true);
-					} else if (canResume && !gameInstalled && resumeVariant !== null) {
+					} else if (canResume && resumeVariant !== null) {
 						setResumable(null);
 						if (state.resumeInfo?.downloadType === "update") {
 							setDownloadType("update");
@@ -142,10 +143,22 @@ export const InstallerButton = () => {
 				{(() => {
 					if (!protonAvailable) {
 						return state.isSettingUpProton ? "Setting Up..." : "Create Env";
-					} else if (canResume && !gameInstalled) {
+					} else if (canResume) {
+						const resumeLabel =
+							state.resumeInfo?.downloadType === "update"
+								? "Resume Update"
+								: state.resumeInfo?.downloadType === "preinstall"
+									? "Resume Preinstall"
+									: "Resume Download";
+						const activeLabel =
+							state.resumeInfo?.downloadType === "update"
+								? "Updating..."
+								: state.resumeInfo?.downloadType === "preinstall"
+									? "Pre-downloading..."
+									: "Downloading...";
 						return downloadActive && isDownloadForActiveGame
-							? "Downloading..."
-							: "Resume Download";
+							? activeLabel
+							: resumeLabel;
 					} else if (!gameInstalled) {
 						return downloadActive && isDownloadForActiveGame
 							? "Downloading..."
