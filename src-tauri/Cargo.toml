@@ -91,6 +91,11 @@ name = "download_version"
 path = "src/bin/download_version.rs"
 required-features = ["pipeline-profiling"]
 
+[[bin]]
+name = "download_preinstall"
+path = "src/bin/download_preinstall.rs"
+required-features = ["pipeline-profiling"]
+
 [profile.release]
 opt-level = 3
 lto = true
