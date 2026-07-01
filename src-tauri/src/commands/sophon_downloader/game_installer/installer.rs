@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::{DashMap, DashSet};
 use futures_util::future::try_join_all;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tauri_plugin_log::log;
@@ -2000,19 +2001,26 @@ pub async fn verify_integrity(
     let chunks_dir = game_dir.join("chunks");
     let mut last_emit = Instant::now();
 
+    emit(SophonProgress::Verifying {
+        scanned_files: 0,
+        total_files,
+        error_count: 0,
+    });
+
     // Phase 1: Verify all files in parallel (bounded by semaphore)
     let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
     let scanned_count = Arc::new(AtomicU64::new(0));
     let error_count = Arc::new(AtomicU64::new(0));
 
-    let verify_futures = all_assets.into_iter().map(|(asset, chunk_download)| {
+    let mut verify_stream = FuturesUnordered::new();
+    for (asset, chunk_download) in all_assets {
         let permit = Arc::clone(&semaphore);
         let verify_cache = Arc::clone(&verify_cache);
         let game_dir = game_dir.to_path_buf();
         let scanned_count = Arc::clone(&scanned_count);
         let error_count = Arc::clone(&error_count);
 
-        async move {
+        verify_stream.push(async move {
             let _permit = permit.acquire().await.ok()?;
 
             if let Err(err) = validate_asset_name(&asset.asset_name) {
@@ -2051,24 +2059,37 @@ pub async fn verify_integrity(
                 }
                 None
             }
-        }
-    });
+        });
+    }
 
-    // Collect failed verifications for re-download
-    let failed_verifications: Vec<_> = futures_util::future::join_all(verify_futures)
-        .await
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut failed_verifications: Vec<(
+        SophonManifestAssetProperty,
+        DownloadInfo,
+        std::path::PathBuf,
+    )> = Vec::new();
+    while let Some(result) = verify_stream.next().await {
+        if let Some(failed) = result {
+            failed_verifications.push(failed);
+        }
+        if last_emit.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
+            emit(SophonProgress::Verifying {
+                scanned_files: scanned_count.load(Ordering::Relaxed),
+                total_files,
+                error_count: error_count.load(Ordering::Relaxed),
+            });
+            last_emit = Instant::now();
+        }
+    }
+
+    emit(SophonProgress::Verifying {
+        scanned_files: total_files,
+        total_files,
+        error_count: error_count.load(Ordering::Relaxed),
+    });
 
     let failed_count = failed_verifications.len() as u64;
 
     if failed_verifications.is_empty() {
-        emit(SophonProgress::Verifying {
-            scanned_files: total_files,
-            total_files,
-            error_count: 0,
-        });
         emit(SophonProgress::Finished);
         return Ok(());
     }
@@ -2113,14 +2134,34 @@ pub async fn verify_integrity(
     }
 
     let needed_total = redownload_items.len();
+    let redownload_total_bytes: u64 = redownload_items.iter().map(|(_, s, _)| *s).sum();
+
+    emit(SophonProgress::Assembling {
+        assembled_files: 0,
+        total_files: failed_count,
+    });
+
     if needed_total > 0 {
         log::info!("Re-downloading {needed_total} unique chunks for {failed_count} failed files");
+        let dl_completed = Arc::new(AtomicU64::new(0));
+        let dl_bytes = Arc::new(AtomicU64::new(0));
+
+        emit(SophonProgress::Downloading {
+            downloaded_bytes: 0,
+            total_bytes: redownload_total_bytes,
+            speed_bps: 0.0,
+            eta_seconds: 0.0,
+        });
+
         let dl_semaphore = Arc::new(tokio::sync::Semaphore::new(super::DOWNLOAD_CONCURRENCY));
-        let dl_futures = redownload_items.into_iter().map(|(name, size, dl_info)| {
+        let mut dl_stream = FuturesUnordered::new();
+        for (name, size, dl_info) in redownload_items {
             let permit = Arc::clone(&dl_semaphore);
             let chunks_dir = chunks_dir.clone();
             let client = client.clone();
-            async move {
+            let dl_completed = Arc::clone(&dl_completed);
+            let dl_bytes = Arc::clone(&dl_bytes);
+            dl_stream.push(async move {
                 let _permit = permit.acquire().await.map_err(|_| SophonError::Cancelled)?;
                 if !validate_chunk_name(&name) {
                     return Err(SophonError::PathTraversal(name.into()));
@@ -2135,13 +2176,46 @@ pub async fn verify_integrity(
                     chunk_compressed_hash_md5: "",
                     chunk_old_offset: -1,
                 };
-                download::download_chunk(&client, &dl_info, chunk_ref, &chunk_path, None).await
-            }
-        });
-        let dl_results: Vec<SophonResult<()>> = futures_util::future::join_all(dl_futures).await;
-        for res in dl_results {
-            res?;
+                let result =
+                    download::download_chunk(&client, &dl_info, chunk_ref, &chunk_path, None).await;
+                if result.is_ok() {
+                    dl_completed.fetch_add(1, Ordering::Relaxed);
+                    dl_bytes.fetch_add(size, Ordering::Relaxed);
+                }
+                result
+            });
         }
+
+        while let Some(result) = dl_stream.next().await {
+            if let Err(err) = result {
+                log::error!("Re-download chunk failed: {err}");
+                return Err(err);
+            }
+            if last_emit.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
+                let bytes = dl_bytes.load(Ordering::Relaxed);
+                emit(SophonProgress::Downloading {
+                    downloaded_bytes: bytes,
+                    total_bytes: redownload_total_bytes,
+                    speed_bps: 0.0,
+                    eta_seconds: 0.0,
+                });
+                last_emit = Instant::now();
+            }
+        }
+
+        emit(SophonProgress::Downloading {
+            downloaded_bytes: redownload_total_bytes,
+            total_bytes: redownload_total_bytes,
+            speed_bps: 0.0,
+            eta_seconds: 0.0,
+        });
+    } else {
+        emit(SophonProgress::Downloading {
+            downloaded_bytes: 1,
+            total_bytes: 1,
+            speed_bps: 0.0,
+            eta_seconds: 0.0,
+        });
     }
 
     // Phase 2b: Re-assemble all failed files in parallel.
@@ -2197,11 +2271,6 @@ pub async fn verify_integrity(
             }
         }
         if last_emit.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
-            emit(SophonProgress::Verifying {
-                scanned_files: scanned_count.load(Ordering::Relaxed),
-                total_files,
-                error_count: error_count.load(Ordering::Relaxed),
-            });
             emit(SophonProgress::Assembling {
                 assembled_files: reassembled.load(Ordering::Relaxed),
                 total_files: failed_count,
@@ -2210,11 +2279,6 @@ pub async fn verify_integrity(
         }
     }
 
-    emit(SophonProgress::Verifying {
-        scanned_files: total_files,
-        total_files,
-        error_count: error_count.load(Ordering::Relaxed),
-    });
     emit(SophonProgress::Assembling {
         assembled_files: reassembled.load(Ordering::Relaxed),
         total_files: failed_count,

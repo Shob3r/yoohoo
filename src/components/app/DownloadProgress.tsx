@@ -153,7 +153,16 @@ export const DownloadProgress = () => {
 												: `Downloading ${variantToGameName[state.downloadingGame]}...`
 										: "Downloading...";
 
-	const canPause = isDownloading || isPaused;
+	const canPause = (isDownloading || isPaused) && !isVerifying;
+
+	const showDownloadBar =
+		isDownloading ||
+		isPaused ||
+		isVerifying ||
+		(isAssembling && !isDownloading && !isPaused);
+	const downloadBarFinished =
+		!isDownloading && !isPaused && (isVerifying || isAssembling);
+	const downloadBarPct = downloadBarFinished ? 100 : derived.downloadPct;
 
 	return (
 		<div class="mr-10 flex h-auto w-[65%] flex-col items-start justify-start gap-y-3 rounded-lg bg-black/50 px-4 py-5 align-bottom">
@@ -201,6 +210,7 @@ export const DownloadProgress = () => {
 				!isCalculatingDownloads &&
 				!isSettingUpProton &&
 				!isApplyingPreinstall &&
+				!showDownloadBar &&
 				state.downloadingGame !== null && (
 					<div class="flex min-w-full flex-col gap-y-1 text-left">
 						<h2 class="ml-1 text-sm text-white">Preparing...</h2>
@@ -217,20 +227,22 @@ export const DownloadProgress = () => {
 					<Progressbar progress={derived.calcPct} game={game} />
 				</div>
 			)}
-			{(isDownloading || isPaused) && (
+			{showDownloadBar && (
 				<div class="flex min-w-full flex-col gap-y-1 text-left">
 					<h2 class="ml-1 text-sm text-white">
-						{state.downloadTotal > 0
-							? derived.downloadPct >= 100
-								? `Download finished - ${derived.totalGB}GB`
-								: `Downloaded ${derived.downloadedGB}GB of ${derived.totalGB}GB (${derived.downloadPct.toFixed(2)}%)${derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}${derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}`
-							: isFetchingManifest
-								? "Fetching manifest..."
-								: isCalculatingDownloads
-									? "Calculating downloads..."
-									: "Starting..."}
+						{downloadBarFinished
+							? "Download finished"
+							: state.downloadTotal > 0
+								? derived.downloadPct >= 100
+									? `Download finished - ${derived.totalGB}GB`
+									: `Downloaded ${derived.downloadedGB}GB of ${derived.totalGB}GB (${derived.downloadPct.toFixed(2)}%)${derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}${derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}`
+								: isFetchingManifest
+									? "Fetching manifest..."
+									: isCalculatingDownloads
+										? "Calculating downloads..."
+										: "Starting..."}
 					</h2>
-					<Progressbar progress={derived.downloadPct} game={game} />
+					<Progressbar progress={downloadBarPct} game={game} />
 				</div>
 			)}
 			{isAssembling && state.totalFiles > 0 && (

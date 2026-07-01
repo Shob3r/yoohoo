@@ -182,6 +182,7 @@ export const DownloadProvider = ({
 							isPaused: false,
 							isFetchingManifest: false,
 							isCalculatingDownloads: false,
+							isVerifying: false,
 							downloadingGame:
 								prev.downloadingGame ?? downloadingGameRef.current,
 							downloadedBytes: payload.downloadedBytes,
@@ -203,6 +204,7 @@ export const DownloadProvider = ({
 							...prev,
 							isAssembling: true,
 							isFetchingManifest: false,
+							isVerifying: false,
 							assembledFiles: payload.assembledFiles,
 							totalFiles: payload.totalFiles,
 						};
@@ -211,9 +213,9 @@ export const DownloadProvider = ({
 							...prev,
 							isVerifying: true,
 							isPaused: false,
-							isDownloading: false,
 							isAssembling: false,
 							isFetchingManifest: false,
+							isCalculatingDownloads: false,
 							isError: false,
 							isFinished: false,
 							scannedFiles: payload.scannedFiles,
