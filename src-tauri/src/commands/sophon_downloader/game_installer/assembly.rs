@@ -325,6 +325,10 @@ pub fn assemble_file(
         let _ = fs::remove_file(&tmp_path);
         SophonError::Io(err.into_error())
     })?;
+    out_file.sync_all().map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        SophonError::Io(err)
+    })?;
     drop(out_file);
 
     if total_written != file_size {
@@ -368,8 +372,6 @@ pub fn assemble_file(
             let _ = fs::set_permissions(&target_path, perms);
         }
     }
-
-    super::download::evict_from_page_cache_sync(&target_path);
 
     transfer_buffer.clear();
     TRANSFER_BUF.with(|cell| cell.replace(transfer_buffer));
@@ -461,7 +463,6 @@ fn write_decompressed_chunk_at<W: Write + Seek>(
 
         Ok(bytes_written)
     };
-    super::download::evict_from_page_cache_sync(chunk_path);
     result
 }
 
@@ -549,7 +550,6 @@ fn write_from_old_file<W: Write + Seek>(
 
         Ok(bytes_written)
     };
-    super::download::evict_from_page_cache_sync(old_file_path);
     result
 }
 

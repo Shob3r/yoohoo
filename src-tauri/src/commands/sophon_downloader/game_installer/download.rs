@@ -14,28 +14,10 @@ use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
 use crate::commands::sophon_downloader::api_scrape::DownloadInfo;
 
-/// Evict file pages from the OS page cache. Synchronous variant for use
-/// inside `spawn_blocking` contexts where the runtime is already off the
-/// async path.
-pub(crate) fn evict_from_page_cache_sync(path: &Path) {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-        return;
-    };
-    let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY) };
-    if fd < 0 {
-        return;
-    }
-    unsafe {
-        libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
-        libc::close(fd);
-    }
-}
-
 /// Wrapper around `BufWriter<tokio::fs::File>` that tracks the file path
-/// for post-close page cache eviction. In-flight posix_fadvise(DONTNEED) on
-/// the write fd is unsafe: it can discard dirty pages before writeback
-/// completes, producing truncated files that pass in-memory hash verification.
+/// for potential post-close page cache eviction. The Drop impl no longer
+/// calls posix_fadvise(DONTNEED) because it can discard dirty pages before
+/// writeback completes on some kernel versions, producing truncated files.
 pub(crate) struct EvictingWriter {
     inner: BufWriter<tokio::fs::File>,
     path: std::path::PathBuf,
@@ -68,7 +50,7 @@ impl EvictingWriter {
 
 impl Drop for EvictingWriter {
     fn drop(&mut self) {
-        evict_from_page_cache_sync(&self.path);
+        let _ = &self.path;
     }
 }
 
@@ -208,7 +190,6 @@ async fn verify_existing_file_hash(path: &Path, expected_hash: &str) -> SophonRe
                 return Ok(false);
             }
         }?;
-        evict_from_page_cache_sync(&path);
         Ok(actual == expected_hash)
     })
     .await?

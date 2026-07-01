@@ -75,7 +75,6 @@ pub fn write_chunk_from_mmap(
         }
         writer.write_all(&buf[..n])?;
         remaining -= n;
-        buf.clear();
     }
 
     buf.clear();
@@ -203,5 +202,19 @@ mod tests {
         let bytes = write_chunk_from_mmap(&src, &mut output, 0, 0, 11, None, "").unwrap();
         assert_eq!(bytes, 11);
         assert_eq!(&output.into_inner()[..], b"hello world");
+    }
+
+    #[test]
+    fn write_chunk_from_mmap_reads_multiple_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("large.bin");
+        let data = vec![0xABu8; ASSEMBLY_BUFFER_SIZE * 3];
+        std::fs::write(&src, &data).unwrap();
+
+        let mut output = Cursor::new(Vec::new());
+        let bytes =
+            write_chunk_from_mmap(&src, &mut output, 0, 0, data.len() as u64, None, "").unwrap();
+        assert_eq!(bytes, data.len() as u64);
+        assert_eq!(output.into_inner().len(), data.len());
     }
 }
