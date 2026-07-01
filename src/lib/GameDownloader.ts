@@ -278,8 +278,13 @@ export const verifyGameIntegrity = async (game: Variants): Promise<void> => {
  * @returns Weather or not `game` is installed
  */
 export const isGameInstalled = async (game: Variants): Promise<boolean> => {
-	const path = await join("games", variantToGameCode[game], "pkg_version");
-	return exists(path);
+	const pkgPath = await join("games", variantToGameCode[game], "pkg_version");
+	const sophonPath = await join(
+		"games",
+		variantToGameCode[game],
+		".sophon_version",
+	);
+	return (await exists(pkgPath)) || (await exists(sophonPath));
 };
 
 /**

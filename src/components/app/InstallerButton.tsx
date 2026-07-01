@@ -145,7 +145,13 @@ export const InstallerButton = () => {
 							? "Updating..."
 							: "Update";
 					} else {
-						return "Play";
+						return downloadActive && isDownloadForActiveGame
+							? state.downloadType === "update"
+								? "Updating..."
+								: state.downloadType === "preinstall"
+									? "Pre-downloading..."
+									: "Downloading..."
+							: "Play";
 					}
 				})()}
 			</Button>
