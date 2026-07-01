@@ -14,7 +14,7 @@ export const PreinstallButton = () => {
 	const [preinstallState, setPreinstallState] =
 		useState<PreinstallState>("hidden");
 	const { game } = useGame();
-	const { state: dlState, setDownloadingGame } = useDownload();
+	const { state: dlState, setDownloadingGame, setDownloadType } = useDownload();
 	const downloadActive =
 		dlState.isDownloading ||
 		dlState.isAssembling ||
@@ -42,6 +42,7 @@ export const PreinstallButton = () => {
 				height={4}
 				disabled={downloadActive}
 				onClick={async () => {
+					setDownloadType("update");
 					setDownloadingGame(game);
 					await applyUpdate(game);
 				}}
@@ -72,6 +73,7 @@ export const PreinstallButton = () => {
 			height={4}
 			disabled={downloadActive}
 			onClick={async () => {
+				setDownloadType("preinstall");
 				setDownloadingGame(game);
 				await downloadUpdate(game, true);
 			}}

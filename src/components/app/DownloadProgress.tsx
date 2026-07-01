@@ -125,7 +125,9 @@ export const DownloadProgress = () => {
 	const titleText = isApplyingPreinstall
 		? "Applying Preinstall..."
 		: isPaused
-			? "Download Paused"
+			? state.downloadType === "update"
+				? "Update Paused"
+				: "Download Paused"
 			: isSettingUpProton
 				? "Setting Up Environment..."
 				: isVerifying
@@ -135,7 +137,11 @@ export const DownloadProgress = () => {
 						: isFetchingManifest
 							? "Fetching Manifest..."
 							: state.downloadingGame !== null
-								? `Downloading ${variantToGameName[state.downloadingGame]}...`
+								? state.downloadType === "update"
+									? `Updating ${variantToGameName[state.downloadingGame]}...`
+									: state.downloadType === "preinstall"
+										? `Pre-downloading ${variantToGameName[state.downloadingGame]}...`
+										: `Downloading ${variantToGameName[state.downloadingGame]}...`
 								: "Downloading...";
 
 	const canPause = isDownloading || isPaused;

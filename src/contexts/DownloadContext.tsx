@@ -9,6 +9,8 @@ import type {
 	Variants,
 } from "../types";
 
+export type DownloadType = "install" | "update" | "preinstall";
+
 export interface DownloadState {
 	isPaused: boolean;
 	isDownloading: boolean;
@@ -20,6 +22,7 @@ export interface DownloadState {
 	isApplyingPreinstall: boolean;
 	isError: boolean;
 	isFinished: boolean;
+	downloadType: DownloadType;
 	downloadingGame: Variants | null;
 	downloadedBytes: number;
 	downloadTotal: number;
@@ -46,6 +49,7 @@ export interface DownloadState {
 interface DownloadContextType {
 	state: DownloadState;
 	setDownloadingGame: (game: Variants | null) => void;
+	setDownloadType: (type: DownloadType) => void;
 	setResumable: (info: ResumeInfo | null) => void;
 	setProtonSetupProgress: (event: ProtonSetupProgress) => void;
 }
@@ -61,6 +65,7 @@ const initialState: DownloadState = {
 	isApplyingPreinstall: false,
 	isError: false,
 	isFinished: false,
+	downloadType: "install",
 	downloadingGame: null,
 	downloadedBytes: 0,
 	downloadTotal: 0,
@@ -87,6 +92,7 @@ const initialState: DownloadState = {
 export const DownloadContext = createContext<DownloadContextType>({
 	state: initialState,
 	setDownloadingGame: () => {},
+	setDownloadType: () => {},
 	setResumable: () => {},
 	setProtonSetupProgress: () => {},
 });
@@ -104,11 +110,20 @@ export const DownloadProvider = ({
 		setState((prev) => ({ ...prev, downloadingGame: game }));
 	};
 
+	const setDownloadType = (type: DownloadType) => {
+		setState((prev) => ({ ...prev, downloadType: type }));
+	};
+
 	const setResumable = (info: ResumeInfo | null) => {
 		setState((prev) => ({
 			...prev,
 			isResumable: info !== null,
 			resumeInfo: info,
+			downloadType: info
+				? info.downloadType === "fresh"
+					? "install"
+					: info.downloadType
+				: prev.downloadType,
 		}));
 	};
 
@@ -323,6 +338,7 @@ export const DownloadProvider = ({
 			value={{
 				state,
 				setDownloadingGame,
+				setDownloadType,
 				setResumable,
 				setProtonSetupProgress,
 			}}

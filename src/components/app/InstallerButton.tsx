@@ -23,8 +23,13 @@ import Button from "../Button";
 
 export const InstallerButton = () => {
 	const { game } = useGame();
-	const { state, setDownloadingGame, setResumable, setProtonSetupProgress } =
-		useDownload();
+	const {
+		state,
+		setDownloadingGame,
+		setDownloadType,
+		setResumable,
+		setProtonSetupProgress,
+	} = useDownload();
 	const [protonAvailable, setProtonAvailable] = useState<boolean>(false);
 	const [gameInstalled, setGameInstalled] = useState<boolean>(false);
 	const [updateAvailable, setUpdateAvailable] = useState<boolean>(false);
@@ -98,12 +103,21 @@ export const InstallerButton = () => {
 						setProtonAvailable(true);
 					} else if (canResume && resumeVariant !== null) {
 						setResumable(null);
+						if (state.resumeInfo?.downloadType === "update") {
+							setDownloadType("update");
+						} else if (state.resumeInfo?.downloadType === "preinstall") {
+							setDownloadType("preinstall");
+						} else {
+							setDownloadType("install");
+						}
 						setDownloadingGame(resumeVariant);
 						await resumeDownloadInterrupted();
 					} else if (!gameInstalled) {
+						setDownloadType("install");
 						setDownloadingGame(game);
 						await downloadGame(game);
 					} else if (showUpdate) {
+						setDownloadType("update");
 						setDownloadingGame(game);
 						if (preinstallDownloaded) {
 							await applyUpdate(game);
