@@ -844,6 +844,8 @@ pub async fn preinstall_download(
 
     while workers.join_next().await.is_some() {}
 
+    super::reclaim_memory();
+
     progress_done.store(true, Ordering::Relaxed);
 
     if cancelled.load(Ordering::Relaxed) != 0 {

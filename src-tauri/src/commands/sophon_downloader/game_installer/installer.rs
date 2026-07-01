@@ -1794,6 +1794,8 @@ pub async fn install(
     )
     .await?;
 
+    super::reclaim_memory();
+
     log::info!(
         "MEMORY: all_files={file_count} files, {mb:.1}MB (arena={arena}B + columns={cols}B)",
         file_count = ctx.all_files.num_files(),
@@ -1847,6 +1849,8 @@ pub async fn install(
         options.handle,
     )
     .await;
+
+    super::reclaim_memory();
 
     {
         let handle = {

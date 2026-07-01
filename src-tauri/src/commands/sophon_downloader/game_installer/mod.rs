@@ -164,6 +164,16 @@ pub use plugin_install::{install_channel_sdks, install_plugins};
 pub use preinstall::{apply_preinstall, build_preinstall_plan, preinstall_download};
 pub use update::{UpdateInfo, check_update};
 
+/// Advance jemalloc epoch and trim freed pages back to the OS.
+/// Call after major pipeline phase transitions (download → assembly, etc.)
+/// to reduce resident memory.
+pub fn reclaim_memory() {
+    #[cfg(not(target_env = "msvc"))]
+    {
+        let _ = tikv_jemalloc_ctl::epoch::advance();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

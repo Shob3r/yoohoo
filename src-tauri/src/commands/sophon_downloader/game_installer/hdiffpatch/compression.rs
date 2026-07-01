@@ -16,7 +16,7 @@ pub(crate) fn get_clip_stream(
     let file_bytes = if comp_length > 0 { comp_length } else { length };
     file.seek(SeekFrom::Start(start))?;
 
-    const MAX_BUFFERED_SIZE: u64 = 512 * 1024 * 1024; // 512 MB
+    const MAX_BUFFERED_SIZE: u64 = 64 * 1024 * 1024;
 
     if comp_mode == CompressionMode::Nocomp || comp_length == 0 {
         // Non-Nocomp with comp_length=0: fall back to uncompressed read;
@@ -47,9 +47,9 @@ pub(crate) fn get_clip_stream(
     match comp_mode {
         CompressionMode::Zstd => {
             let window_log: u32 = if cfg!(target_pointer_width = "64") {
-                31
+                22
             } else {
-                30
+                21
             };
             let limited = LimitedFile {
                 file,
@@ -240,7 +240,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"x").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        let max = 512u64 * 1024 * 1024;
+        let max = 64u64 * 1024 * 1024;
         let result = get_clip_stream(file, CompressionMode::Nocomp, 0, max + 1, max + 1, true);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -256,7 +256,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"x").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        let max = 512u64 * 1024 * 1024;
+        let max = 64u64 * 1024 * 1024;
         let result = get_clip_stream(file, CompressionMode::Zstd, 0, max + 1, 100, true);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -388,7 +388,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"x").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        let max = 512u64 * 1024 * 1024;
+        let max = 64u64 * 1024 * 1024;
         let result = get_clip_stream(file, CompressionMode::Zlib, 0, max + 1, 100, true);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();

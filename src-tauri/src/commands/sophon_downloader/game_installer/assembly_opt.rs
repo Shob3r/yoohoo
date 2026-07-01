@@ -118,9 +118,9 @@ pub fn decompress_chunk_optimized(
     let mut decoder = zstd::Decoder::new(buf_reader)?;
 
     let window_log: u32 = if cfg!(target_pointer_width = "64") {
-        26
+        22
     } else {
-        25
+        21
     };
     decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
