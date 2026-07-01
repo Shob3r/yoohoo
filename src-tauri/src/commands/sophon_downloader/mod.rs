@@ -257,11 +257,13 @@ pub enum SophonProgress {
     /// Manifest is being fetched from the API.
     FetchingManifest,
     /// Existing files are being checked to determine what needs downloading.
+    #[serde(rename_all = "camelCase")]
     CalculatingDownloads {
         checked_files: u64,
         total_files: u64,
     },
     /// Chunks are being downloaded.
+    #[serde(rename_all = "camelCase")]
     Downloading {
         downloaded_bytes: u64,
         total_bytes: u64,
@@ -269,16 +271,19 @@ pub enum SophonProgress {
         eta_seconds: f64,
     },
     /// Download is paused.
+    #[serde(rename_all = "camelCase")]
     Paused {
         downloaded_bytes: u64,
         total_bytes: u64,
     },
     /// Files are being assembled from downloaded chunks.
+    #[serde(rename_all = "camelCase")]
     Assembling {
         assembled_files: u64,
         total_files: u64,
     },
     /// Files are being verified for integrity.
+    #[serde(rename_all = "camelCase")]
     Verifying {
         scanned_files: u64,
         total_files: u64,
@@ -289,22 +294,26 @@ pub enum SophonProgress {
     /// Fatal error occurred.
     Error { message: String },
     /// Installing plugins into the game directory.
+    #[serde(rename_all = "camelCase")]
     InstallingPlugins {
         current_plugin: String,
         total_plugins: usize,
     },
     /// Installing channel SDKs into the game directory.
+    #[serde(rename_all = "camelCase")]
     InstallingSdks {
         current_sdk: String,
         total_sdks: usize,
     },
     /// Downloading a plugin/SDK ZIP package.
+    #[serde(rename_all = "camelCase")]
     DownloadingPlugin {
         name: String,
         downloaded_bytes: u64,
         total_bytes: u64,
     },
     /// Applying preinstall patches to game files.
+    #[serde(rename_all = "camelCase")]
     ApplyingPreinstall {
         applied_files: u64,
         total_files: u64,
@@ -1548,6 +1557,21 @@ mod tests {
             entries.len(),
             1,
             "no backup file should have been created; found: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn sophon_progress_downloading_serializes_total_bytes() {
+        let p = SophonProgress::Downloading {
+            downloaded_bytes: 1024,
+            total_bytes: 30_000_000_000,
+            speed_bps: 45_000_000.0,
+            eta_seconds: 600.0,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"downloading","downloadedBytes":1024,"totalBytes":30000000000,"speedBps":45000000.0,"etaSeconds":600.0}"#
         );
     }
 }
