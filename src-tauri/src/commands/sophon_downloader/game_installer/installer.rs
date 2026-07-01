@@ -455,6 +455,7 @@ async fn build_diff_installers(
         }
         drop(old_chunk_offsets);
         drop(old_md5_map);
+        super::reclaim_memory();
 
         if diff_files.is_empty() {
             continue;
@@ -1536,6 +1537,7 @@ pub async fn install(
         }
     }
     let all_files: Arc<CompactManifest> = Arc::new(CompactManifest::from(all_files_vec));
+    super::reclaim_memory();
     let all_tmp_dirs: Arc<Vec<std::path::PathBuf>> = Arc::new(
         installer_data
             .iter()

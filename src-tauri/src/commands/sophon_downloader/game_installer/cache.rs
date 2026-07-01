@@ -53,7 +53,7 @@ pub fn load_verification_cache(game_dir: &Path) -> DashMap<String, VerificationE
         },
     };
     // Trim cache to half the max if it exceeds the limit.
-    const MAX_CACHE_ENTRIES: usize = 50_000;
+    const MAX_CACHE_ENTRIES: usize = 25_000;
     let trim_keys: Vec<String> = if serializable.files.len() > MAX_CACHE_ENTRIES {
         let count = serializable.files.len();
         let to_trim: Vec<_> = serializable
