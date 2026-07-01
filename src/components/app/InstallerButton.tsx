@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { useDownload } from "../../hooks/useDownload";
 import { useGame } from "../../hooks/useGame";
 import {
+	applyUpdate,
 	checkGameUpdate,
 	downloadGame,
 	downloadUpdate,
@@ -76,7 +77,7 @@ export const InstallerButton = () => {
 		}
 	}, [state.isFinished, isDownloadForActiveGame]);
 
-	const showUpdate = updateAvailable && gameInstalled && !preinstallDownloaded;
+	const showUpdate = updateAvailable && gameInstalled;
 
 	const resumeVariant = state.resumeInfo
 		? gameCodeToVariant[state.resumeInfo.gameId as GameCodes]
@@ -104,7 +105,11 @@ export const InstallerButton = () => {
 						await downloadGame(game);
 					} else if (showUpdate) {
 						setDownloadingGame(game);
-						await downloadUpdate(game, false);
+						if (preinstallDownloaded) {
+							await applyUpdate(game);
+						} else {
+							await downloadUpdate(game, false);
+						}
 					} else {
 						await runGame(game);
 					}
