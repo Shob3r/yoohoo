@@ -1975,23 +1975,23 @@ pub async fn verify_integrity(
     }
 
     let mut manifest_results: Vec<SophonManifestProto> = Vec::with_capacity(qualifying.len());
-    let mut chunk_downloads: Vec<&DownloadInfo> = Vec::with_capacity(qualifying.len());
+    let mut chunk_downloads: Vec<DownloadInfo> = Vec::with_capacity(qualifying.len());
     for meta in &qualifying {
         let result =
             api::fetch_manifest(client, &meta.manifest_download, &meta.manifest.id).await?;
         manifest_results.push(result.manifest);
-        chunk_downloads.push(&meta.chunk_download);
+        chunk_downloads.push(meta.chunk_download.clone());
     }
 
-    let all_assets: Vec<(&SophonManifestAssetProperty, &DownloadInfo)> = manifest_results
-        .iter()
-        .zip(chunk_downloads.iter())
+    let all_assets: Vec<(SophonManifestAssetProperty, DownloadInfo)> = manifest_results
+        .into_iter()
+        .zip(chunk_downloads.into_iter())
         .flat_map(|(manifest, dl)| {
             manifest
                 .assets
-                .iter()
+                .into_iter()
                 .filter(|a| !a.is_directory())
-                .map(|a| (a, *dl))
+                .map(move |a| (a, dl.clone()))
         })
         .collect();
 
@@ -2062,38 +2062,140 @@ pub async fn verify_integrity(
         .collect();
 
     let failed_count = failed_verifications.len() as u64;
-    let mut reassembled: u64 = 0;
 
-    // Phase 2: Re-download failed files sequentially (to avoid overwhelming the
-    // network)
-    for (asset, chunk_download, file_path) in failed_verifications {
+    if failed_verifications.is_empty() {
+        emit(SophonProgress::Verifying {
+            scanned_files: total_files,
+            total_files,
+            error_count: 0,
+        });
+        emit(SophonProgress::Finished);
+        return Ok(());
+    }
+
+    for (asset, _, _) in &failed_verifications {
         emit(SophonProgress::Warning {
             message: format!(
                 "File {name} failed integrity check, re-downloading",
                 name = asset.asset_name
             ),
         });
+    }
 
-        if let Err(err) = redownload_asset(
-            client,
-            asset,
-            chunk_download,
-            &chunks_dir,
-            game_dir,
-            &file_path,
-            &mut emit,
-            &verify_cache,
-        )
-        .await
-        {
-            let asset_name = &asset.asset_name;
-            emit(SophonProgress::Error {
-                message: format!("Failed to re-download {asset_name}: {err}"),
-            });
-        } else {
-            reassembled += 1;
+    // Phase 2a: Collect unique chunks that need re-downloading across all
+    // failed files, then download them in parallel.
+    let mut redownload_items: Vec<(String, u64, DownloadInfo)> = Vec::new();
+    let mut seen_chunks: HashSet<String> = HashSet::new();
+    for (asset, chunk_download, _) in &failed_verifications {
+        for chunk in &asset.asset_chunks {
+            if seen_chunks.contains(&chunk.chunk_name) {
+                continue;
+            }
+            seen_chunks.insert(chunk.chunk_name.clone());
+            let chunk_path = chunks_dir.join(assembly::chunk_filename(&chunk.chunk_name));
+            let needs_download = !chunk_path.exists()
+                || !cache::check_file_md5_cached(
+                    &chunk_path,
+                    chunk.chunk_size,
+                    &chunk.chunk_compressed_hash_md5,
+                    game_dir,
+                    &verify_cache,
+                )
+                .unwrap_or(false);
+            if needs_download {
+                redownload_items.push((
+                    chunk.chunk_name.clone(),
+                    chunk.chunk_size,
+                    (*chunk_download).clone(),
+                ));
+            }
         }
+    }
 
+    let needed_total = redownload_items.len();
+    if needed_total > 0 {
+        log::info!("Re-downloading {needed_total} unique chunks for {failed_count} failed files");
+        let dl_semaphore = Arc::new(tokio::sync::Semaphore::new(super::DOWNLOAD_CONCURRENCY));
+        let dl_futures = redownload_items.into_iter().map(|(name, size, dl_info)| {
+            let permit = Arc::clone(&dl_semaphore);
+            let chunks_dir = chunks_dir.clone();
+            let client = client.clone();
+            async move {
+                let _permit = permit.acquire().await.map_err(|_| SophonError::Cancelled)?;
+                if !validate_chunk_name(&name) {
+                    return Err(SophonError::PathTraversal(name.into()));
+                }
+                let chunk_path = chunks_dir.join(assembly::chunk_filename(&name));
+                let chunk_ref = ChunkRef {
+                    chunk_name: &name,
+                    chunk_decompressed_hash_md5: "",
+                    chunk_on_file_offset: 0,
+                    chunk_size: size,
+                    chunk_size_decompressed: 0,
+                    chunk_compressed_hash_md5: "",
+                    chunk_old_offset: -1,
+                };
+                download::download_chunk(&client, &dl_info, chunk_ref, &chunk_path, None).await
+            }
+        });
+        let dl_results: Vec<SophonResult<()>> = futures_util::future::join_all(dl_futures).await;
+        for res in dl_results {
+            res?;
+        }
+    }
+
+    // Phase 2b: Re-assemble all failed files in parallel.
+    let reassembled = Arc::new(AtomicU64::new(0u64));
+    let asm_semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+    let asm_futures = failed_verifications
+        .into_iter()
+        .map(|(asset, _, file_path)| {
+            let permit = Arc::clone(&asm_semaphore);
+            let chunks_dir = chunks_dir.clone();
+            let game_dir = game_dir.to_path_buf();
+            let reassembled = Arc::clone(&reassembled);
+            let verify_cache = Arc::clone(&verify_cache);
+            async move {
+                let _permit = permit.acquire().await.map_err(|_| SophonError::Cancelled)?;
+                let result = reassemble_single_asset(
+                    &asset,
+                    &chunks_dir,
+                    &game_dir,
+                    &file_path,
+                    &verify_cache,
+                );
+                reassembled.fetch_add(1, Ordering::Relaxed);
+                result
+            }
+        });
+
+    let mut asm_join = tokio::task::JoinSet::new();
+    let mut asm_iter = asm_futures;
+    let mut asm_draining = false;
+    loop {
+        if !asm_draining {
+            while asm_join.len() < 4 {
+                match asm_iter.next() {
+                    Some(fut) => {
+                        asm_join.spawn(fut);
+                    }
+                    None => {
+                        asm_draining = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if asm_join.is_empty() {
+            break;
+        }
+        if let Some(res) = asm_join.join_next().await {
+            if let Err(err) = res {
+                log::error!("Re-assembly task panicked: {err}");
+            } else if let Err(err) = res.unwrap() {
+                log::error!("Re-assembly task failed: {err}");
+            }
+        }
         if last_emit.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
             emit(SophonProgress::Verifying {
                 scanned_files: scanned_count.load(Ordering::Relaxed),
@@ -2101,7 +2203,7 @@ pub async fn verify_integrity(
                 error_count: error_count.load(Ordering::Relaxed),
             });
             emit(SophonProgress::Assembling {
-                assembled_files: reassembled,
+                assembled_files: reassembled.load(Ordering::Relaxed),
                 total_files: failed_count,
             });
             last_emit = Instant::now();
@@ -2114,7 +2216,7 @@ pub async fn verify_integrity(
         error_count: error_count.load(Ordering::Relaxed),
     });
     emit(SophonProgress::Assembling {
-        assembled_files: reassembled,
+        assembled_files: reassembled.load(Ordering::Relaxed),
         total_files: failed_count,
     });
 
@@ -2122,48 +2224,16 @@ pub async fn verify_integrity(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn redownload_asset(
-    client: &Client,
+fn reassemble_single_asset(
     asset: &SophonManifestAssetProperty,
-    chunk_download: &DownloadInfo,
     chunks_dir: &Path,
     game_dir: &Path,
     file_path: &Path,
-    emit: &mut (impl FnMut(SophonProgress) + Send + 'static),
     verify_cache: &DashMap<String, VerificationEntry>,
 ) -> SophonResult<()> {
-    fs::create_dir_all(chunks_dir)?;
-
-    for chunk in &asset.asset_chunks {
-        if !validate_chunk_name(&chunk.chunk_name) {
-            return Err(SophonError::PathTraversal(chunk.chunk_name.clone().into()));
-        }
-        let chunk_path = chunks_dir.join(assembly::chunk_filename(&chunk.chunk_name));
-        let needs_download = !chunk_path.exists()
-            || !cache::check_file_md5_cached(
-                &chunk_path,
-                chunk.chunk_size,
-                &chunk.chunk_compressed_hash_md5,
-                game_dir,
-                verify_cache,
-            )
-            .unwrap_or(false);
-
-        if needs_download {
-            let chunk_name = &chunk.chunk_name;
-            emit(SophonProgress::Warning {
-                message: format!("Re-downloading chunk {chunk_name}"),
-            });
-            download::download_chunk(client, chunk_download, chunk.into(), &chunk_path, None)
-                .await?;
-        }
-    }
-
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent)?;
     }
-
     let _ = fs::remove_file(file_path);
 
     let tmp_dir_name = format!(
@@ -2195,9 +2265,7 @@ async fn redownload_asset(
         verify_cache,
     );
     let _ = fs::remove_dir_all(&tmp_dir);
-    result?;
-
-    Ok(())
+    result
 }
 
 #[cfg(test)]
