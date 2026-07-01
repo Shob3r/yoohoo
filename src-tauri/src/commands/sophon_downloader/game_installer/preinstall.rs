@@ -1036,7 +1036,7 @@ async fn download_patch_chunk_inner(
         .and_then(|s| s.parse::<u64>().ok());
     let mut stream = resp.bytes_stream();
     let file = tokio::fs::File::create(dest).await?;
-    let mut file = super::download::EvictingWriter::new(file);
+    let mut file = super::download::EvictingWriter::new(file, dest.to_path_buf());
     let mut hasher = Md5::new();
     let mut total_len = 0u64;
 
