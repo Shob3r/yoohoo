@@ -1547,6 +1547,10 @@ pub async fn install(
     );
 
     let (total_compressed, total_files) = compute_totals(&all_files);
+    (callbacks.updater)(SophonProgress::CalculatingDownloads {
+        checked_files: 0,
+        total_files: total_files,
+    });
     log::info!(
         "Sophon install: {total_files} total files across {installers} installers, {total_compressed} compressed bytes",
         installers = installer_data.len(),
