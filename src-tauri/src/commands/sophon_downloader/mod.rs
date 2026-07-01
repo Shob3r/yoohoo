@@ -1303,6 +1303,12 @@ fn emit(app: &AppHandle, progress: SophonProgress) {
 /// Emits a structured error event across the Tauri IPC boundary.
 fn emit_error(app: &AppHandle, error: &SophonError) {
     let _ = app.emit("sophon://error", CommandError::from(error));
+    emit(
+        app,
+        SophonProgress::Error {
+            message: error.to_string(),
+        },
+    );
 }
 
 /// Handle the final install result. Success and cancellation both return

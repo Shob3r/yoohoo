@@ -101,7 +101,7 @@ export const InstallerButton = () => {
 							setProtonSetupProgress(event);
 						});
 						setProtonAvailable(true);
-					} else if (canResume && resumeVariant !== null) {
+					} else if (canResume && !gameInstalled && resumeVariant !== null) {
 						setResumable(null);
 						if (state.resumeInfo?.downloadType === "update") {
 							setDownloadType("update");
