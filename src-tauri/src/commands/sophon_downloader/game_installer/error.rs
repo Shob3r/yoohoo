@@ -10,7 +10,7 @@ pub enum SophonError {
         reqwest::Error,
     ),
 
-    #[error("IO error")]
+    #[error("IO error: {0}")]
     Io(
         #[from]
         #[source]

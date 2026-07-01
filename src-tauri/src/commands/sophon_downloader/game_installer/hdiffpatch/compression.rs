@@ -47,9 +47,9 @@ pub(crate) fn get_clip_stream(
     match comp_mode {
         CompressionMode::Zstd => {
             let window_log: u32 = if cfg!(target_pointer_width = "64") {
-                22
+                26
             } else {
-                21
+                25
             };
             let limited = LimitedFile {
                 file,

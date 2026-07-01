@@ -95,7 +95,7 @@ pub async fn fetch_manifest(
     let manifest: SophonManifestProto = if dl.is_compressed() {
         let raw = tokio::task::spawn_blocking(move || {
             let mut decoder = zstd::Decoder::new(bytes.as_ref())?;
-            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(22))?;
+            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(26))?;
             let mut out = Vec::new();
             std::io::Read::read_to_end(&mut decoder, &mut out)?;
             Ok::<Vec<u8>, SophonError>(out)
@@ -196,7 +196,7 @@ pub async fn fetch_patch_manifest(
     let raw = if meta.manifest_download.is_compressed() {
         tokio::task::spawn_blocking(move || {
             let mut decoder = zstd::Decoder::new(bytes.as_ref())?;
-            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(22))?;
+            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(26))?;
             let mut out = Vec::new();
             std::io::Read::read_to_end(&mut decoder, &mut out)?;
             Ok::<Vec<u8>, SophonError>(out)
