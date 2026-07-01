@@ -583,6 +583,7 @@ pub struct AssemblyTaskParams {
     pub last_assembly_update: Arc<Mutex<Instant>>,
     pub total_files: u64,
     pub profiler: Arc<super::profiling::PipelineProfiler>,
+    pub completed_files: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 pub fn run_assembly_task(
@@ -603,6 +604,7 @@ pub fn run_assembly_task(
         last_assembly_update,
         total_files,
         profiler,
+        completed_files,
     } = params;
 
     let _assembly_timer = super::profiling::AssemblyTimer::new(&profiler);
@@ -623,6 +625,39 @@ pub fn run_assembly_task(
     let tmp_dir = &all_tmp_dirs[tmp_dir_idx];
     let file_name = all_files.file_name(file_idx).to_string();
 
+    {
+        let cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
+        if cf.contains(file_name.as_str()) {
+            log::debug!(
+                "run_assembly_task: skipping already-completed file '{name}'",
+                name = file_name
+            );
+            let chunk_range = all_files.file_chunk_range(file_idx);
+            for ci in chunk_range.start..chunk_range.end {
+                decrement_chunk_refcount(
+                    all_files.chunk(ci as usize).chunk_name,
+                    &chunk_names,
+                    &chunk_refcounts,
+                    &chunks_dir,
+                );
+            }
+            let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+            {
+                if let Ok(mut lu) = last_assembly_update.try_lock()
+                    && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
+                {
+                    updater(SophonProgress::Assembling {
+                        assembled_files: count,
+                        total_files,
+                    });
+                    *lu = Instant::now();
+                }
+            }
+            _assembly_timer.finish();
+            return Ok(());
+        }
+    }
+
     assemble_file(
         &all_files,
         file_idx,
@@ -634,11 +669,16 @@ pub fn run_assembly_task(
         &verify_cache,
     )
     .map_err(|err| SophonError::AssemblyFailed {
-        file: file_name,
+        file: file_name.clone(),
         error: err.to_string(),
     })?;
 
     let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+
+    {
+        let mut cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
+        cf.insert(file_name.clone());
+    }
 
     {
         if let Ok(mut lu) = last_assembly_update.try_lock()
@@ -1092,6 +1132,7 @@ mod tests {
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 0,
             profiler: Arc::new(PipelineProfiler::new()),
+            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         };
 
         let result = run_assembly_task(params, |_| {});
@@ -1235,6 +1276,7 @@ mod tests {
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 1,
             profiler: Arc::new(PipelineProfiler::new()),
+            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         };
 
         let result = run_assembly_task(params, |_| {});

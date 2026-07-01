@@ -166,6 +166,7 @@ async fn main() {
         InstallCallbacks {
             updater: Arc::new(progress),
             state_saver: saver,
+            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         },
         game_id,
         &[vo_lang.to_string()],

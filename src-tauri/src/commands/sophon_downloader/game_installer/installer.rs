@@ -109,6 +109,7 @@ struct InstallContext {
     state_saver: StateSaver,
     adaptive_assembly: Arc<AdaptiveAssembly>,
     profiler: Arc<super::profiling::PipelineProfiler>,
+    completed_files: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -721,6 +722,7 @@ fn make_assembly_params(
         last_assembly_update: Arc::clone(&ctx.last_assembly_update),
         total_files: ctx.total_files,
         profiler: Arc::clone(&ctx.profiler),
+        completed_files: Arc::clone(&ctx.completed_files),
     }
 }
 
@@ -746,6 +748,47 @@ async fn drain_join_set(join_set: &mut tokio::task::JoinSet<SophonResult<()>>) -
     match first_error {
         Some(err) => Err(err),
         None => Ok(()),
+    }
+}
+
+async fn save_assembly_state(ctx: &Arc<InstallContext>) {
+    let dc = Arc::clone(&ctx.downloaded_chunks);
+    let cn = Arc::clone(&ctx.chunk_names);
+    let saver = Arc::clone(&ctx.state_saver);
+    let prev_handle = {
+        let mut guard = ctx.last_save.lock().unwrap_or_else(|err| {
+            log::error!("last_save mutex poisoned, recovering");
+            err.into_inner()
+        });
+        guard.take()
+    };
+    if let Some(h) = prev_handle {
+        let _ = h.await;
+    }
+    let new_handle = tokio::task::spawn_blocking(move || {
+        let map: HashMap<String, u64> = if let (Some(dc), Some(cn)) = (dc.get(), cn.get()) {
+            dc.iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    let val = v.load(Ordering::Relaxed);
+                    if val > 0 {
+                        Some((cn.get(i).to_string(), val))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        saver(&map);
+    });
+    {
+        let mut guard = ctx.last_save.lock().unwrap_or_else(|err| {
+            log::error!("last_save mutex poisoned, recovering");
+            err.into_inner()
+        });
+        *guard = Some(new_handle);
     }
 }
 
@@ -798,7 +841,9 @@ fn spawn_assembly_coordinator(
                 }
             } else if let Some(res) = join_set.try_join_next() {
                 match res {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => {
+                        save_assembly_state(&ctx).await;
+                    }
                     Ok(Err(err)) => {
                         log::error!("Assembly task failed: {err}");
                     }
@@ -822,7 +867,9 @@ fn spawn_assembly_coordinator(
                     }
                     res = join_set.join_next() => {
                         match res {
-                            Some(Ok(Ok(()))) => {}
+                            Some(Ok(Ok(()))) => {
+                                save_assembly_state(&ctx).await;
+                            }
                             Some(Ok(Err(err))) => {
                                 log::error!("Assembly task failed: {err}");
                             }
@@ -1397,6 +1444,7 @@ pub struct InstallOptions {
 pub struct InstallCallbacks {
     pub updater: ProgressUpdater,
     pub state_saver: StateSaver,
+    pub completed_files: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 fn chunk_still_valid_for_resume(chunk_name: &str, chunk_size: u64, chunks_dir: &Path) -> bool {
@@ -1763,6 +1811,7 @@ pub async fn install(
         state_saver: callbacks.state_saver,
         adaptive_assembly: Arc::clone(&adaptive_assembly),
         profiler: Arc::new(super::profiling::PipelineProfiler::new()),
+        completed_files: Arc::clone(&callbacks.completed_files),
     });
 
     #[cfg(feature = "pipeline-profiling")]
@@ -2574,6 +2623,7 @@ mod tests {
             state_saver: Arc::new(|_| {}),
             adaptive_assembly: Arc::new(AdaptiveAssembly::new()),
             profiler: Arc::new(super::profiling::PipelineProfiler::new()),
+            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });
 
         let handle = DownloadHandle::new();
@@ -2673,6 +2723,7 @@ mod tests {
             state_saver: Arc::new(|_| {}),
             adaptive_assembly: Arc::new(AdaptiveAssembly::new()),
             profiler: Arc::new(super::profiling::PipelineProfiler::new()),
+            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });
 
         let handle = DownloadHandle::new();

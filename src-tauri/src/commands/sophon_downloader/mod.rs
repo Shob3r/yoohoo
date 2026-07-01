@@ -8,11 +8,11 @@ pub mod proto_parse;
 use game_installer::{DownloadHandle, SophonError, UpdateInfo, read_installed_tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager, State, command};
 use tauri_plugin_log::log;
@@ -65,6 +65,8 @@ pub struct DownloadState {
     pub current_tag: Option<String>,
     pub manifest_hash: String,
     pub downloaded_chunks: HashMap<String, u64>,
+    #[serde(default)]
+    pub completed_files: HashSet<String>,
 }
 
 pub const CHUNK_STATE_SAVE_INTERVAL: u64 = 500;
@@ -483,7 +485,11 @@ struct StateMeta {
     manifest_hash: String,
 }
 
-fn make_state_saver(app: &AppHandle, state: &DownloadState) -> game_installer::StateSaver {
+fn make_state_saver(
+    app: &AppHandle,
+    state: &DownloadState,
+    completed_files: Arc<Mutex<HashSet<String>>>,
+) -> game_installer::StateSaver {
     let app = app.clone();
     let meta = StateMeta {
         game_id: state.game_id.clone(),
@@ -503,8 +509,10 @@ fn make_state_saver(app: &AppHandle, state: &DownloadState) -> game_installer::S
         current_tag: &'a Option<String>,
         manifest_hash: &'a str,
         downloaded_chunks: &'a HashMap<String, u64>,
+        completed_files: &'a HashSet<String>,
     }
     Arc::new(move |chunks: &HashMap<String, u64>| {
+        let completed = completed_files.lock().unwrap_or_else(|e| e.into_inner());
         let snapshot = DownloadStateRef {
             game_id: &meta.game_id,
             vo_lang: &meta.vo_lang,
@@ -513,7 +521,13 @@ fn make_state_saver(app: &AppHandle, state: &DownloadState) -> game_installer::S
             current_tag: &meta.current_tag,
             manifest_hash: &meta.manifest_hash,
             downloaded_chunks: chunks,
+            completed_files: &completed,
         };
+        let json = match serde_json::to_string(&snapshot) {
+            Ok(j) => j,
+            Err(_) => return,
+        };
+        drop(completed);
         let Some(path) = download_state_path(&app) else {
             return;
         };
@@ -527,7 +541,8 @@ fn make_state_saver(app: &AppHandle, state: &DownloadState) -> game_installer::S
             Ok(f) => f,
             Err(_) => return,
         };
-        if serde_json::to_writer(file, &snapshot).is_ok()
+        if std::io::Write::write_all(&mut &file, json.as_bytes()).is_ok()
+            && file.sync_all().is_ok()
             && let Err(e) = fs::rename(&tmp_path, &path)
         {
             let _ = fs::remove_file(&tmp_path);
@@ -586,13 +601,16 @@ pub async fn sophon_download_version(
         current_tag: None,
         manifest_hash,
         downloaded_chunks: HashMap::new(),
+        completed_files: HashSet::new(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let saver = make_state_saver(&app_handle, &state);
+    let completed_files: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(state.completed_files.clone()));
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
     let app_clone = app_handle.clone();
     let vo_langs: Vec<String> = vec![vo_lang.clone()];
     let result = game_installer::install(
@@ -612,6 +630,7 @@ pub async fn sophon_download_version(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
+            completed_files,
         },
         &game_id,
         &vo_langs,
@@ -687,13 +706,16 @@ pub async fn sophon_download(
         current_tag: None,
         manifest_hash,
         downloaded_chunks: HashMap::new(),
+        completed_files: HashSet::new(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let saver = make_state_saver(&app_handle, &state);
+    let completed_files: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(state.completed_files.clone()));
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
     let app_clone = app_handle.clone();
     let vo_langs: Vec<String> = vec![vo_lang.clone()];
     let result = game_installer::install(
@@ -713,6 +735,7 @@ pub async fn sophon_download(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
+            completed_files,
         },
         &game_id,
         &vo_langs,
@@ -797,13 +820,16 @@ pub async fn sophon_update(
         current_tag: Some(current_tag.clone()),
         manifest_hash,
         downloaded_chunks: HashMap::new(),
+        completed_files: HashSet::new(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let saver = make_state_saver(&app_handle, &state);
+    let completed_files: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(state.completed_files.clone()));
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
     let app_clone = app_handle.clone();
     let vo_langs: Vec<String> = vec![vo_lang.clone()];
     let result = game_installer::install(
@@ -823,6 +849,7 @@ pub async fn sophon_update(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
+            completed_files,
         },
         &game_id,
         &vo_langs,
@@ -900,13 +927,15 @@ pub async fn sophon_preinstall(
         current_tag,
         manifest_hash: tag.clone(),
         downloaded_chunks: HashMap::new(),
+        completed_files: HashSet::new(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let saver = make_state_saver(&app_handle, &state);
+    let completed_files: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
     let app_clone = app_handle.clone();
 
     let download_client = DownloadClient::new().0;
@@ -1022,8 +1051,11 @@ pub async fn sophon_resume_download(
             current_tag,
             manifest_hash: plan.tag.clone(),
             downloaded_chunks: prev_chunks.clone(),
+            completed_files: state.completed_files.clone(),
         };
-        let saver = make_state_saver(&app_handle, &resumed_state);
+        let completed_files: Arc<Mutex<HashSet<String>>> =
+            Arc::new(Mutex::new(resumed_state.completed_files.clone()));
+        let saver = make_state_saver(&app_handle, &resumed_state, Arc::clone(&completed_files));
 
         let handle = DownloadHandle::new();
         *active.0.lock().await = Some(handle.clone());
@@ -1106,8 +1138,11 @@ pub async fn sophon_resume_download(
         current_tag,
         manifest_hash,
         downloaded_chunks: resumed_chunks,
+        completed_files: state.completed_files.clone(),
     };
-    let saver = make_state_saver(&app_handle, &resumed_state);
+    let completed_files: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(resumed_state.completed_files.clone()));
+    let saver = make_state_saver(&app_handle, &resumed_state, Arc::clone(&completed_files));
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
@@ -1131,6 +1166,7 @@ pub async fn sophon_resume_download(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
+            completed_files,
         },
         &game_id,
         &vo_langs,
@@ -1487,6 +1523,7 @@ mod tests {
             current_tag: None,
             manifest_hash: "hash".into(),
             downloaded_chunks: HashMap::new(),
+            completed_files: HashSet::new(),
         };
         std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
 
