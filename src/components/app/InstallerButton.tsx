@@ -125,7 +125,17 @@ export const InstallerButton = () => {
 							await downloadUpdate(game, false);
 						}
 					} else {
-						await runGame(game);
+						if (updateAvailable) {
+							setDownloadType("update");
+							setDownloadingGame(game);
+							if (preinstallDownloaded) {
+								await applyUpdate(game);
+							} else {
+								await downloadUpdate(game, false);
+							}
+						} else {
+							await runGame(game);
+						}
 					}
 				}}
 			>
@@ -141,6 +151,10 @@ export const InstallerButton = () => {
 							? "Downloading..."
 							: "Download";
 					} else if (showUpdate) {
+						return downloadActive && isDownloadForActiveGame
+							? "Updating..."
+							: "Update";
+					} else if (updateAvailable) {
 						return downloadActive && isDownloadForActiveGame
 							? "Updating..."
 							: "Update";
