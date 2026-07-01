@@ -2061,6 +2061,9 @@ pub async fn verify_integrity(
         .flatten()
         .collect();
 
+    let failed_count = failed_verifications.len() as u64;
+    let mut reassembled: u64 = 0;
+
     // Phase 2: Re-download failed files sequentially (to avoid overwhelming the
     // network)
     for (asset, chunk_download, file_path) in failed_verifications {
@@ -2087,6 +2090,8 @@ pub async fn verify_integrity(
             emit(SophonProgress::Error {
                 message: format!("Failed to re-download {asset_name}: {err}"),
             });
+        } else {
+            reassembled += 1;
         }
 
         if last_emit.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS) {
@@ -2094,6 +2099,10 @@ pub async fn verify_integrity(
                 scanned_files: scanned_count.load(Ordering::Relaxed),
                 total_files,
                 error_count: error_count.load(Ordering::Relaxed),
+            });
+            emit(SophonProgress::Assembling {
+                assembled_files: reassembled,
+                total_files: failed_count,
             });
             last_emit = Instant::now();
         }
@@ -2103,6 +2112,10 @@ pub async fn verify_integrity(
         scanned_files: total_files,
         total_files,
         error_count: error_count.load(Ordering::Relaxed),
+    });
+    emit(SophonProgress::Assembling {
+        assembled_files: reassembled,
+        total_files: failed_count,
     });
 
     emit(SophonProgress::Finished);
