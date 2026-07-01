@@ -221,7 +221,9 @@ export const DownloadProgress = () => {
 				<div class="flex min-w-full flex-col gap-y-1 text-left">
 					<h2 class="ml-1 text-sm text-white">
 						{state.downloadTotal > 0
-							? `Downloaded ${derived.downloadedGB}GB of ${derived.totalGB}GB (${derived.downloadPct.toFixed(2)}%)${derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}${derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}`
+							? derived.downloadPct >= 100
+								? `Download finished - ${derived.totalGB}GB`
+								: `Downloaded ${derived.downloadedGB}GB of ${derived.totalGB}GB (${derived.downloadPct.toFixed(2)}%)${derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}${derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}`
 							: isFetchingManifest
 								? "Fetching manifest..."
 								: isCalculatingDownloads
