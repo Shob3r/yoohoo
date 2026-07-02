@@ -90,7 +90,7 @@ fn parse_content_range_start(range_str: &str) -> Option<u64> {
     start_str.parse().ok()
 }
 
-const HASH_BUF_SIZE: usize = 256 * 1024;
+const HASH_BUF_SIZE: usize = 128 * 1024;
 
 thread_local! {
     static HASH_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; HASH_BUF_SIZE]);

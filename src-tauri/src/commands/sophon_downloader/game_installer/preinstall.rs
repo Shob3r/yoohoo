@@ -833,9 +833,10 @@ pub async fn preinstall_download(
                     if matches!(err, SophonError::Cancelled) {
                         cancelled.store(1, Ordering::Relaxed);
                     } else if let Ok(mut guard) = first_error.lock()
-                        && guard.is_none() {
-                            *guard = Some(err);
-                        }
+                        && guard.is_none()
+                    {
+                        *guard = Some(err);
+                    }
                 }
             }
         });

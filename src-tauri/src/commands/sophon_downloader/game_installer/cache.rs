@@ -188,10 +188,12 @@ pub fn check_file_md5_with_cache_key(
     Ok(matches)
 }
 
-const CACHE_HASH_BUF_SIZE: usize = 2 * 1024 * 1024;
+/// Read buffer for hash verification on cached files. Lazily allocated to
+/// avoid a large TLS footprint across all worker threads.
+const CACHE_HASH_BUF_SIZE: usize = 256 * 1024;
 
 thread_local! {
-    static CACHE_HASH_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; CACHE_HASH_BUF_SIZE]);
+    static CACHE_HASH_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(CACHE_HASH_BUF_SIZE));
 }
 
 pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
