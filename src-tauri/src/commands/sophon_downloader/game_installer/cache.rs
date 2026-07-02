@@ -193,7 +193,7 @@ pub fn check_file_md5_with_cache_key(
 const CACHE_HASH_BUF_SIZE: usize = 256 * 1024;
 
 thread_local! {
-    static CACHE_HASH_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(CACHE_HASH_BUF_SIZE));
+    static CACHE_HASH_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
@@ -220,6 +220,9 @@ pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
 
     CACHE_HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
+        if buf.len() < CACHE_HASH_BUF_SIZE {
+            buf.resize(CACHE_HASH_BUF_SIZE, 0);
+        }
         let mut offset = 0u64;
         loop {
             let to_read = (len - offset).min(buf.len() as u64) as usize;
