@@ -207,7 +207,6 @@ export const DownloadProvider = ({
 						return {
 							...prev,
 							isAssembling: true,
-							isCheckingFiles: false,
 							isFetchingManifest: false,
 							assembledFiles: payload.assembledFiles,
 							totalFiles: payload.totalFiles,
