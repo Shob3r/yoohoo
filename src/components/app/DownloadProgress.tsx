@@ -225,7 +225,6 @@ export const DownloadProgress = () => {
 				state.downloadingGame !== null && (
 					<div class="flex min-w-full flex-col gap-y-1 text-left">
 						<h2 class="ml-1 text-sm text-white">Preparing...</h2>
-						<Progressbar progress={0} game={game} />
 					</div>
 				)}
 			{isCalculatingDownloads && state.totalFiles > 0 && (
