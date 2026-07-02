@@ -89,6 +89,7 @@ struct InstallContext {
     all_files: Arc<CompactManifest>,
     downloaded_bytes: Arc<AtomicU64>,
     assembled_files: Arc<AtomicU64>,
+    checked_files: Arc<AtomicU64>,
     total_bytes: u64,
     total_files: u64,
     resume_bytes_offset: Arc<AtomicU64>,
@@ -720,6 +721,7 @@ fn make_assembly_params(
         chunk_names: Arc::clone(ctx.chunk_names.get().unwrap()),
         verify_cache: Arc::clone(&ctx.verify_cache),
         assembled_files: Arc::clone(&ctx.assembled_files),
+        checked_files: Arc::clone(&ctx.checked_files),
         last_assembly_update: Arc::clone(&ctx.last_assembly_update),
         total_files: ctx.total_files,
         profiler: Arc::clone(&ctx.profiler),
@@ -818,6 +820,10 @@ fn spawn_assembly_coordinator(
                     Ok((file_idx, tmp_dir_idx)) => {
                         if first_file {
                             first_file = false;
+                            (ctx.updater)(SophonProgress::CheckingFiles {
+                                checked_files: 0,
+                                total_files,
+                            });
                             (ctx.updater)(SophonProgress::Assembling {
                                 assembled_files: 0,
                                 total_files,
@@ -846,6 +852,10 @@ fn spawn_assembly_coordinator(
                         };
                         if first_file {
                             first_file = false;
+                            (ctx.updater)(SophonProgress::CheckingFiles {
+                                checked_files: 0,
+                                total_files,
+                            });
                             (ctx.updater)(SophonProgress::Assembling {
                                 assembled_files: 0,
                                 total_files,
@@ -880,6 +890,10 @@ fn spawn_assembly_coordinator(
                         };
                         if first_file {
                             first_file = false;
+                            (ctx.updater)(SophonProgress::CheckingFiles {
+                                checked_files: 0,
+                                total_files,
+                            });
                             (ctx.updater)(SophonProgress::Assembling {
                                 assembled_files: 0,
                                 total_files,
@@ -1816,6 +1830,7 @@ pub async fn install(
         all_files: Arc::clone(&all_files),
         downloaded_bytes: Arc::new(AtomicU64::new(0)),
         assembled_files: Arc::new(AtomicU64::new(pre_assembled)),
+        checked_files: Arc::new(AtomicU64::new(pre_assembled)),
         total_bytes: total_compressed,
         total_files,
         resume_bytes_offset: Arc::new(AtomicU64::new(resume_bytes_offset)),
@@ -2350,6 +2365,7 @@ fn reassemble_single_asset(
         &chunk_lookup,
         &chunk_refcounts,
         verify_cache,
+        true,
     );
     let _ = fs::remove_dir_all(&tmp_dir);
     result
@@ -2772,6 +2788,7 @@ mod tests {
             all_files: Arc::new(CompactManifest::from(vec![])),
             downloaded_bytes: Arc::new(AtomicU64::new(0)),
             assembled_files: Arc::new(AtomicU64::new(0)),
+            checked_files: Arc::new(AtomicU64::new(0)),
             total_bytes: 0,
             total_files: 0,
             resume_bytes_offset: Arc::new(AtomicU64::new(0)),
@@ -2872,6 +2889,7 @@ mod tests {
             all_files: Arc::new(CompactManifest::from(vec![])),
             downloaded_bytes: Arc::new(AtomicU64::new(0)),
             assembled_files: Arc::new(AtomicU64::new(0)),
+            checked_files: Arc::new(AtomicU64::new(0)),
             total_bytes: 0,
             total_files: 0,
             resume_bytes_offset: Arc::new(AtomicU64::new(0)),

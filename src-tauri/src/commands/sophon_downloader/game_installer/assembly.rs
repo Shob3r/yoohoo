@@ -150,6 +150,7 @@ pub fn assemble_file(
     chunk_lookup: &ChunkNameLookup,
     chunk_refcounts: &[AtomicUsize],
     verify_cache: &DashMap<String, VerificationEntry>,
+    skip_md5_check: bool,
 ) -> SophonResult<()> {
     let file_name = all_files.file_name(file_idx);
     let file_size = all_files.file_size(file_idx);
@@ -169,7 +170,7 @@ pub fn assemble_file(
     file_name.hash(&mut hasher);
     let tmp_path = temp_dir.join(format!("{:016x}.tmp", hasher.finish()));
 
-    if target_path.exists() {
+    if !skip_md5_check && target_path.exists() {
         let already_valid = super::cache::check_file_md5_cached(
             &target_path,
             file_size,
@@ -580,6 +581,7 @@ pub struct AssemblyTaskParams {
     pub chunk_names: Arc<ChunkNameLookup>,
     pub verify_cache: Arc<DashMap<String, VerificationEntry>>,
     pub assembled_files: Arc<AtomicU64>,
+    pub checked_files: Arc<AtomicU64>,
     pub last_assembly_update: Arc<Mutex<Instant>>,
     pub total_files: u64,
     pub profiler: Arc<super::profiling::PipelineProfiler>,
@@ -601,6 +603,7 @@ pub fn run_assembly_task(
         chunk_names,
         verify_cache,
         assembled_files,
+        checked_files,
         last_assembly_update,
         total_files,
         profiler,
@@ -624,15 +627,11 @@ pub fn run_assembly_task(
 
     let tmp_dir = &all_tmp_dirs[tmp_dir_idx];
     let file_name = all_files.file_name(file_idx).to_string();
+    let chunk_range = all_files.file_chunk_range(file_idx);
 
     {
         let cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
         if cf.contains(file_name.as_str()) {
-            log::debug!(
-                "run_assembly_task: skipping already-completed file '{name}'",
-                name = file_name
-            );
-            let chunk_range = all_files.file_chunk_range(file_idx);
             for ci in chunk_range.start..chunk_range.end {
                 decrement_chunk_refcount(
                     all_files.chunk(ci as usize).chunk_name,
@@ -641,11 +640,16 @@ pub fn run_assembly_task(
                     &chunks_dir,
                 );
             }
+            let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
             let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
             {
                 if let Ok(mut lu) = last_assembly_update.try_lock()
                     && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
                 {
+                    updater(SophonProgress::CheckingFiles {
+                        checked_files: checked,
+                        total_files,
+                    });
                     updater(SophonProgress::Assembling {
                         assembled_files: count,
                         total_files,
@@ -658,6 +662,68 @@ pub fn run_assembly_task(
         }
     }
 
+    let file_size = all_files.file_size(file_idx);
+    let file_hash_md5 = all_files.file_hash_md5(file_idx);
+    let target_path = game_dir.join(file_name.as_str());
+    let needs_assembly = if target_path.exists() {
+        let valid = super::cache::check_file_md5_cached(
+            &target_path,
+            file_size,
+            file_hash_md5,
+            &game_dir,
+            &verify_cache,
+        )?;
+        if valid {
+            for ci in chunk_range.start..chunk_range.end {
+                decrement_chunk_refcount(
+                    all_files.chunk(ci as usize).chunk_name,
+                    &chunk_names,
+                    &chunk_refcounts,
+                    &chunks_dir,
+                );
+            }
+            false
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
+    {
+        if let Ok(mut lu) = last_assembly_update.try_lock()
+            && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
+        {
+            updater(SophonProgress::CheckingFiles {
+                checked_files: checked,
+                total_files,
+            });
+            *lu = Instant::now();
+        }
+    }
+
+    if !needs_assembly {
+        let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
+            cf.insert(file_name.clone());
+        }
+        {
+            if let Ok(mut lu) = last_assembly_update.try_lock()
+                && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
+            {
+                updater(SophonProgress::Assembling {
+                    assembled_files: count,
+                    total_files,
+                });
+                *lu = Instant::now();
+            }
+        }
+        _assembly_timer.finish();
+        return Ok(());
+    }
+
     assemble_file(
         &all_files,
         file_idx,
@@ -667,6 +733,7 @@ pub fn run_assembly_task(
         &chunk_names,
         &chunk_refcounts,
         &verify_cache,
+        true,
     )
     .map_err(|err| SophonError::AssemblyFailed {
         file: file_name.clone(),
@@ -747,6 +814,7 @@ mod tests {
             chunk_lookup,
             chunk_refcounts,
             verify_cache,
+            false,
         )
     }
 
@@ -1129,6 +1197,7 @@ mod tests {
             ))),
             verify_cache: Arc::new(DashMap::new()),
             assembled_files: Arc::new(AtomicU64::new(0)),
+            checked_files: Arc::new(AtomicU64::new(0)),
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 0,
             profiler: Arc::new(PipelineProfiler::new()),
@@ -1273,6 +1342,7 @@ mod tests {
             ))),
             verify_cache: Arc::new(DashMap::new()),
             assembled_files: Arc::new(AtomicU64::new(0)),
+            checked_files: Arc::new(AtomicU64::new(0)),
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 1,
             profiler: Arc::new(PipelineProfiler::new()),

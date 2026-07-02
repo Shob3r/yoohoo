@@ -15,6 +15,7 @@ export interface DownloadState {
 	isPaused: boolean;
 	isDownloading: boolean;
 	isAssembling: boolean;
+	isCheckingFiles: boolean;
 	isVerifying: boolean;
 	isFetchingManifest: boolean;
 	isCalculatingDownloads: boolean;
@@ -58,6 +59,7 @@ const initialState: DownloadState = {
 	isPaused: false,
 	isDownloading: false,
 	isAssembling: false,
+	isCheckingFiles: false,
 	isVerifying: false,
 	isFetchingManifest: false,
 	isCalculatingDownloads: false,
@@ -149,6 +151,7 @@ export const DownloadProvider = ({
 							isPaused: false,
 							isDownloading: false,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isError: false,
 							isFinished: false,
@@ -167,6 +170,7 @@ export const DownloadProvider = ({
 							isPaused: false,
 							isDownloading: false,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isError: false,
 							isFinished: false,
@@ -203,8 +207,17 @@ export const DownloadProvider = ({
 						return {
 							...prev,
 							isAssembling: true,
+							isCheckingFiles: false,
 							isFetchingManifest: false,
 							assembledFiles: payload.assembledFiles,
+							totalFiles: payload.totalFiles,
+						};
+					case "checkingFiles":
+						return {
+							...prev,
+							isCheckingFiles: true,
+							isFetchingManifest: false,
+							checkedFiles: payload.checkedFiles,
 							totalFiles: payload.totalFiles,
 						};
 					case "verifying":
@@ -224,12 +237,14 @@ export const DownloadProvider = ({
 					case "warning":
 						return {
 							...prev,
+							isCheckingFiles: false,
 							warningMessage: payload.message,
 						};
 					case "error":
 						return {
 							...prev,
 							isError: true,
+							isCheckingFiles: false,
 							isPaused: false,
 							isDownloading: false,
 							isAssembling: false,
@@ -244,6 +259,7 @@ export const DownloadProvider = ({
 							isInstallingPlugins: true,
 							isDownloading: false,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isFetchingManifest: false,
 							pluginName: payload.currentPlugin,
@@ -255,6 +271,7 @@ export const DownloadProvider = ({
 							isInstallingPlugins: true,
 							isDownloading: true,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isFetchingManifest: false,
 							pluginName: payload.name,
@@ -268,6 +285,7 @@ export const DownloadProvider = ({
 							isApplyingPreinstall: true,
 							isDownloading: false,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isFetchingManifest: false,
 							isPaused: false,

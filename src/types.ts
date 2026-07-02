@@ -228,6 +228,7 @@ export type SophonProgress =
 	  }
 	| { type: "paused"; downloadedBytes: number; totalBytes: number }
 	| { type: "assembling"; assembledFiles: number; totalFiles: number }
+	| { type: "checkingFiles"; checkedFiles: number; totalFiles: number }
 	| {
 			type: "verifying";
 			scannedFiles: number;

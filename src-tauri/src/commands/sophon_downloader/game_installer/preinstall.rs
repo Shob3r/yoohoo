@@ -2280,6 +2280,7 @@ async fn apply_download_over(
                 &chunk_lookup,
                 &chunk_refcounts,
                 &vc,
+                false,
             );
             if let Err(err) = fs::remove_dir_all(&tmp_dir) {
                 log::warn!(

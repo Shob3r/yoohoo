@@ -22,6 +22,7 @@ export const DownloadProgress = () => {
 		isPaused,
 		isDownloading,
 		isAssembling,
+		isCheckingFiles,
 		isVerifying,
 		isFetchingManifest,
 		isCalculatingDownloads,
@@ -34,6 +35,7 @@ export const DownloadProgress = () => {
 	const isActive =
 		isDownloading ||
 		isAssembling ||
+		isCheckingFiles ||
 		isVerifying ||
 		isFetchingManifest ||
 		isCalculatingDownloads ||
@@ -101,9 +103,12 @@ export const DownloadProgress = () => {
 			state.totalFiles > 0
 				? (state.assembledFiles / state.totalFiles) * 100
 				: 0;
+		const checkingPct =
+			state.totalFiles > 0 ? (state.checkedFiles / state.totalFiles) * 100 : 0;
 		return {
 			downloadPct,
 			assemblePct,
+			checkingPct,
 			speedMB,
 			etaStr,
 			downloadedGB,
@@ -133,25 +138,27 @@ export const DownloadProgress = () => {
 				? "Setting Up Environment..."
 				: isVerifying
 					? "Verifying Files..."
-					: isCalculatingDownloads
-						? "Calculating File Downloads..."
-						: isFetchingManifest
-							? "Fetching Manifest..."
-							: isDownloading
-								? state.downloadType === "update"
-									? `Updating ${variantToGameName[state.downloadingGame!]}...`
-									: state.downloadType === "preinstall"
-										? `Pre-downloading ${variantToGameName[state.downloadingGame!]}...`
-										: `Downloading ${variantToGameName[state.downloadingGame!]}...`
-								: isAssembling
-									? "Assembling files..."
-									: state.downloadingGame !== null
-										? state.downloadType === "update"
-											? `Updating ${variantToGameName[state.downloadingGame]}...`
-											: state.downloadType === "preinstall"
-												? `Pre-downloading ${variantToGameName[state.downloadingGame]}...`
-												: `Downloading ${variantToGameName[state.downloadingGame]}...`
-										: "Downloading...";
+					: isCheckingFiles
+						? "Verifying Files..."
+						: isCalculatingDownloads
+							? "Calculating File Downloads..."
+							: isFetchingManifest
+								? "Fetching Manifest..."
+								: isDownloading
+									? state.downloadType === "update"
+										? `Updating ${variantToGameName[state.downloadingGame!]}...`
+										: state.downloadType === "preinstall"
+											? `Pre-downloading ${variantToGameName[state.downloadingGame!]}...`
+											: `Downloading ${variantToGameName[state.downloadingGame!]}...`
+									: isAssembling
+										? "Assembling files..."
+										: state.downloadingGame !== null
+											? state.downloadType === "update"
+												? `Updating ${variantToGameName[state.downloadingGame]}...`
+												: state.downloadType === "preinstall"
+													? `Pre-downloading ${variantToGameName[state.downloadingGame]}...`
+													: `Downloading ${variantToGameName[state.downloadingGame]}...`
+											: "Downloading...";
 
 	const canPause = (isDownloading || isPaused) && !isVerifying;
 
@@ -159,9 +166,12 @@ export const DownloadProgress = () => {
 		isDownloading ||
 		isPaused ||
 		isVerifying ||
+		isCheckingFiles ||
 		(isAssembling && !isDownloading && !isPaused);
 	const downloadBarFinished =
-		!isDownloading && !isPaused && (isVerifying || isAssembling);
+		!isDownloading &&
+		!isPaused &&
+		(isVerifying || isCheckingFiles || isAssembling);
 	const downloadBarPct = downloadBarFinished ? 100 : derived.downloadPct;
 
 	return (
@@ -206,6 +216,7 @@ export const DownloadProgress = () => {
 			{!isDownloading &&
 				!isPaused &&
 				!isAssembling &&
+				!isCheckingFiles &&
 				!isVerifying &&
 				!isCalculatingDownloads &&
 				!isSettingUpProton &&
@@ -253,6 +264,16 @@ export const DownloadProgress = () => {
 						{derived.assemblePct.toFixed(2)}%)
 					</h2>
 					<Progressbar progress={derived.assemblePct} game={game} />
+				</div>
+			)}
+			{isCheckingFiles && state.totalFiles > 0 && (
+				<div class="flex min-w-full flex-col gap-y-1 text-left">
+					<h2 class="ml-1 text-sm text-white">
+						Verified {formatNumber(state.checkedFiles)} of{" "}
+						{formatNumber(state.totalFiles)} files (
+						{derived.checkingPct.toFixed(2)}%)
+					</h2>
+					<Progressbar progress={derived.checkingPct} game={game} />
 				</div>
 			)}
 			{isVerifying && (

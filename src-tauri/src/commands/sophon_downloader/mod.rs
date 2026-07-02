@@ -282,6 +282,12 @@ pub enum SophonProgress {
         assembled_files: u64,
         total_files: u64,
     },
+    /// Files are being verified before assembly.
+    #[serde(rename_all = "camelCase")]
+    CheckingFiles {
+        checked_files: u64,
+        total_files: u64,
+    },
     /// Files are being verified for integrity.
     #[serde(rename_all = "camelCase")]
     Verifying {
