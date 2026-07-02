@@ -1242,12 +1242,14 @@ async fn run_downloads(
     handle: DownloadHandle,
 ) -> DownloadSummary {
     const WORKER_COUNT: usize = super::DOWNLOAD_CONCURRENCY;
+    const RECLAIM_INTERVAL: usize = 100;
     let cancelled = Arc::new(AtomicU8::new(0));
     let first_error: Arc<Mutex<Option<SophonError>>> = Arc::new(Mutex::new(None));
     let total: usize = download_items.len();
     let queue: Arc<Mutex<VecDeque<(usize, DownloadItem)>>> =
         Arc::new(Mutex::new(download_items.into_iter().enumerate().collect()));
     let remaining: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(total));
+    let reclaim_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     let mut workers = tokio::task::JoinSet::new();
 
     ctx.profiler.total_chunks.store(total, Ordering::Relaxed);
@@ -1262,6 +1264,7 @@ async fn run_downloads(
         let cancelled = Arc::clone(&cancelled);
         let first_error = Arc::clone(&first_error);
         let remaining = Arc::clone(&remaining);
+        let reclaim_count = Arc::clone(&reclaim_count);
 
         workers.spawn(async move {
             loop {
@@ -1298,6 +1301,10 @@ async fn run_downloads(
                     {
                         *guard = Some(err);
                     }
+                }
+                let processed = reclaim_count.fetch_add(1, Ordering::Relaxed) + 1;
+                if processed.is_multiple_of(RECLAIM_INTERVAL) {
+                    super::reclaim_memory();
                 }
                 if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
                     break;
