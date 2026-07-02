@@ -1352,6 +1352,18 @@ async fn finalize_install(
     assembly_task.await??;
 
     {
+        let total = ctx.total_files;
+        (ctx.updater)(SophonProgress::CheckingFiles {
+            checked_files: total,
+            total_files: total,
+        });
+        (ctx.updater)(SophonProgress::Assembling {
+            assembled_files: total,
+            total_files: total,
+        });
+    }
+
+    {
         let assembled = ctx.assembled_files.load(Ordering::Relaxed);
         let total = ctx.total_files;
         if assembled != total {
@@ -1943,6 +1955,21 @@ pub async fn install(
         options.handle,
     )
     .await;
+
+    {
+        let total = ctx.total_bytes;
+        let downloaded = ctx.downloaded_bytes.load(Ordering::Relaxed);
+        (ctx.updater)(SophonProgress::Downloading {
+            downloaded_bytes: if downloaded > total {
+                total
+            } else {
+                downloaded
+            },
+            total_bytes: total,
+            speed_bps: 0.0,
+            eta_seconds: 0.0,
+        });
+    }
 
     super::reclaim_memory();
 

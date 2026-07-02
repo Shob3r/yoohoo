@@ -642,20 +642,28 @@ pub fn run_assembly_task(
             }
             let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
             let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+            let force = checked == total_files || count == total_files;
+            if force {
+                updater(SophonProgress::CheckingFiles {
+                    checked_files: checked,
+                    total_files,
+                });
+                updater(SophonProgress::Assembling {
+                    assembled_files: count,
+                    total_files,
+                });
+            } else if let Ok(mut lu) = last_assembly_update.try_lock()
+                && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
             {
-                if let Ok(mut lu) = last_assembly_update.try_lock()
-                    && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
-                {
-                    updater(SophonProgress::CheckingFiles {
-                        checked_files: checked,
-                        total_files,
-                    });
-                    updater(SophonProgress::Assembling {
-                        assembled_files: count,
-                        total_files,
-                    });
-                    *lu = Instant::now();
-                }
+                updater(SophonProgress::CheckingFiles {
+                    checked_files: checked,
+                    total_files,
+                });
+                updater(SophonProgress::Assembling {
+                    assembled_files: count,
+                    total_files,
+                });
+                *lu = Instant::now();
             }
             _assembly_timer.finish();
             return Ok(());
@@ -697,16 +705,20 @@ pub fn run_assembly_task(
     };
 
     let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
+    let force = checked == total_files;
+    if force {
+        updater(SophonProgress::CheckingFiles {
+            checked_files: checked,
+            total_files,
+        });
+    } else if let Ok(mut lu) = last_assembly_update.try_lock()
+        && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
     {
-        if let Ok(mut lu) = last_assembly_update.try_lock()
-            && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
-        {
-            updater(SophonProgress::CheckingFiles {
-                checked_files: checked,
-                total_files,
-            });
-            *lu = Instant::now();
-        }
+        updater(SophonProgress::CheckingFiles {
+            checked_files: checked,
+            total_files,
+        });
+        *lu = Instant::now();
     }
 
     if !needs_assembly {
@@ -715,16 +727,20 @@ pub fn run_assembly_task(
             let mut cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
             cf.insert(file_name.clone());
         }
+        let force = count == total_files;
+        if force {
+            updater(SophonProgress::Assembling {
+                assembled_files: count,
+                total_files,
+            });
+        } else if let Ok(mut lu) = last_assembly_update.try_lock()
+            && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
         {
-            if let Ok(mut lu) = last_assembly_update.try_lock()
-                && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
-            {
-                updater(SophonProgress::Assembling {
-                    assembled_files: count,
-                    total_files,
-                });
-                *lu = Instant::now();
-            }
+            updater(SophonProgress::Assembling {
+                assembled_files: count,
+                total_files,
+            });
+            *lu = Instant::now();
         }
         _assembly_timer.finish();
         return Ok(());
@@ -753,16 +769,20 @@ pub fn run_assembly_task(
         cf.insert(file_name.clone());
     }
 
+    let force = count == total_files;
+    if force {
+        updater(SophonProgress::Assembling {
+            assembled_files: count,
+            total_files,
+        });
+    } else if let Ok(mut lu) = last_assembly_update.try_lock()
+        && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
     {
-        if let Ok(mut lu) = last_assembly_update.try_lock()
-            && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
-        {
-            updater(SophonProgress::Assembling {
-                assembled_files: count,
-                total_files,
-            });
-            *lu = Instant::now();
-        }
+        updater(SophonProgress::Assembling {
+            assembled_files: count,
+            total_files,
+        });
+        *lu = Instant::now();
     }
 
     _assembly_timer.finish();
