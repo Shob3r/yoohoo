@@ -206,7 +206,7 @@ pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
                 file.as_raw_fd(),
                 0,
                 len as libc::off_t,
-                libc::POSIX_FADV_SEQUENTIAL | libc::POSIX_FADV_WILLNEED,
+                libc::POSIX_FADV_SEQUENTIAL,
             );
         }
     }
