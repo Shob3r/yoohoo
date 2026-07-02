@@ -803,17 +803,26 @@ fn spawn_assembly_coordinator(
     ctx.adaptive_assembly
         .spawn_adjuster(assembly_cancel.clone());
     let task_cancel = assembly_cancel;
+    let total_files = ctx.total_files;
 
     let handle = tokio::spawn(async move {
         let mut rx = assemble_rx;
         let cancel = task_cancel;
         let mut join_set = tokio::task::JoinSet::new();
+        let mut first_file = true;
 
         loop {
             let max_concurrency = ctx.adaptive_assembly.current_target();
             while join_set.len() < max_concurrency {
                 match rx.try_recv() {
                     Ok((file_idx, tmp_dir_idx)) => {
+                        if first_file {
+                            first_file = false;
+                            (ctx.updater)(SophonProgress::Assembling {
+                                assembled_files: 0,
+                                total_files,
+                            });
+                        }
                         let params = make_assembly_params(&ctx, file_idx, tmp_dir_idx);
                         let updater = Arc::clone(&ctx.updater);
                         join_set.spawn(spawn_assembly_task(params, move |p| updater(p)));
@@ -835,6 +844,13 @@ fn spawn_assembly_coordinator(
                         let Some((file_idx, tmp_dir_idx)) = msg else {
                             return drain_join_set(&mut join_set).await;
                         };
+                        if first_file {
+                            first_file = false;
+                            (ctx.updater)(SophonProgress::Assembling {
+                                assembled_files: 0,
+                                total_files,
+                            });
+                        }
                         let params = make_assembly_params(&ctx, file_idx, tmp_dir_idx);
                         let updater = Arc::clone(&ctx.updater);
                         join_set.spawn(spawn_assembly_task(params, move |p| updater(p)));
@@ -862,6 +878,13 @@ fn spawn_assembly_coordinator(
                         let Some((file_idx, tmp_dir_idx)) = msg else {
                             return drain_join_set(&mut join_set).await;
                         };
+                        if first_file {
+                            first_file = false;
+                            (ctx.updater)(SophonProgress::Assembling {
+                                assembled_files: 0,
+                                total_files,
+                            });
+                        }
                         let params = make_assembly_params(&ctx, file_idx, tmp_dir_idx);
                         let updater = Arc::clone(&ctx.updater);
                         join_set.spawn(spawn_assembly_task(params, move |p| updater(p)));
