@@ -128,6 +128,23 @@ export const DownloadProgress = () => {
 		state.checkedFiles,
 	]);
 
+	const downloadComplete =
+		state.downloadTotal > 0 && state.downloadedBytes >= state.downloadTotal;
+	const verificationComplete =
+		state.totalFiles > 0 && state.checkedFiles >= state.totalFiles;
+	const assemblyComplete =
+		state.totalFiles > 0 && state.assembledFiles >= state.totalFiles;
+
+	const downloadInProgress = isDownloading && !downloadComplete;
+	const verifyingInProgress =
+		(isCheckingFiles && !verificationComplete) ||
+		(isVerifying && state.scannedFiles < state.totalFiles);
+	const assemblingInProgress = isAssembling && !assemblyComplete;
+
+	const gameName = state.downloadingGame
+		? variantToGameName[state.downloadingGame]
+		: "";
+
 	const titleText = isApplyingPreinstall
 		? "Applying Preinstall..."
 		: isPaused
@@ -136,29 +153,23 @@ export const DownloadProgress = () => {
 				: "Download Paused"
 			: isSettingUpProton
 				? "Setting Up Environment..."
-				: isVerifying
-					? "Verifying Files..."
-					: isCheckingFiles
-						? "Verifying Files..."
-						: isCalculatingDownloads
-							? "Calculating File Downloads..."
-							: isFetchingManifest
-								? "Fetching Manifest..."
-								: isDownloading
-									? state.downloadType === "update"
-										? `Updating ${variantToGameName[state.downloadingGame!]}...`
-										: state.downloadType === "preinstall"
-											? `Pre-downloading ${variantToGameName[state.downloadingGame!]}...`
-											: `Downloading ${variantToGameName[state.downloadingGame!]}...`
-									: isAssembling
-										? "Assembling files..."
-										: state.downloadingGame !== null
-											? state.downloadType === "update"
-												? `Updating ${variantToGameName[state.downloadingGame]}...`
-												: state.downloadType === "preinstall"
-													? `Pre-downloading ${variantToGameName[state.downloadingGame]}...`
-													: `Downloading ${variantToGameName[state.downloadingGame]}...`
-											: "Downloading...";
+				: downloadInProgress
+					? state.downloadType === "update"
+						? `Downloading update for ${gameName}`
+						: state.downloadType === "preinstall"
+							? `Downloading preinstall for ${gameName}`
+							: `Downloading ${gameName}`
+					: verifyingInProgress
+						? `Verifying files for ${gameName}`
+						: assemblingInProgress
+							? `Assembling chunks ${gameName}`
+							: state.downloadingGame !== null
+								? state.downloadType === "update"
+									? `Updating ${gameName}...`
+									: state.downloadType === "preinstall"
+										? `Pre-downloading ${gameName}...`
+										: `Downloading ${gameName}...`
+								: "Downloading...";
 
 	const canPause = (isDownloading || isPaused) && !isVerifying;
 
