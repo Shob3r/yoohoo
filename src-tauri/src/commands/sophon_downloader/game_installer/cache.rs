@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use std::os::unix::fs::FileExt;
+use std::os::unix::io::AsRawFd;
 
 use dashmap::DashMap;
 use md5::{Digest, Md5};
@@ -185,7 +186,7 @@ pub fn check_file_md5_with_cache_key(
     Ok(matches)
 }
 
-const CACHE_HASH_BUF_SIZE: usize = 256 * 1024;
+const CACHE_HASH_BUF_SIZE: usize = 1024 * 1024;
 
 thread_local! {
     static CACHE_HASH_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; CACHE_HASH_BUF_SIZE]);
@@ -198,6 +199,18 @@ pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
         let mut hasher = Md5::new();
         hasher.update(b"");
         return Ok(hex::encode(hasher.finalize()));
+    }
+    #[cfg(unix)]
+    {
+        use libc::POSIX_FADV_SEQUENTIAL;
+        unsafe {
+            libc::posix_fadvise(
+                file.as_raw_fd(),
+                0,
+                len as libc::off_t,
+                POSIX_FADV_SEQUENTIAL,
+            );
+        }
     }
     let mut hasher = Md5::new();
     CACHE_HASH_BUF.with(|cell| {

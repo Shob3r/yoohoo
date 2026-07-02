@@ -666,14 +666,20 @@ pub fn run_assembly_task(
     let file_hash_md5 = all_files.file_hash_md5(file_idx);
     let target_path = game_dir.join(file_name.as_str());
     let needs_assembly = if target_path.exists() {
-        let valid = super::cache::check_file_md5_cached(
-            &target_path,
-            file_size,
-            file_hash_md5,
-            &game_dir,
-            &verify_cache,
-        )?;
-        if valid {
+        let metadata = match target_path.metadata() {
+            Ok(m) => m,
+            Err(_) => {
+                return Err(SophonError::Io(std::io::Error::other(
+                    "failed to get file metadata",
+                )));
+            }
+        };
+        if metadata.len() != file_size {
+            true
+        } else if let Some(entry) = verify_cache.get(&target_path.display().to_string())
+            && entry.size == file_size
+            && entry.md5 == file_hash_md5
+        {
             for ci in chunk_range.start..chunk_range.end {
                 decrement_chunk_refcount(
                     all_files.chunk(ci as usize).chunk_name,
