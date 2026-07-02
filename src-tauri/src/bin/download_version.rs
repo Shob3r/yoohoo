@@ -3,10 +3,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use elysiae_lib::commands::sophon_downloader::SophonProgress;
-use elysiae_lib::commands::sophon_downloader::game_installer::{
-    self, DownloadHandle, InstallCallbacks, InstallOptions, ResumeContext,
-};
+use elysiae_lib::commands::sophon_downloader::game_installer::{self, DownloadHandle};
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Builder;
 
 #[derive(Serialize, Deserialize)]
 struct SavedState {
@@ -71,8 +70,17 @@ fn progress(p: SophonProgress) {
     eprintln!("\r{msg}\x1b[K");
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(32)
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     let game_id = "hk4e";
     let vo_lang = "en";
     let tag = std::env::args().nth(1).unwrap_or_else(|| "6.6.0".into());
@@ -143,9 +151,10 @@ async fn main() {
         };
         let tmp = sf_clone.with_extension("json.tmp");
         if let Ok(json) = serde_json::to_string(&state)
-            && std::fs::write(&tmp, &json).is_ok() {
-                let _ = std::fs::rename(&tmp, &sf_clone);
-            }
+            && std::fs::write(&tmp, &json).is_ok()
+        {
+            let _ = std::fs::rename(&tmp, &sf_clone);
+        }
     });
 
     let result = game_installer::install(

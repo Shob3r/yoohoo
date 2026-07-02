@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use elysiae_lib::commands::sophon_downloader::SophonProgress;
 use elysiae_lib::commands::sophon_downloader::game_installer;
+use tokio::runtime::Builder;
 
 fn progress(p: SophonProgress) {
     let msg = match &p {
@@ -43,8 +44,17 @@ fn progress(p: SophonProgress) {
     eprintln!("\r{msg}\x1b[K");
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(32)
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     let game_id = "hk4e";
     let vo_lang = "en";
     let home = std::env::var("HOME").expect("HOME");

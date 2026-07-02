@@ -14,29 +14,21 @@ use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
 use crate::commands::sophon_downloader::api_scrape::DownloadInfo;
 
-/// Wrapper around `BufWriter<tokio::fs::File>` that tracks the file path
-/// for potential post-close page cache eviction. The Drop impl no longer
-/// calls posix_fadvise(DONTNEED) because it can discard dirty pages before
-/// writeback completes on some kernel versions, producing truncated files.
+/// Buffered writer over a tokio file handle, sized to
+/// `CHUNK_WRITE_BUFFER_SIZE`.
 pub(crate) struct EvictingWriter {
     inner: BufWriter<tokio::fs::File>,
-    path: std::path::PathBuf,
 }
 
 impl EvictingWriter {
-    pub(crate) fn new(file: tokio::fs::File, path: std::path::PathBuf) -> Self {
+    pub(crate) fn new(file: tokio::fs::File) -> Self {
         Self {
             inner: BufWriter::with_capacity(CHUNK_WRITE_BUFFER_SIZE, file),
-            path,
         }
     }
 
-    pub(crate) fn with_offset(
-        file: tokio::fs::File,
-        path: std::path::PathBuf,
-        _offset: u64,
-    ) -> Self {
-        Self::new(file, path)
+    pub(crate) fn with_offset(file: tokio::fs::File, _offset: u64) -> Self {
+        Self::new(file)
     }
 
     pub(crate) async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
@@ -45,12 +37,6 @@ impl EvictingWriter {
 
     pub(crate) async fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush().await
-    }
-}
-
-impl Drop for EvictingWriter {
-    fn drop(&mut self) {
-        let _ = &self.path;
     }
 }
 
@@ -336,7 +322,7 @@ async fn download_full_file_with_response(
     check_available_space(dest, chunk.chunk_size)?;
 
     let file = tokio::fs::File::create(dest).await?;
-    let mut file = EvictingWriter::new(file, dest.to_path_buf());
+    let mut file = EvictingWriter::new(file);
     let mut stream = resp.bytes_stream();
     let mut hasher = Md5::new();
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> =
@@ -511,7 +497,7 @@ async fn download_with_resume(
         .append(true)
         .open(dest)
         .await?;
-    let mut file = EvictingWriter::with_offset(file, dest.to_path_buf(), existing_size);
+    let mut file = EvictingWriter::with_offset(file, existing_size);
     let mut stream = resp.bytes_stream();
     let mut total_len = existing_size;
 
