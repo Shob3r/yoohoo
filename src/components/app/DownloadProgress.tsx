@@ -256,16 +256,18 @@ export const DownloadProgress = () => {
 					<Progressbar progress={downloadBarPct} game={game} />
 				</div>
 			)}
-			{isAssembling && state.totalFiles > 0 && (
-				<div class="flex min-w-full flex-col gap-y-1 text-left">
-					<h2 class="ml-1 text-sm text-white">
-						Assembled {formatNumber(state.assembledFiles)} of{" "}
-						{formatNumber(state.totalFiles)} chunks (
-						{derived.assemblePct.toFixed(2)}%)
-					</h2>
-					<Progressbar progress={derived.assemblePct} game={game} />
-				</div>
-			)}
+			{isAssembling &&
+				state.totalFiles > 0 &&
+				state.checkedFiles >= state.totalFiles && (
+					<div class="flex min-w-full flex-col gap-y-1 text-left">
+						<h2 class="ml-1 text-sm text-white">
+							Assembled {formatNumber(state.assembledFiles)} of{" "}
+							{formatNumber(state.totalFiles)} chunks (
+							{derived.assemblePct.toFixed(2)}%)
+						</h2>
+						<Progressbar progress={derived.assemblePct} game={game} />
+					</div>
+				)}
 			{isCheckingFiles && state.totalFiles > 0 && (
 				<div class="flex min-w-full flex-col gap-y-1 text-left">
 					<h2 class="ml-1 text-sm text-white">
