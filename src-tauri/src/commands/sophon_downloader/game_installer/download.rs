@@ -79,7 +79,13 @@ fn parse_content_range_start(range_str: &str) -> Option<u64> {
 const HASH_BUF_SIZE: usize = 128 * 1024;
 
 thread_local! {
-    static HASH_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; HASH_BUF_SIZE]);
+    static HASH_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn ensure_hash_buf(buf: &mut Vec<u8>) {
+    if buf.len() < HASH_BUF_SIZE {
+        buf.resize(HASH_BUF_SIZE, 0);
+    }
 }
 
 fn pread_hash_slice(path: &Path, max_bytes: u64, f: &mut dyn FnMut(&[u8])) -> SophonResult<()> {
@@ -89,6 +95,7 @@ fn pread_hash_slice(path: &Path, max_bytes: u64, f: &mut dyn FnMut(&[u8])) -> So
     let file = std::fs::File::open(path)?;
     HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
+        ensure_hash_buf(&mut buf);
         let mut offset = 0u64;
         while offset < max_bytes {
             let to_read = (max_bytes - offset).min(HASH_BUF_SIZE as u64) as usize;
@@ -113,6 +120,7 @@ fn pread_hash_md5(path: &Path) -> SophonResult<String> {
     }
     HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
+        ensure_hash_buf(&mut buf);
         let mut offset = 0u64;
         loop {
             let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
@@ -141,6 +149,7 @@ fn pread_hash_xxh64(path: &Path) -> SophonResult<String> {
     }
     HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
+        ensure_hash_buf(&mut buf);
         let mut offset = 0u64;
         loop {
             let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
