@@ -69,8 +69,11 @@ use crate::commands::sophon_downloader::api_scrape::{
     DownloadInfo, SophonBuildData, SophonManifestMeta,
 };
 use crate::commands::sophon_downloader::proto_parse::{
-    SophonManifestAssetChunk, SophonManifestAssetProperty, SophonManifestProto,
+    SophonManifestAssetProperty, SophonManifestProto,
 };
+
+#[cfg(test)]
+use crate::commands::sophon_downloader::proto_parse::SophonManifestAssetChunk;
 
 type ProgressUpdater = Arc<dyn Fn(SophonProgress) + Send + Sync>;
 pub type StateSaver = Arc<dyn Fn(&HashMap<String, u64>) + Send + Sync>;
@@ -965,14 +968,8 @@ async fn download_chunk_with_retries(
             return Err(SophonError::Cancelled);
         }
 
-        match super::download::download_chunk(
-            client,
-            chunk_download,
-            chunk.into(),
-            dest,
-            Some(handle),
-        )
-        .await
+        match super::download::download_chunk(client, chunk_download, chunk, dest, Some(handle))
+            .await
         {
             Ok(()) => return Ok(()),
             Err(SophonError::Md5Mismatch { .. }) => {
@@ -1296,10 +1293,10 @@ async fn run_downloads(
                 if let Err(err) = result {
                     if matches!(err, SophonError::Cancelled) {
                         cancelled.store(1, Ordering::Relaxed);
-                    } else if let Ok(mut guard) = first_error.lock() {
-                        if guard.is_none() {
-                            *guard = Some(err);
-                        }
+                    } else if let Ok(mut guard) = first_error.lock()
+                        && guard.is_none()
+                    {
+                        *guard = Some(err);
                     }
                 }
                 if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -1649,7 +1646,7 @@ pub async fn install(
     let (total_compressed, total_files) = compute_totals(&all_files);
     (callbacks.updater)(SophonProgress::CalculatingDownloads {
         checked_files: 0,
-        total_files: total_files,
+        total_files,
     });
     log::info!(
         "Sophon install: {total_files} total files across {installers} installers, {total_compressed} compressed bytes",
@@ -2051,7 +2048,7 @@ pub async fn verify_integrity(
 
     let all_assets: Vec<(SophonManifestAssetProperty, DownloadInfo)> = manifest_results
         .into_iter()
-        .zip(chunk_downloads.into_iter())
+        .zip(chunk_downloads)
         .flat_map(|(manifest, dl)| {
             manifest
                 .assets

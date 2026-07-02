@@ -25,6 +25,12 @@ pub struct HttpClient(pub reqwest::Client);
 /// bottleneck when multiplexing many streams over one connection.
 pub struct DownloadClient(pub reqwest::Client);
 
+impl Default for DownloadClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DownloadClient {
     pub fn new() -> Self {
         Self(

@@ -8,6 +8,8 @@ use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 
 use dashmap::DashMap;
+
+#[cfg(test)]
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use tauri_plugin_log::log;

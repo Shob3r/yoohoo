@@ -60,6 +60,7 @@ impl StringArena {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.spans.is_empty()
     }
@@ -133,6 +134,7 @@ impl CompactManifest {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn file_type(&self, file_idx: usize) -> u32 {
         self.file_type[file_idx]
     }

@@ -116,7 +116,7 @@ pub fn compute_eta_speed(
     let mut sorted: Vec<f64> = samples.iter().copied().collect();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
         sorted[mid]

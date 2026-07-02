@@ -141,6 +141,7 @@ impl Drop for DecrementGuard<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_file(
     all_files: &CompactManifest,
     file_idx: usize,
@@ -390,7 +391,8 @@ fn write_decompressed_chunk_at<W: Write + Seek>(
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
     const OPT_THRESHOLD: u64 = 1024 * 1024;
-    let result = if expected_size >= OPT_THRESHOLD {
+
+    if expected_size >= OPT_THRESHOLD {
         super::assembly_opt::decompress_chunk_optimized(
             chunk_path,
             writer,
@@ -463,8 +465,7 @@ fn write_decompressed_chunk_at<W: Write + Seek>(
         }
 
         Ok(bytes_written)
-    };
-    result
+    }
 }
 
 /// Read decompressed bytes from an existing file, verify MD5, and write to the
@@ -481,7 +482,8 @@ fn write_from_old_file<W: Write + Seek>(
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
     const MMA_THRESHOLD: u64 = 1024 * 1024;
-    let result = if expected_size >= MMA_THRESHOLD {
+
+    if expected_size >= MMA_THRESHOLD {
         super::assembly_opt::write_chunk_from_mmap(
             old_file_path,
             writer,
@@ -550,8 +552,7 @@ fn write_from_old_file<W: Write + Seek>(
         }
 
         Ok(bytes_written)
-    };
-    result
+    }
 }
 
 struct HashWriter<'a, W: Write> {

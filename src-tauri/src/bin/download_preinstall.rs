@@ -36,7 +36,7 @@ fn progress(p: SophonProgress) {
         } => {
             let dl = *downloaded_bytes as f64 / (1024.0 * 1024.0);
             let total = *total_bytes as f64 / (1024.0 * 1024.0);
-            let speed = *speed_bps as f64 / (1024.0 * 1024.0);
+            let speed = *speed_bps / (1024.0 * 1024.0);
             format!("Downloading: {dl:.1}/{total:.1} MiB ({speed:.1} MiB/s, ETA {eta_seconds:.0}s)")
         }
         SophonProgress::Assembling {
@@ -150,11 +150,10 @@ async fn main() {
             downloaded_chunks: chunks.keys().cloned().collect(),
         };
         let tmp = sf_clone.with_extension("json.tmp");
-        if let Ok(json) = serde_json::to_string(&state) {
-            if std::fs::write(&tmp, &json).is_ok() {
+        if let Ok(json) = serde_json::to_string(&state)
+            && std::fs::write(&tmp, &json).is_ok() {
                 let _ = std::fs::rename(&tmp, &sf_clone);
             }
-        }
     });
 
     let result = game_installer::preinstall_download(

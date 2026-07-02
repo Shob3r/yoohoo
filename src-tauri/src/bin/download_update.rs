@@ -20,7 +20,7 @@ fn progress(p: SophonProgress) {
         } => {
             let dl = *downloaded_bytes as f64 / (1024.0 * 1024.0);
             let total = *total_bytes as f64 / (1024.0 * 1024.0);
-            let speed = *speed_bps as f64 / (1024.0 * 1024.0);
+            let speed = *speed_bps / (1024.0 * 1024.0);
             format!("Downloading: {dl:.1}/{total:.1} MiB ({speed:.1} MiB/s, ETA {eta_seconds:.0}s)")
         }
         SophonProgress::Assembling {
@@ -60,7 +60,7 @@ async fn main() {
     let client = reqwest::Client::new();
 
     eprintln!("Building update installers (from {current_tag} to latest)...");
-    let (installers, deleted_files, new_tag, manifest_hash) =
+    let (installers, deleted_files, new_tag, _manifest_hash) =
         game_installer::build_update_installers(&client, game_id, vo_lang, &current_tag, game_dir)
             .await
             .expect("build_update_installers failed");

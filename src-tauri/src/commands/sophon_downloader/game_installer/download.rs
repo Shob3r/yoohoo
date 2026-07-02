@@ -6,7 +6,7 @@ use libc;
 use md5::{Digest, Md5};
 use reqwest::Client;
 use tauri_plugin_log::log;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWriteExt, BufWriter};
 
 use super::CHUNK_WRITE_BUFFER_SIZE;
 use super::compact_manifest::ChunkRef;
@@ -254,7 +254,7 @@ async fn do_download_chunk(
 
         if existing_size >= chunk.chunk_size {
             if !chunk.chunk_compressed_hash_md5.is_empty() {
-                if verify_existing_file_hash(dest, &chunk.chunk_compressed_hash_md5).await? {
+                if verify_existing_file_hash(dest, chunk.chunk_compressed_hash_md5).await? {
                     return Ok(());
                 }
                 let _ = tokio::fs::remove_file(dest).await;

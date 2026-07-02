@@ -8,6 +8,7 @@ use super::*;
 const ASSEMBLY_RAM_CHECK_INTERVAL_SECS: u64 = 2;
 const ASSEMBLY_HIGH_RAM_THRESHOLD_MB: u64 = 512;
 const ASSEMBLY_LOW_RAM_THRESHOLD_MB: u64 = 128;
+#[allow(dead_code)]
 const ASSEMBLY_CRITICAL_RAM_THRESHOLD_MB: u64 = 64;
 
 pub struct AdaptiveAssembly {
@@ -29,10 +30,8 @@ impl AdaptiveAssembly {
         let available_mb = available_ram_mb();
         let current = self.target.load(Ordering::Acquire);
 
-        let new_target = if available_mb <= ASSEMBLY_CRITICAL_RAM_THRESHOLD_MB {
+        let new_target = if available_mb <= ASSEMBLY_LOW_RAM_THRESHOLD_MB {
             1
-        } else if available_mb <= ASSEMBLY_LOW_RAM_THRESHOLD_MB {
-            (ASSEMBLY_CONCURRENCY / 4).max(1)
         } else if available_mb <= ASSEMBLY_HIGH_RAM_THRESHOLD_MB {
             (ASSEMBLY_CONCURRENCY / 2).max(2)
         } else {
