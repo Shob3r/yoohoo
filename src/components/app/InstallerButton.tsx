@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { useDownload } from "../../hooks/useDownload";
 import { useGame } from "../../hooks/useGame";
+import type { DownloadType } from "../../contexts/DownloadContext";
 import {
 	applyUpdate,
 	checkGameUpdate,
@@ -20,6 +21,46 @@ import {
 } from "../../lib/VariantConverter";
 import type { GameCodes } from "../../types";
 import Button from "../Button";
+
+const resolveButtonLabel = (
+	protonAvailable: boolean,
+	isSettingUpProton: boolean,
+	canResume: boolean,
+	gameInstalled: boolean,
+	showUpdate: boolean,
+	updateAvailable: boolean,
+	downloadActive: boolean,
+	isDownloadForActiveGame: boolean,
+	downloadType: DownloadType,
+	resumeDownloadType: DownloadType | "fresh" | undefined,
+): string => {
+	if (!protonAvailable) {
+		return isSettingUpProton ? "Setting Up" : "Create Env";
+	}
+	if (canResume) {
+		if (downloadActive && isDownloadForActiveGame) {
+			return resumeDownloadType === "update" ? "Updating" : "Downloading";
+		}
+		if (resumeDownloadType === "update") return "Resume Update";
+		if (resumeDownloadType === "preinstall") return "Resume Preinstall";
+		return "Resume Download";
+	}
+	if (!gameInstalled) {
+		return downloadActive && isDownloadForActiveGame
+			? "Downloading"
+			: "Download";
+	}
+	if (showUpdate) {
+		return downloadActive && isDownloadForActiveGame ? "Updating" : "Update";
+	}
+	if (updateAvailable) {
+		return downloadActive && isDownloadForActiveGame ? "Updating" : "Update";
+	}
+	if (downloadActive && isDownloadForActiveGame) {
+		return downloadType === "update" ? "Updating" : "Downloading";
+	}
+	return "Play";
+};
 
 export const InstallerButton = () => {
 	const { game } = useGame();
@@ -140,47 +181,18 @@ export const InstallerButton = () => {
 					}
 				}}
 			>
-				{(() => {
-					if (!protonAvailable) {
-						return state.isSettingUpProton ? "Setting Up..." : "Create Env";
-					} else if (canResume) {
-						const resumeLabel =
-							state.resumeInfo?.downloadType === "update"
-								? "Resume Update"
-								: state.resumeInfo?.downloadType === "preinstall"
-									? "Resume Preinstall"
-									: "Resume Download";
-						const activeLabel =
-							state.resumeInfo?.downloadType === "update"
-								? "Updating..."
-								: state.resumeInfo?.downloadType === "preinstall"
-									? "Pre-downloading..."
-									: "Downloading...";
-						return downloadActive && isDownloadForActiveGame
-							? activeLabel
-							: resumeLabel;
-					} else if (!gameInstalled) {
-						return downloadActive && isDownloadForActiveGame
-							? "Downloading..."
-							: "Download";
-					} else if (showUpdate) {
-						return downloadActive && isDownloadForActiveGame
-							? "Updating..."
-							: "Update";
-					} else if (updateAvailable) {
-						return downloadActive && isDownloadForActiveGame
-							? "Updating..."
-							: "Update";
-					} else {
-						return downloadActive && isDownloadForActiveGame
-							? state.downloadType === "update"
-								? "Updating..."
-								: state.downloadType === "preinstall"
-									? "Pre-downloading..."
-									: "Downloading..."
-							: "Play";
-					}
-				})()}
+				{resolveButtonLabel(
+					protonAvailable,
+					state.isSettingUpProton,
+					canResume,
+					gameInstalled,
+					showUpdate,
+					updateAvailable,
+					downloadActive,
+					isDownloadForActiveGame,
+					state.downloadType,
+					state.resumeInfo?.downloadType,
+				)}
 			</Button>
 		</div>
 	);

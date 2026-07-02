@@ -4,6 +4,7 @@ import { useDownload } from "../../hooks/useDownload";
 import { useGame } from "../../hooks/useGame";
 import { pauseDownload, resumeDownload } from "../../lib/GameDownloader";
 import { variantToGameName } from "../../lib/VariantConverter";
+import type { DownloadType } from "../../contexts/DownloadContext";
 import Button from "../Button";
 import Progressbar from "../Progressbar";
 
@@ -13,6 +14,50 @@ const formatNumber = (num: number): string => {
 	} catch {
 		return new Intl.NumberFormat("en-US").format(num);
 	}
+};
+
+type TitleContext = {
+	isApplyingPreinstall: boolean;
+	isPaused: boolean;
+	isSettingUpProton: boolean;
+	downloadInProgress: boolean;
+	verifyingInProgress: boolean;
+	assemblingInProgress: boolean;
+	downloadType: DownloadType;
+	gameName: string;
+};
+
+const resolveTitleText = (ctx: TitleContext): string => {
+	if (ctx.isApplyingPreinstall) return "Applying Preinstall...";
+	if (ctx.isPaused) {
+		return ctx.downloadType === "update" ? "Update Paused" : "Download Paused";
+	}
+	if (ctx.isSettingUpProton) return "Setting Up Environment...";
+	if (ctx.downloadInProgress) {
+		if (ctx.downloadType === "update") {
+			return `Downloading update for ${ctx.gameName}...`;
+		}
+		if (ctx.downloadType === "preinstall") {
+			return `Downloading preinstall for ${ctx.gameName}...`;
+		}
+		return `Downloading ${ctx.gameName}...`;
+	}
+	if (ctx.verifyingInProgress) {
+		return `Verifying files for ${ctx.gameName}...`;
+	}
+	if (ctx.assemblingInProgress) {
+		return `Assembling chunks ${ctx.gameName}...`;
+	}
+	if (ctx.gameName !== "") {
+		if (ctx.downloadType === "update") {
+			return `Downloading update for ${ctx.gameName}...`;
+		}
+		if (ctx.downloadType === "preinstall") {
+			return `Downloading preinstall for ${ctx.gameName}...`;
+		}
+		return `Downloading ${ctx.gameName}...`;
+	}
+	return "Downloading...";
 };
 
 export const DownloadProgress = () => {
@@ -145,31 +190,16 @@ export const DownloadProgress = () => {
 		? variantToGameName[state.downloadingGame]
 		: "";
 
-	const titleText = isApplyingPreinstall
-		? "Applying Preinstall..."
-		: isPaused
-			? state.downloadType === "update"
-				? "Update Paused"
-				: "Download Paused"
-			: isSettingUpProton
-				? "Setting Up Environment..."
-				: downloadInProgress
-					? state.downloadType === "update"
-						? `Downloading update for ${gameName}`
-						: state.downloadType === "preinstall"
-							? `Downloading preinstall for ${gameName}`
-							: `Downloading ${gameName}`
-					: verifyingInProgress
-						? `Verifying files for ${gameName}`
-						: assemblingInProgress
-							? `Assembling chunks ${gameName}`
-							: state.downloadingGame !== null
-								? state.downloadType === "update"
-									? `Updating ${gameName}...`
-									: state.downloadType === "preinstall"
-										? `Pre-downloading ${gameName}...`
-										: `Downloading ${gameName}...`
-								: "Downloading...";
+	const titleText = resolveTitleText({
+		isApplyingPreinstall,
+		isPaused,
+		isSettingUpProton,
+		downloadInProgress,
+		verifyingInProgress,
+		assemblingInProgress,
+		downloadType: state.downloadType,
+		gameName,
+	});
 
 	const canPause = (isDownloading || isPaused) && !isVerifying;
 
