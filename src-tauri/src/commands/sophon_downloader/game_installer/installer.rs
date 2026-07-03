@@ -338,6 +338,65 @@ fn compute_diff_files(
         .collect()
 }
 
+/// Build the reverse interning maps (`name_to_id`, `hash_to_id`) and the
+/// `(u32, u32) -> offset` table from an old manifest. Extracted so the
+/// interning logic is unit-testable without a network round-trip.
+#[allow(clippy::type_complexity)]
+fn intern_old_chunk_offsets(
+    manifest: &SophonManifestProto,
+) -> (
+    HashMap<(u32, u32), u64>,
+    HashMap<String, u32>,
+    HashMap<String, u32>,
+) {
+    let mut name_to_id: HashMap<String, u32> = HashMap::new();
+    let mut hash_to_id: HashMap<String, u32> = HashMap::new();
+    let mut offsets: HashMap<(u32, u32), u64> = HashMap::new();
+    for f in manifest.assets.iter().filter(|f| !f.is_directory()) {
+        let next_name_id = name_to_id.len() as u32;
+        let name_id = *name_to_id
+            .entry(f.asset_name.clone())
+            .or_insert(next_name_id);
+        for c in &f.asset_chunks {
+            let next_hash_id = hash_to_id.len() as u32;
+            let hash_id = *hash_to_id
+                .entry(c.chunk_decompressed_hash_md5.clone())
+                .or_insert(next_hash_id);
+            offsets.insert((name_id, hash_id), c.chunk_on_file_offset);
+        }
+    }
+    (offsets, name_to_id, hash_to_id)
+}
+
+/// Stamp each chunk's `chunk_old_offset` with the matching old-file offset
+/// using the interned reverse maps. Chunks with no old match get `-1`.
+#[allow(clippy::type_complexity)]
+fn assign_chunk_offsets(
+    diff_files: &mut [SophonManifestAssetProperty],
+    offsets: &HashMap<(u32, u32), u64>,
+    name_to_id: &HashMap<String, u32>,
+    hash_to_id: &HashMap<String, u32>,
+) {
+    for file in diff_files.iter_mut() {
+        let name_id = name_to_id.get(file.asset_name.as_str()).copied();
+        for chunk in &mut file.asset_chunks {
+            chunk.chunk_old_offset = match (
+                name_id,
+                hash_to_id
+                    .get(chunk.chunk_decompressed_hash_md5.as_str())
+                    .copied(),
+            ) {
+                (Some(n), Some(h)) => offsets
+                    .get(&(n, h))
+                    .copied()
+                    .map(|off| off as i64)
+                    .unwrap_or(-1),
+                _ => -1,
+            };
+        }
+    }
+}
+
 async fn build_diff_installers(
     client: &Client,
     old_build: &SophonBuildData,
@@ -374,9 +433,15 @@ async fn build_diff_installers(
             .map(|f| f.asset_name.as_str())
             .collect();
 
-        let (old_md5_map, old_chunk_offsets): (
+        // Keys are interned to `(u32, u32)` ids instead of `(String, String)`
+        // so the offsets map and its reverse lookups share one allocation per
+        // unique field rather than one per chunk. See `build_diff_installers`.
+        #[allow(clippy::type_complexity)]
+        let (old_md5_map, old_chunk_offsets, name_to_id, hash_to_id): (
             HashMap<String, String>,
-            HashMap<(String, String), u64>,
+            HashMap<(u32, u32), u64>,
+            HashMap<String, u32>,
+            HashMap<String, u32>,
         ) = match old_by_field.get(new_meta.matching_field.as_str()) {
             Some(old_meta) => {
                 let old_result = super::api::fetch_manifest(
@@ -388,24 +453,12 @@ async fn build_diff_installers(
 
                 deleted_files.extend(collect_deleted_files(&old_result.manifest, &new_names));
 
-                // Build (asset_name, hash) -> offset map from old manifest. Offsets
-                // are keyed by both fields so reused chunks always come from the
-                // correct source file.
-                let old_chunk_offsets: HashMap<(String, String), u64> = old_result
-                    .manifest
-                    .assets
-                    .iter()
-                    .filter(|f| !f.is_directory())
-                    .flat_map(|f| {
-                        let name = f.asset_name.clone();
-                        f.asset_chunks.iter().map(move |c| {
-                            (
-                                (name.clone(), c.chunk_decompressed_hash_md5.clone()),
-                                c.chunk_on_file_offset,
-                            )
-                        })
-                    })
-                    .collect();
+                // Intern old chunk keys into `(u32, u32)` ids so the offsets
+                // map uses compact integer keys instead of `(String, String)`.
+                // For a 5M-chunk manifest this drops peak memory ~5x: asset
+                // names are unique per file and chunk hashes cluster.
+                let (mut old_chunk_offsets, name_to_id, hash_to_id) =
+                    intern_old_chunk_offsets(&old_result.manifest);
 
                 let old_file_sizes: Vec<(String, u64)> = old_result
                     .manifest
@@ -416,7 +469,6 @@ async fn build_diff_installers(
                     .collect();
 
                 let mut old_md5_map = build_old_md5_map(old_result.manifest);
-                let mut old_chunk_offsets = old_chunk_offsets;
                 let gd = game_dir.to_path_buf();
                 let corrupted: HashSet<String> = tokio::task::spawn_blocking(move || {
                     let mut bad = HashSet::new();
@@ -443,32 +495,36 @@ async fn build_diff_installers(
                         count = corrupted.len()
                     );
                     old_md5_map.retain(|name, _| !corrupted.contains(name));
-                    old_chunk_offsets.retain(|(name, _), _| !corrupted.contains(name));
+                    let corrupted_name_ids: HashSet<u32> = name_to_id
+                        .iter()
+                        .filter_map(|(n, id)| corrupted.contains(n).then_some(*id))
+                        .collect();
+                    old_chunk_offsets
+                        .retain(|(name_id, _), _| !corrupted_name_ids.contains(name_id));
                 }
 
-                (old_md5_map, old_chunk_offsets)
+                (old_md5_map, old_chunk_offsets, name_to_id, hash_to_id)
             }
-            None => (HashMap::new(), HashMap::new()),
+            None => (
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+            ),
         };
 
         let mut diff_files = compute_diff_files(new_result.manifest, &old_md5_map);
 
-        // Annotate each chunk with the matching old-file offset. New chunks
-        // (no entry in the map) are marked -1 to trigger a download.
-        for file in &mut diff_files {
-            for chunk in &mut file.asset_chunks {
-                let key = (
-                    file.asset_name.clone(),
-                    chunk.chunk_decompressed_hash_md5.clone(),
-                );
-                chunk.chunk_old_offset = old_chunk_offsets
-                    .get(&key)
-                    .map(|&off| off as i64)
-                    .unwrap_or(-1);
-            }
-        }
+        assign_chunk_offsets(
+            &mut diff_files,
+            &old_chunk_offsets,
+            &name_to_id,
+            &hash_to_id,
+        );
         drop(old_chunk_offsets);
         drop(old_md5_map);
+        drop(name_to_id);
+        drop(hash_to_id);
         super::reclaim_memory();
 
         if diff_files.is_empty() {
@@ -2493,6 +2549,24 @@ mod tests {
         }
     }
 
+    fn make_chunk_with_hash(
+        name: &str,
+        size: u64,
+        decompressed_hash: &str,
+        on_file_offset: u64,
+    ) -> SophonManifestAssetChunk {
+        SophonManifestAssetChunk {
+            chunk_name: name.into(),
+            chunk_decompressed_hash_md5: decompressed_hash.into(),
+            chunk_on_file_offset: on_file_offset,
+            chunk_size: size,
+            chunk_size_decompressed: size,
+            chunk_compressed_hash_xxh: 0,
+            chunk_compressed_hash_md5: String::new(),
+            chunk_old_offset: -1,
+        }
+    }
+
     fn make_file(
         name: &str,
         md5: &str,
@@ -2660,6 +2734,120 @@ mod tests {
         assert!(names.contains(&"new.pak"));
         assert!(names.contains(&"changed.pak"));
         assert!(names.contains(&"somedir")); // directories are included in diff
+    }
+
+    #[test]
+    fn intern_old_chunk_offsets_assigns_unique_ids() {
+        let manifest = SophonManifestProto {
+            assets: vec![
+                make_file(
+                    "a.pak",
+                    "aa",
+                    vec![
+                        make_chunk_with_hash("c0", 100, "hash0", 0),
+                        make_chunk_with_hash("c1", 100, "hash1", 100),
+                    ],
+                ),
+                make_file(
+                    "b.pak",
+                    "bb",
+                    vec![make_chunk_with_hash("c2", 100, "hash0", 0)],
+                ),
+                make_dir("skipped"),
+            ],
+        };
+        let (offsets, name_to_id, hash_to_id) = intern_old_chunk_offsets(&manifest);
+
+        assert_eq!(name_to_id.len(), 2);
+        assert_eq!(hash_to_id.len(), 2);
+        assert_eq!(offsets.len(), 3);
+
+        let a_id = name_to_id["a.pak"];
+        let b_id = name_to_id["b.pak"];
+        let h0 = hash_to_id["hash0"];
+        let h1 = hash_to_id["hash1"];
+
+        assert_eq!(offsets.get(&(a_id, h0)), Some(&0));
+        assert_eq!(offsets.get(&(a_id, h1)), Some(&100));
+        assert_eq!(offsets.get(&(b_id, h0)), Some(&0));
+    }
+
+    #[test]
+    fn intern_old_chunk_offsets_empty_manifest() {
+        let manifest = SophonManifestProto { assets: vec![] };
+        let (offsets, name_to_id, hash_to_id) = intern_old_chunk_offsets(&manifest);
+        assert!(offsets.is_empty());
+        assert!(name_to_id.is_empty());
+        assert!(hash_to_id.is_empty());
+    }
+
+    #[test]
+    fn intern_old_chunk_offsets_only_dirs() {
+        let manifest = SophonManifestProto {
+            assets: vec![make_dir("d0"), make_dir("d1")],
+        };
+        let (offsets, name_to_id, hash_to_id) = intern_old_chunk_offsets(&manifest);
+        assert!(offsets.is_empty());
+        assert!(name_to_id.is_empty());
+        assert!(hash_to_id.is_empty());
+    }
+
+    #[test]
+    fn assign_chunk_offsets_reuses_matching_old_entries() {
+        let old_manifest = SophonManifestProto {
+            assets: vec![make_file(
+                "a.pak",
+                "old_md5",
+                vec![make_chunk_with_hash("c0", 100, "hash0", 4096)],
+            )],
+        };
+        let (offsets, name_to_id, hash_to_id) = intern_old_chunk_offsets(&old_manifest);
+
+        let mut diff = vec![make_file(
+            "a.pak",
+            "new_md5",
+            vec![
+                make_chunk_with_hash("c0", 100, "hash0", 0),
+                make_chunk_with_hash("c1", 100, "hash1", 100),
+            ],
+        )];
+
+        assign_chunk_offsets(&mut diff, &offsets, &name_to_id, &hash_to_id);
+
+        assert_eq!(diff[0].asset_chunks[0].chunk_old_offset, 4096);
+        assert_eq!(diff[0].asset_chunks[1].chunk_old_offset, -1);
+    }
+
+    #[test]
+    fn assign_chunk_offsets_unknown_file_name_all_minus_one() {
+        let old_manifest = SophonManifestProto {
+            assets: vec![make_file(
+                "old.pak",
+                "m",
+                vec![make_chunk_with_hash("c0", 100, "hash0", 0)],
+            )],
+        };
+        let (offsets, name_to_id, hash_to_id) = intern_old_chunk_offsets(&old_manifest);
+
+        let mut diff = vec![make_file(
+            "new.pak",
+            "m",
+            vec![make_chunk_with_hash("c0", 100, "hash0", 0)],
+        )];
+
+        assign_chunk_offsets(&mut diff, &offsets, &name_to_id, &hash_to_id);
+        assert_eq!(diff[0].asset_chunks[0].chunk_old_offset, -1);
+    }
+
+    #[test]
+    fn assign_chunk_offsets_empty_maps_all_minus_one() {
+        let mut diff = vec![make_file(
+            "a.pak",
+            "aa",
+            vec![make_chunk_with_hash("c0", 100, "hash0", 0)],
+        )];
+        assign_chunk_offsets(&mut diff, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        assert_eq!(diff[0].asset_chunks[0].chunk_old_offset, -1);
     }
 
     #[test]
