@@ -247,15 +247,14 @@ fn bench_zstd_decompress(c: &mut Criterion) {
     }
     group.finish();
 }
-
 /// Build a single-file `CompactManifest` over `num_chunks` equal decompressed
 /// chunks of `chunk_mib` MiB each, zstd-compressed on disk. Returns the
-/// manifest, the raw assembled bytes, and the expected MD5.
+/// manifest and the raw assembled bytes.
 fn build_assembly_fixture(
     chunks_dir: &std::path::Path,
     chunk_mib: usize,
     num_chunks: usize,
-) -> (CompactManifest, Vec<u8>, String) {
+) -> (CompactManifest, Vec<u8>) {
     let mut raw = Vec::with_capacity(chunk_mib * 1024 * 1024 * num_chunks);
     let chunks: Vec<SophonManifestAssetChunk> = (0..num_chunks)
         .map(|i| {
@@ -283,9 +282,9 @@ fn build_assembly_fixture(
         asset_chunks: chunks,
         asset_type: 0,
         asset_size: raw.len() as u64,
-        asset_hash_md5: file_md5.clone(),
+        asset_hash_md5: file_md5,
     };
-    (CompactManifest::from(vec![file]), raw, file_md5)
+    (CompactManifest::from(vec![file]), raw)
 }
 
 /// End-to-end `assemble_file` throughput: chunk reads, zstd decompress, pwrite,
@@ -302,7 +301,7 @@ fn bench_assembly_e2e(c: &mut Criterion) {
     let chunk_mib = 8;
     let num_chunks = 8;
     let total_bytes = (chunk_mib * num_chunks) as u64 * 1024 * 1024;
-    let (manifest, raw, _md5) = build_assembly_fixture(&chunks_dir, chunk_mib, num_chunks);
+    let (manifest, raw) = build_assembly_fixture(&chunks_dir, chunk_mib, num_chunks);
 
     let name_refs: Vec<&str> = (0..num_chunks)
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)

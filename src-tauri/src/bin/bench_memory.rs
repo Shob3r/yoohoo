@@ -5,7 +5,7 @@
 //! `/proc/self/statm` from a background thread while each operation runs and
 //! reports peak-vs-baseline RSS. Linux-only (the installer is Linux-only).
 //!
-//! Run:  cargo run --release --features extra-bins --bin bench_memory -- [op]
+//! Run:  cargo run --release --features benchmark --bin bench_memory -- [op]
 //! where [op] is a substring of one of the operations below; runs all if none.
 
 use std::fs;
@@ -296,7 +296,6 @@ fn main() {
 
     let dir = dir.clone();
     run("baseline", &|| {
-        let _ = &dir;
         thread::sleep(Duration::from_millis(50));
     });
 
