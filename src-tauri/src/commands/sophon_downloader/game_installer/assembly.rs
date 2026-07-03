@@ -318,6 +318,13 @@ pub fn assemble_file(
             total_written += bytes_written;
             guard.chunks.push(chunk.chunk_name);
         }
+        // Flush and evict each chunk's output range to keep peak resident
+        // memory low during assembly of large multi-chunk files.
+        super::assembly_opt::sync_and_evict_range(
+            out_file.as_raw_fd(),
+            chunk.chunk_on_file_offset,
+            chunk.chunk_size_decompressed,
+        );
     }
 
     out_file.sync_all().map_err(|err| {

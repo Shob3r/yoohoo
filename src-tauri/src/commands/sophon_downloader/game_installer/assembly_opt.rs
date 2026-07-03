@@ -33,6 +33,22 @@ pub(crate) fn posix_advise(
     let _ = unsafe { libc::posix_fadvise(fd, offset as libc::off_t, len as libc::off_t, advice) };
 }
 
+/// Flush a range of the output file to disk, then evict its pages from the
+/// page cache. Reduces peak resident memory during assembly of large multi-
+/// chunk files. Blocking: waits for writeback to complete before evicting.
+#[inline]
+pub(crate) fn sync_and_evict_range(fd: std::os::unix::io::RawFd, offset: u64, len: u64) {
+    let _ = unsafe {
+        libc::sync_file_range(
+            fd,
+            offset as libc::off64_t,
+            len as libc::off64_t,
+            libc::SYNC_FILE_RANGE_WRITE | libc::SYNC_FILE_RANGE_WAIT_AFTER,
+        )
+    };
+    posix_advise(fd, offset, len, libc::POSIX_FADV_DONTNEED);
+}
+
 /// Returns true when the chunk hash must be verified against the decompressed
 /// bytes.
 #[inline]
