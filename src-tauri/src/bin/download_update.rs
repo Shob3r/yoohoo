@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use elysiae_lib::commands::sophon_downloader::SophonProgress;
 use elysiae_lib::commands::sophon_downloader::game_installer;
@@ -121,8 +122,6 @@ async fn async_main() {
     }
 
     let handle = game_installer::DownloadHandle::new();
-    let completed_files: Arc<std::sync::Mutex<HashSet<String>>> =
-        Arc::new(std::sync::Mutex::new(HashSet::new()));
 
     let saver: game_installer::StateSaver = Arc::new(move |_chunks: &HashMap<String, u64>| {});
     let gd = game_dir.to_path_buf();
@@ -136,6 +135,7 @@ async fn async_main() {
         game_installer::ResumeContext {
             prev_manifest_hash: String::new(),
             prev_downloaded_chunks: HashMap::new(),
+            resume_seed: Default::default(),
         },
         game_installer::InstallOptions {
             is_preinstall: false,
@@ -145,7 +145,7 @@ async fn async_main() {
         game_installer::InstallCallbacks {
             updater: Arc::new(progress),
             state_saver: saver,
-            completed_files,
+            completion_state: Arc::new(OnceLock::new()),
         },
         game_id,
         &vo_langs,

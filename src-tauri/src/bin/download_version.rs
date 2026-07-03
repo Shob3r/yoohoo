@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use elysiae_lib::commands::sophon_downloader::SophonProgress;
 use elysiae_lib::commands::sophon_downloader::game_installer::{
@@ -171,6 +172,7 @@ async fn async_main() {
         ResumeContext {
             prev_manifest_hash,
             prev_downloaded_chunks,
+            resume_seed: Default::default(),
         },
         InstallOptions {
             is_preinstall: false,
@@ -180,7 +182,7 @@ async fn async_main() {
         InstallCallbacks {
             updater: Arc::new(progress),
             state_saver: saver,
-            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            completion_state: Arc::new(OnceLock::new()),
         },
         game_id,
         &[vo_lang.to_string()],
