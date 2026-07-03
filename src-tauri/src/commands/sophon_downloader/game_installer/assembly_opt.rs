@@ -1,8 +1,8 @@
-//! Optimized assembly helpers with zero-copy chunk reading.
+//! Optimized assembly helpers with direct offset writes and kernel-side copies.
 
 use std::cell::RefCell;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read};
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
@@ -11,8 +11,11 @@ use md5::{Digest, Md5};
 
 use super::FILE_WRITE_BUFFER_SIZE;
 use super::error::{SophonError, SophonResult};
+use super::sysio;
 
 const ASSEMBLY_BUFFER_SIZE: usize = 256 * 1024;
+
+const EMPTY_MD5: &str = "00000000000000000000000000000000";
 
 thread_local! {
     static OPT_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -25,21 +28,47 @@ fn posix_advise(fd: std::os::unix::io::RawFd, offset: u64, len: u64, advice: lib
     let _ = unsafe { libc::posix_fadvise(fd, offset as libc::off_t, len as libc::off_t, advice) };
 }
 
-/// Write + seek trait alias.
-pub trait WriteSeek: Write + Seek {}
-impl<T: Write + Seek> WriteSeek for T {}
+/// Returns true when the chunk hash must be verified against the decompressed
+/// bytes.
+#[inline]
+fn chunk_hash_required(chunk_decompressed_hash_md5: &str) -> bool {
+    chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5
+}
 
-/// Write a chunk from an old file using direct `pread` reads. Avoids the
-/// page-table overhead of mapping the entire old file into the process.
+/// Copy a chunk from an old file into `out_file` at `new_offset`. Uses the
+/// kernel `copy_file_range` syscall when no per-chunk or per-file hashing is
+/// required, avoiding any in-user-space copy of the bytes. Otherwise streams
+/// the region through a thread-local buffer to compute MD5 while writing.
 pub fn write_chunk_from_mmap(
     old_file_path: &Path,
-    writer: &mut dyn WriteSeek,
+    out_file: &File,
     new_offset: u64,
     old_offset: u64,
     expected_size: u64,
     mut file_hasher: Option<&mut Md5>,
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
+    let needs_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
+    // When neither the file nor the chunk require hashing, defer to a pure
+    // kernel-side copy: zero bytes touch user space.
+    if file_hasher.is_none() && !needs_chunk_hash {
+        let copied = sysio::copy_file_region_to(
+            old_file_path,
+            old_offset,
+            out_file,
+            new_offset,
+            expected_size,
+        )?;
+        if copied != expected_size {
+            return Err(SophonError::SizeMismatch {
+                item: old_file_path.display().to_string(),
+                expected: expected_size,
+                actual: copied,
+            });
+        }
+        return Ok(copied);
+    }
+
     let file = File::open(old_file_path).map_err(SophonError::Io)?;
     let file_len = file.metadata().map_err(SophonError::Io)?.len();
     // Streaming read of a single region: enable read-ahead, then evict the
@@ -51,10 +80,6 @@ pub fn write_chunk_from_mmap(
         libc::POSIX_FADV_SEQUENTIAL,
     );
 
-    writer.seek(SeekFrom::Start(new_offset))?;
-
-    let expected_size_u = expected_size as usize;
-
     if old_offset + expected_size > file_len {
         return Err(SophonError::SizeMismatch {
             item: old_file_path.display().to_string(),
@@ -63,24 +88,26 @@ pub fn write_chunk_from_mmap(
         });
     }
 
+    let expected_size_u = expected_size as usize;
+
     let mut chunk_hasher = Md5::new();
     let mut buf = OPT_BUFFER.with(|cell| {
         let mut buf = cell.take();
         if buf.capacity() < ASSEMBLY_BUFFER_SIZE {
             buf = Vec::with_capacity(ASSEMBLY_BUFFER_SIZE);
         }
+        // Safety: buffer is fully overwritten by read_at before write_all_at.
         unsafe { buf.set_len(ASSEMBLY_BUFFER_SIZE) };
         buf
     });
 
     let mut remaining = expected_size_u;
+    let mut write_offset = new_offset;
     while remaining > 0 {
         let to_read = remaining.min(buf.len());
+        let read_at = old_offset + (expected_size_u - remaining) as u64;
         let n = file
-            .read_at(
-                &mut buf[..to_read],
-                old_offset + (expected_size_u - remaining) as u64,
-            )
+            .read_at(&mut buf[..to_read], read_at)
             .map_err(SophonError::Io)?;
         if n == 0 {
             break;
@@ -89,7 +116,8 @@ pub fn write_chunk_from_mmap(
         if let Some(hasher) = file_hasher.as_deref_mut() {
             hasher.update(&buf[..n]);
         }
-        writer.write_all(&buf[..n])?;
+        out_file.write_all_at(&buf[..n], write_offset)?;
+        write_offset += n as u64;
         remaining -= n;
     }
 
@@ -112,8 +140,7 @@ pub fn write_chunk_from_mmap(
         });
     }
 
-    const EMPTY_MD5: &str = "00000000000000000000000000000000";
-    if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
+    if needs_chunk_hash {
         let actual = hex::encode(chunk_hasher.finalize());
         if actual != chunk_decompressed_hash_md5 {
             return Err(SophonError::Md5Mismatch {
@@ -127,10 +154,11 @@ pub fn write_chunk_from_mmap(
     Ok(bytes_written)
 }
 
-/// Decompress a chunk using a large buffer.
+/// Decompress a chunk file and write the bytes to `out_file` at `offset`,
+/// computing the chunk and file MD5 values in the same pass.
 pub fn decompress_chunk_optimized(
     chunk_path: &Path,
-    writer: &mut dyn WriteSeek,
+    out_file: &File,
     offset: u64,
     expected_size: u64,
     file_hasher: Option<&mut Md5>,
@@ -152,9 +180,8 @@ pub fn decompress_chunk_optimized(
     };
     decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
-    writer.seek(SeekFrom::Start(offset))?;
-
     let mut bytes_written: u64 = 0;
+    let mut write_offset = offset;
     let mut chunk_hasher = Md5::new();
 
     let mut buffer = OPT_BUFFER.with(|cell| {
@@ -166,27 +193,30 @@ pub fn decompress_chunk_optimized(
         buf
     });
 
-    if let Some(hasher) = file_hasher {
-        loop {
+    match file_hasher {
+        Some(hasher) => loop {
             let n = decoder.read(&mut buffer)?;
             if n == 0 {
                 break;
             }
             chunk_hasher.update(&buffer[..n]);
             hasher.update(&buffer[..n]);
-            writer.write_all(&buffer[..n])?;
+            out_file.write_all_at(&buffer[..n], write_offset)?;
+            write_offset += n as u64;
             bytes_written += n as u64;
-        }
-    } else {
-        loop {
+        },
+        None => loop {
             let n = decoder.read(&mut buffer)?;
             if n == 0 {
                 break;
             }
-            chunk_hasher.update(&buffer[..n]);
-            writer.write_all(&buffer[..n])?;
+            if chunk_hash_required(chunk_decompressed_hash_md5) {
+                chunk_hasher.update(&buffer[..n]);
+            }
+            out_file.write_all_at(&buffer[..n], write_offset)?;
+            write_offset += n as u64;
             bytes_written += n as u64;
-        }
+        },
     }
 
     buffer.clear();
@@ -203,8 +233,7 @@ pub fn decompress_chunk_optimized(
         });
     }
 
-    const EMPTY_MD5: &str = "00000000000000000000000000000000";
-    if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
+    if chunk_hash_required(chunk_decompressed_hash_md5) {
         let actual = hex::encode(chunk_hasher.finalize());
         if actual != chunk_decompressed_hash_md5 {
             return Err(SophonError::Md5Mismatch {
@@ -221,7 +250,11 @@ pub fn decompress_chunk_optimized(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+
+    fn write_at_new(path: &Path) -> File {
+        let f = File::create(path).unwrap();
+        f
+    }
 
     #[test]
     fn write_chunk_from_mmap_basic() {
@@ -229,10 +262,12 @@ mod tests {
         let src = dir.path().join("src.bin");
         std::fs::write(&src, b"hello world").unwrap();
 
-        let mut output = Cursor::new(Vec::new());
-        let bytes = write_chunk_from_mmap(&src, &mut output, 0, 0, 11, None, "").unwrap();
+        let dst_path = dir.path().join("out.bin");
+        let out = write_at_new(&dst_path);
+        let bytes = write_chunk_from_mmap(&src, &out, 0, 0, 11, None, "").unwrap();
+        drop(out);
         assert_eq!(bytes, 11);
-        assert_eq!(&output.into_inner()[..], b"hello world");
+        assert_eq!(std::fs::read(&dst_path).unwrap(), b"hello world");
     }
 
     #[test]
@@ -242,10 +277,61 @@ mod tests {
         let data = vec![0xABu8; ASSEMBLY_BUFFER_SIZE * 3];
         std::fs::write(&src, &data).unwrap();
 
-        let mut output = Cursor::new(Vec::new());
-        let bytes =
-            write_chunk_from_mmap(&src, &mut output, 0, 0, data.len() as u64, None, "").unwrap();
+        let dst_path = dir.path().join("out.bin");
+        let out = write_at_new(&dst_path);
+        let bytes = write_chunk_from_mmap(&src, &out, 0, 0, data.len() as u64, None, "").unwrap();
+        drop(out);
         assert_eq!(bytes, data.len() as u64);
-        assert_eq!(output.into_inner().len(), data.len());
+        assert_eq!(std::fs::read(&dst_path).unwrap().len(), data.len());
+    }
+
+    #[test]
+    fn write_chunk_from_mmap_with_chunk_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = b"verify my md5 please";
+        let src = dir.path().join("src.bin");
+        std::fs::write(&src, data).unwrap();
+        let chunk_md5 = hex::encode(Md5::digest(data));
+
+        let dst_path = dir.path().join("out.bin");
+        let out = write_at_new(&dst_path);
+        let bytes =
+            write_chunk_from_mmap(&src, &out, 0, 0, data.len() as u64, None, &chunk_md5).unwrap();
+        drop(out);
+        assert_eq!(bytes, data.len() as u64);
+        assert_eq!(std::fs::read(&dst_path).unwrap(), data);
+    }
+
+    #[test]
+    fn write_chunk_from_mmap_hash_mismatch_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = b"real data";
+        let src = dir.path().join("src.bin");
+        std::fs::write(&src, data).unwrap();
+        let wrong = "ffffffffffffffffffffffffffffffff";
+
+        let dst_path = dir.path().join("out.bin");
+        let out = write_at_new(&dst_path);
+        let res = write_chunk_from_mmap(&src, &out, 0, 0, data.len() as u64, None, wrong);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn decompress_chunk_optimized_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = b"decompress this payload";
+        let chunk_path = dir.path().join("chunk.zstd");
+        let f = File::create(&chunk_path).unwrap();
+        let mut enc = zstd::Encoder::new(f, 3).unwrap();
+        std::io::Write::write_all(&mut enc, raw).unwrap();
+        enc.finish().unwrap();
+
+        let dst_path = dir.path().join("out.bin");
+        let out = write_at_new(&dst_path);
+        let bytes =
+            decompress_chunk_optimized(&chunk_path, &out, 0, raw.len() as u64, None, "").unwrap();
+        drop(out);
+        assert_eq!(bytes, raw.len() as u64);
+        assert_eq!(std::fs::read(&dst_path).unwrap(), raw);
     }
 }

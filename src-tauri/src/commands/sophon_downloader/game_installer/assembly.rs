@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -216,7 +217,6 @@ pub fn assemble_file(
 
     out_file.set_len(file_size)?;
 
-    let mut buf_writer = BufWriter::with_capacity(FILE_WRITE_BUFFER_SIZE, out_file);
     let mut total_written: u64 = 0;
     let mut file_hasher = if file_hash_md5.is_empty() {
         if !is_dir {
@@ -235,7 +235,7 @@ pub fn assemble_file(
         if buf.capacity() < FILE_WRITE_BUFFER_SIZE {
             buf = Vec::with_capacity(FILE_WRITE_BUFFER_SIZE);
         }
-        // Safety: buffer is fully overwritten by read() before write_all().
+        // Safety: buffer is fully overwritten by read() before write_all_at().
         unsafe { buf.set_len(FILE_WRITE_BUFFER_SIZE) };
         buf
     });
@@ -282,7 +282,7 @@ pub fn assemble_file(
             );
             let bytes_written = write_from_old_file(
                 &target_path,
-                &mut buf_writer,
+                &out_file,
                 chunk.chunk_on_file_offset,
                 chunk.chunk_old_offset as u64,
                 chunk.chunk_size_decompressed,
@@ -303,7 +303,7 @@ pub fn assemble_file(
 
             let bytes_written = write_decompressed_chunk_at(
                 &chunk_path,
-                &mut buf_writer,
+                &out_file,
                 chunk.chunk_on_file_offset,
                 chunk.chunk_size_decompressed,
                 file_hasher.as_mut(),
@@ -319,14 +319,6 @@ pub fn assemble_file(
         }
     }
 
-    buf_writer.flush().map_err(|err| {
-        let _ = fs::remove_file(&tmp_path);
-        SophonError::Io(err)
-    })?;
-    let out_file = buf_writer.into_inner().map_err(|err| {
-        let _ = fs::remove_file(&tmp_path);
-        SophonError::Io(err.into_error())
-    })?;
     out_file.sync_all().map_err(|err| {
         let _ = fs::remove_file(&tmp_path);
         SophonError::Io(err)
@@ -381,12 +373,12 @@ pub fn assemble_file(
     Ok(())
 }
 
-fn write_decompressed_chunk_at<W: Write + Seek>(
+fn write_decompressed_chunk_at(
     chunk_path: &Path,
-    writer: &mut W,
+    out_file: &File,
     offset: u64,
     expected_size: u64,
-    file_hasher: Option<&mut Md5>,
+    mut file_hasher: Option<&mut Md5>,
     buffer: &mut [u8],
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
@@ -395,7 +387,7 @@ fn write_decompressed_chunk_at<W: Write + Seek>(
     if expected_size >= OPT_THRESHOLD {
         super::assembly_opt::decompress_chunk_optimized(
             chunk_path,
-            writer,
+            out_file,
             offset,
             expected_size,
             file_hasher,
@@ -412,36 +404,22 @@ fn write_decompressed_chunk_at<W: Write + Seek>(
         };
         decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
-        writer.seek(SeekFrom::Start(offset))?;
-
+        let mut write_offset = offset;
         let mut bytes_written: u64 = 0;
         let mut chunk_hasher = Md5::new();
 
-        match file_hasher {
-            Some(hasher) => {
-                let mut hw = HashWriter {
-                    inner: writer,
-                    hasher,
-                };
-                loop {
-                    let n = decoder.read(buffer)?;
-                    if n == 0 {
-                        break;
-                    }
-                    chunk_hasher.update(&buffer[..n]);
-                    hw.write_all(&buffer[..n])?;
-                    bytes_written += n as u64;
-                }
+        loop {
+            let n = decoder.read(buffer)?;
+            if n == 0 {
+                break;
             }
-            None => loop {
-                let n = decoder.read(buffer)?;
-                if n == 0 {
-                    break;
-                }
-                chunk_hasher.update(&buffer[..n]);
-                writer.write_all(&buffer[..n])?;
-                bytes_written += n as u64;
-            },
+            chunk_hasher.update(&buffer[..n]);
+            if let Some(hasher) = file_hasher.as_deref_mut() {
+                hasher.update(&buffer[..n]);
+            }
+            out_file.write_all_at(&buffer[..n], write_offset)?;
+            write_offset += n as u64;
+            bytes_written += n as u64;
         }
 
         if bytes_written != expected_size {
@@ -468,16 +446,18 @@ fn write_decompressed_chunk_at<W: Write + Seek>(
     }
 }
 
-/// Read decompressed bytes from an existing file, verify MD5, and write to the
-/// output. Uses memory-mapped I/O for large chunks (>= 1 MiB).
+/// Copy decompressed bytes from an existing file to `out_file`. Large chunks
+/// (>= 1 MiB) use the optimized path in `assembly_opt`; small chunks stream
+/// through a thread-local buffer. Writes use `write_all_at` so no seek is
+/// needed on the destination file.
 #[allow(clippy::too_many_arguments)]
-fn write_from_old_file<W: Write + Seek>(
+fn write_from_old_file(
     old_file_path: &Path,
-    writer: &mut W,
+    out_file: &File,
     new_offset: u64,
     old_offset: u64,
     expected_size: u64,
-    file_hasher: Option<&mut Md5>,
+    mut file_hasher: Option<&mut Md5>,
     buffer: &mut [u8],
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
@@ -486,7 +466,7 @@ fn write_from_old_file<W: Write + Seek>(
     if expected_size >= MMA_THRESHOLD {
         super::assembly_opt::write_chunk_from_mmap(
             old_file_path,
-            writer,
+            out_file,
             new_offset,
             old_offset,
             expected_size,
@@ -498,37 +478,22 @@ fn write_from_old_file<W: Write + Seek>(
         let mut reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
         reader.seek(SeekFrom::Start(old_offset))?;
 
-        writer.seek(SeekFrom::Start(new_offset))?;
-
+        let mut write_offset = new_offset;
         let mut bytes_written: u64 = 0;
         let mut chunk_hasher = Md5::new();
         let mut remaining = expected_size;
 
-        match file_hasher {
-            Some(hasher) => {
-                let mut hw = HashWriter {
-                    inner: writer,
-                    hasher,
-                };
-                while remaining > 0 {
-                    let to_read = remaining.min(buffer.len() as u64) as usize;
-                    reader.read_exact(&mut buffer[..to_read])?;
-                    chunk_hasher.update(&mut buffer[..to_read]);
-                    hw.write_all(&buffer[..to_read])?;
-                    bytes_written += to_read as u64;
-                    remaining = remaining.saturating_sub(to_read as u64);
-                }
+        while remaining > 0 {
+            let to_read = remaining.min(buffer.len() as u64) as usize;
+            reader.read_exact(&mut buffer[..to_read])?;
+            chunk_hasher.update(&buffer[..to_read]);
+            if let Some(hasher) = file_hasher.as_deref_mut() {
+                hasher.update(&buffer[..to_read]);
             }
-            None => {
-                while remaining > 0 {
-                    let to_read = remaining.min(buffer.len() as u64) as usize;
-                    reader.read_exact(&mut buffer[..to_read])?;
-                    chunk_hasher.update(&mut buffer[..to_read]);
-                    writer.write_all(&buffer[..to_read])?;
-                    bytes_written += to_read as u64;
-                    remaining = remaining.saturating_sub(to_read as u64);
-                }
-            }
+            out_file.write_all_at(&buffer[..to_read], write_offset)?;
+            write_offset += to_read as u64;
+            bytes_written += to_read as u64;
+            remaining = remaining.saturating_sub(to_read as u64);
         }
 
         if bytes_written != expected_size {
@@ -552,22 +517,6 @@ fn write_from_old_file<W: Write + Seek>(
         }
 
         Ok(bytes_written)
-    }
-}
-
-struct HashWriter<'a, W: Write> {
-    inner: &'a mut W,
-    hasher: &'a mut Md5,
-}
-
-impl<W: Write> Write for HashWriter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.hasher.update(buf);
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
     }
 }
 
@@ -1453,83 +1402,31 @@ mod tests {
         assert!(validate_chunk_name("0"));
     }
 
-    #[test]
-    fn hash_writer_writes_data_and_updates_hasher() {
-        use md5::{Digest, Md5};
-        let mut hasher = Md5::new();
-        let mut output = Vec::new();
-        {
-            let mut hw = HashWriter {
-                inner: &mut output,
-                hasher: &mut hasher,
-            };
-            hw.write_all(b"hello ").unwrap();
-            hw.write_all(b"world").unwrap();
-            hw.flush().unwrap();
-        }
-        assert_eq!(output, b"hello world");
-        let expected = hex::encode(Md5::digest(b"hello world"));
-        assert_eq!(hex::encode(hasher.finalize()), expected);
-    }
-
-    #[test]
-    fn hash_writer_empty_write() {
-        use md5::{Digest, Md5};
-        let mut hasher = Md5::new();
-        let mut output = Vec::new();
-        {
-            let mut hw = HashWriter {
-                inner: &mut output,
-                hasher: &mut hasher,
-            };
-            hw.write_all(b"").unwrap();
-        }
-        assert!(output.is_empty());
-        let expected = hex::encode(Md5::digest(b""));
-        assert_eq!(hex::encode(hasher.finalize()), expected);
-    }
-
-    #[test]
-    fn hash_writer_multiple_writes_accumulate_hash() {
-        use md5::{Digest, Md5};
-        let mut hasher = Md5::new();
-        let mut output = Vec::new();
-        {
-            let mut hw = HashWriter {
-                inner: &mut output,
-                hasher: &mut hasher,
-            };
-            hw.write_all(b"a").unwrap();
-            hw.write_all(b"b").unwrap();
-            hw.write_all(b"c").unwrap();
-        }
-        let combined_hash = hex::encode(Md5::digest(b"abc"));
-        assert_eq!(hex::encode(hasher.finalize()), combined_hash);
-    }
-
     /// Verify write_from_old_file reads at the correct offset.
     #[test]
     fn write_from_old_file_reads_correct_offset() {
-        use std::io::Write;
-
         let dir = tempfile::tempdir().unwrap();
         let old_file_path = dir.path().join("old_file.bin");
 
         // Old file: "AAAABBBB"
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(b"AAAABBBB").unwrap();
-        drop(old_file);
+        fs::write(&old_file_path, b"AAAABBBB").unwrap();
 
-        // Output file
+        // Output file, pre-sized so write_all_at at offset 0 is valid.
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(4).unwrap();
 
         // Read 4 bytes from offset 4.
         let mut transfer_buf = vec![0u8; 1024];
         let bytes_written = write_from_old_file(
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,    // new_offset
             4,    // old_offset
             4,    // expected_size
@@ -1538,9 +1435,6 @@ mod tests {
             "", // chunk_decompressed_hash_md5 (skip verification)
         )
         .unwrap();
-
-        writer.flush().unwrap();
-        drop(writer);
         drop(output_file);
 
         assert_eq!(bytes_written, 4);
@@ -1551,26 +1445,27 @@ mod tests {
     /// Verify chunk hash validation in write_from_old_file.
     #[test]
     fn write_from_old_file_verifies_chunk_hash() {
-        use md5::{Digest, Md5};
-
         let dir = tempfile::tempdir().unwrap();
         let old_file_path = dir.path().join("old_file.bin");
 
         let data = b"test data for hash verification";
         let expected_md5 = hex::encode(Md5::digest(data));
-
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(data).unwrap();
-        drop(old_file);
+        fs::write(&old_file_path, data).unwrap();
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(data.len() as u64).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
         let result = write_from_old_file(
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,
             0,
             data.len() as u64,
@@ -1590,19 +1485,22 @@ mod tests {
 
         let data = b"test data";
         let wrong_md5 = "ffffffffffffffffffffffffffffffff"; // Wrong MD5 (not EMPTY_MD5).
-
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(data).unwrap();
-        drop(old_file);
+        fs::write(&old_file_path, data).unwrap();
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(data.len() as u64).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
         let result = write_from_old_file(
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,
             0,
             data.len() as u64,
@@ -1625,20 +1523,22 @@ mod tests {
         let old_file_path = dir.path().join("old_file.bin");
 
         // 5-byte file
-        let data = b"short";
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(data).unwrap();
-        drop(old_file);
+        fs::write(&old_file_path, b"short").unwrap();
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(10).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
-        // Request 10 bytes from a 5-byte file.
         let result = write_from_old_file(
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,
             0,
             10, // expected_size > actual size
@@ -1657,13 +1557,19 @@ mod tests {
         let old_file_path = dir.path().join("nonexistent.bin");
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(100).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
         let result = write_from_old_file(
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,
             0,
             100,

@@ -17,6 +17,7 @@ mod preinstall;
 mod update;
 
 mod profiling;
+mod sysio;
 
 #[cfg(test)]
 mod bench_tests;
