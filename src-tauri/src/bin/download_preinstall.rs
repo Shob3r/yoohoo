@@ -86,11 +86,15 @@ fn main() {
 }
 
 async fn async_main() {
-    let game_id = std::env::args().nth(1).unwrap_or_else(|| "hk4e".into());
-    let vo_lang = std::env::args().nth(2).unwrap_or_else(|| "en".into());
-    let home = std::env::var("HOME").expect("HOME not set");
-    let game_dir = format!("{home}/.local/share/app.elysiae.Elysiae/games/{game_id}");
-    let game_dir = Path::new(&game_dir);
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 4 {
+        let program = &args[0];
+        eprintln!("Usage: {program} <game_id> <vo_lang> <game_dir>");
+        std::process::exit(1);
+    }
+    let game_id = &args[1];
+    let vo_lang = &args[2];
+    let game_dir = Path::new(&args[3]);
     let sf = state_file(game_dir);
 
     let client = reqwest::Client::new();
@@ -190,7 +194,8 @@ async fn async_main() {
         }
         Err(err) => {
             eprintln!("\nPreinstall download failed: {err}");
-            eprintln!("State saved to {}. Re-run to resume.", sf.display());
+            let sf_display = sf.display();
+            eprintln!("State saved to {sf_display}. Re-run to resume.");
         }
     }
 }

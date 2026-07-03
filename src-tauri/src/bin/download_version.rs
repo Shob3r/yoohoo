@@ -3,7 +3,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use elysiae_lib::commands::sophon_downloader::SophonProgress;
-use elysiae_lib::commands::sophon_downloader::game_installer::{self, DownloadHandle};
+use elysiae_lib::commands::sophon_downloader::game_installer::{
+    self, DownloadHandle, InstallCallbacks, InstallOptions, ResumeContext,
+};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Builder;
 
@@ -81,18 +83,22 @@ fn main() {
 }
 
 async fn async_main() {
-    let game_id = "hk4e";
-    let vo_lang = "en";
-    let tag = std::env::args().nth(1).unwrap_or_else(|| "6.6.0".into());
-    let home = std::env::var("HOME").expect("HOME not set");
-    let game_dir = format!("{home}/.local/share/app.elysiae.Elysiae/games/hk4e");
-    let game_dir = Path::new(&game_dir);
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 5 {
+        let program = &args[0];
+        eprintln!("Usage: {program} <game_id> <vo_lang> <tag> <game_dir>");
+        std::process::exit(1);
+    }
+    let game_id = &args[1];
+    let vo_lang = &args[2];
+    let tag = &args[3];
+    let game_dir = Path::new(&args[4]);
     let sf = state_file(game_dir);
 
     let (prev_manifest_hash, prev_downloaded_chunks, is_resume) = if sf.exists() {
         match serde_json::from_str::<SavedState>(&std::fs::read_to_string(&sf).unwrap()) {
             Ok(saved) => {
-                if saved.tag == tag {
+                if saved.tag.as_str() == tag.as_str() {
                     let count = saved.downloaded_chunks.len();
                     let bytes: u64 = saved.downloaded_chunks.values().sum();
                     eprintln!(
@@ -189,7 +195,8 @@ async fn async_main() {
         Ok(()) => eprintln!("\nInstall complete!"),
         Err(err) => {
             eprintln!("\nInstall failed: {err}");
-            eprintln!("State saved to {}. Re-run to resume.", sf.display());
+            let sf_display = sf.display();
+            eprintln!("State saved to {sf_display}. Re-run to resume.");
         }
     }
 }

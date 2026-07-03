@@ -55,29 +55,34 @@ fn main() {
 }
 
 async fn async_main() {
-    let game_id = "hk4e";
-    let vo_lang = "en";
-    let home = std::env::var("HOME").expect("HOME");
-    let game_dir = format!("{home}/.local/share/app.elysiae.Elysiae/games/hk4e");
-    let game_dir = Path::new(&game_dir);
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 5 {
+        eprintln!(
+            "Usage: {} <game_id> <vo_lang> <current_tag> <game_dir>",
+            args[0]
+        );
+        std::process::exit(1);
+    }
+    let game_id = &args[1];
+    let vo_lang = &args[2];
+    let current_tag = &args[3];
+    let game_dir = Path::new(&args[4]);
 
-    let current_tag = std::fs::read_to_string(game_dir.join(".sophon_version"))
-        .expect("no .sophon_version")
-        .trim()
-        .to_string();
     eprintln!("Current tag: {current_tag}");
 
     let client = reqwest::Client::new();
 
     eprintln!("Building update installers (from {current_tag} to latest)...");
     let (installers, deleted_files, new_tag, _manifest_hash) =
-        game_installer::build_update_installers(&client, game_id, vo_lang, &current_tag, game_dir)
+        game_installer::build_update_installers(&client, game_id, vo_lang, current_tag, game_dir)
             .await
             .expect("build_update_installers failed");
 
     eprintln!("Update: {current_tag} -> {new_tag}");
-    eprintln!("Installers: {}", installers.len());
-    eprintln!("Deleted files: {}", deleted_files.len());
+    let installers_count = installers.len();
+    eprintln!("Installers: {installers_count}");
+    let deleted_count = deleted_files.len();
+    eprintln!("Deleted files: {deleted_count}");
 
     for (i, inst) in installers.iter().enumerate() {
         let files = inst.manifest.assets.len();
