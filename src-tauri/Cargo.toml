@@ -84,6 +84,12 @@ tauri-plugin-window-state = "2.4.1"
 [dev-dependencies]
 tempfile = "3.27.0"
 wiremock = "0.6.5"
+criterion = "0.8"
+
+[[bench]]
+name = "sophon_bench"
+harness = false
+required-features = ["benchmark"]
 
 [[bin]]
 name = "elysiae"
@@ -103,6 +109,11 @@ required-features = ["download-cli"]
 name = "download_update"
 path = "src/bin/download_update.rs"
 required-features = ["download-cli"]
+
+[[bin]]
+name = "bench_memory"
+path = "src/bin/bench_memory.rs"
+required-features = ["benchmark"]
 
 [profile.release]
 opt-level = 3
