@@ -4,7 +4,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd as _;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread_local;
 use std::time::{Duration, Instant};
@@ -552,7 +552,10 @@ pub struct AssemblyTaskParams {
     pub last_assembly_update: Arc<Mutex<Instant>>,
     pub total_files: u64,
     pub profiler: Arc<super::profiling::PipelineProfiler>,
-    pub completed_files: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Live file completion bitset indexed by `file_idx`. Replaces the prior
+    /// `Arc<Mutex<HashSet<String>>>` with a constant-memory atomic array: no
+    /// per-file String alloc and zero lock contention.
+    pub completion_flags: Arc<[AtomicBool]>,
 }
 
 pub fn run_assembly_task(
@@ -574,7 +577,7 @@ pub fn run_assembly_task(
         last_assembly_update,
         total_files,
         profiler,
-        completed_files,
+        completion_flags,
     } = params;
 
     let _assembly_timer = super::profiling::AssemblyTimer::new(&profiler);
@@ -596,45 +599,46 @@ pub fn run_assembly_task(
     let file_name = all_files.file_name(file_idx).to_string();
     let chunk_range = all_files.file_chunk_range(file_idx);
 
-    {
-        let cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
-        if cf.contains(file_name.as_str()) {
-            for ci in chunk_range.start..chunk_range.end {
-                decrement_chunk_refcount(
-                    all_files.chunk(ci as usize).chunk_name,
-                    &chunk_names,
-                    &chunk_refcounts,
-                    &chunks_dir,
-                );
-            }
-            let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
-            let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
-            let force = checked == total_files || count == total_files;
-            if force {
-                updater(SophonProgress::CheckingFiles {
-                    checked_files: checked,
-                    total_files,
-                });
-                updater(SophonProgress::Assembling {
-                    assembled_files: count,
-                    total_files,
-                });
-            } else if let Ok(mut lu) = last_assembly_update.try_lock()
-                && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
-            {
-                updater(SophonProgress::CheckingFiles {
-                    checked_files: checked,
-                    total_files,
-                });
-                updater(SophonProgress::Assembling {
-                    assembled_files: count,
-                    total_files,
-                });
-                *lu = Instant::now();
-            }
-            _assembly_timer.finish();
-            return Ok(());
+    // Claim the slot for this file once: the swap returns the previous value,
+    // so true here means another task already finished it. Either way, after
+    // this call the bit is true; the work branches below decide whether the
+    // current task skips or proceeds.
+    if completion_flags[file_idx].swap(true, Ordering::AcqRel) {
+        for ci in chunk_range.start..chunk_range.end {
+            decrement_chunk_refcount(
+                all_files.chunk(ci as usize).chunk_name,
+                &chunk_names,
+                &chunk_refcounts,
+                &chunks_dir,
+            );
         }
+        let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
+        let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+        let force = checked == total_files || count == total_files;
+        if force {
+            updater(SophonProgress::CheckingFiles {
+                checked_files: checked,
+                total_files,
+            });
+            updater(SophonProgress::Assembling {
+                assembled_files: count,
+                total_files,
+            });
+        } else if let Ok(mut lu) = last_assembly_update.try_lock()
+            && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
+        {
+            updater(SophonProgress::CheckingFiles {
+                checked_files: checked,
+                total_files,
+            });
+            updater(SophonProgress::Assembling {
+                assembled_files: count,
+                total_files,
+            });
+            *lu = Instant::now();
+        }
+        _assembly_timer.finish();
+        return Ok(());
     }
 
     let file_size = all_files.file_size(file_idx);
@@ -690,10 +694,6 @@ pub fn run_assembly_task(
 
     if !needs_assembly {
         let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
-        {
-            let mut cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
-            cf.insert(file_name.clone());
-        }
         let force = count == total_files;
         if force {
             updater(SophonProgress::Assembling {
@@ -713,7 +713,7 @@ pub fn run_assembly_task(
         return Ok(());
     }
 
-    assemble_file(
+    let result = assemble_file(
         &all_files,
         file_idx,
         &game_dir,
@@ -723,18 +723,17 @@ pub fn run_assembly_task(
         &chunk_refcounts,
         &verify_cache,
         true,
-    )
-    .map_err(|err| SophonError::AssemblyFailed {
-        file: file_name.clone(),
-        error: err.to_string(),
-    })?;
+    );
+    if let Err(err) = result {
+        // Release the claim so a later retry can reprocess this file_idx.
+        completion_flags[file_idx].store(false, Ordering::Release);
+        return Err(SophonError::AssemblyFailed {
+            file: file_name.clone(),
+            error: err.to_string(),
+        });
+    }
 
     let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
-
-    {
-        let mut cf = completed_files.lock().unwrap_or_else(|e| e.into_inner());
-        cf.insert(file_name.clone());
-    }
 
     let force = count == total_files;
     if force {
@@ -1194,7 +1193,7 @@ mod tests {
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 0,
             profiler: Arc::new(PipelineProfiler::new()),
-            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            completion_flags: Arc::from(Vec::<AtomicBool>::new()),
         };
 
         let result = run_assembly_task(params, |_| {});
@@ -1339,7 +1338,7 @@ mod tests {
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 1,
             profiler: Arc::new(PipelineProfiler::new()),
-            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            completion_flags: Arc::from((0..1).map(|_| AtomicBool::new(false)).collect::<Vec<_>>()),
         };
 
         let result = run_assembly_task(params, |_| {});

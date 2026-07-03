@@ -225,9 +225,9 @@ mod tests {
     #[test]
     fn load_download_state_valid_does_not_create_backup() {
         use crate::commands::sophon_downloader::DownloadState;
+        use crate::commands::sophon_downloader::types::CompletedFiles;
         use crate::commands::sophon_downloader::types::DownloadType;
         use std::collections::HashMap;
-        use std::collections::HashSet;
         let dir = tempfile::tempdir().unwrap();
         let state_path = dir.path().join("download_state.json");
         let state = DownloadState {
@@ -238,7 +238,7 @@ mod tests {
             current_tag: None,
             manifest_hash: "hash".into(),
             downloaded_chunks: HashMap::new(),
-            completed_files: HashSet::new(),
+            completed_files: CompletedFiles::default(),
         };
         std::fs::write(&state_path, serde_json::to_string(&state).unwrap()).unwrap();
 

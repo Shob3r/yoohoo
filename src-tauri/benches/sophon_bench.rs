@@ -310,6 +310,25 @@ fn bench_assembly_e2e(c: &mut Criterion) {
     let refcounts: Vec<AtomicUsize> = (0..num_chunks).map(|_| AtomicUsize::new(1000)).collect();
     let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
 
+    // Run assembly once outside the timed loop: fails loudly on a regression
+    // and seeds the output file so filter-out runs do not panic on a missing
+    // post-bench assertion. The assertion is the only correctness gate here;
+    // the warmup call is not timed.
+    assemble_file(
+        &manifest,
+        0,
+        &game_dir,
+        &chunks_dir,
+        &tmp_dir,
+        &lookup,
+        &refcounts,
+        &cache,
+        true,
+    )
+    .expect("warmup assemble");
+    let assembled = fs::read(game_dir.join("assembled.bin")).unwrap();
+    assert_eq!(assembled, raw, "assemble_file bytes must match raw input");
+
     let mut group = c.benchmark_group("assembly_e2e");
     group.throughput(Throughput::Bytes(total_bytes));
     group.bench_function(BenchmarkId::new("assemble_file", num_chunks), |b| {
@@ -331,9 +350,6 @@ fn bench_assembly_e2e(c: &mut Criterion) {
         });
     });
     group.finish();
-
-    let assembled = fs::read(game_dir.join("assembled.bin")).unwrap();
-    assert_eq!(assembled, raw, "assembled file bytes must match");
 }
 
 const VERIFY_MIB: u64 = 50;

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 /// Compact sorted index over a `StringArena` for `&str -> usize` lookup
 /// via binary search. Avoids per-entry HashMap overhead.
@@ -81,6 +81,11 @@ pub type StateSaver = Arc<dyn Fn(&HashMap<String, u64>) + Send + Sync>;
 pub struct ResumeContext {
     pub prev_manifest_hash: String,
     pub prev_downloaded_chunks: HashMap<String, u64>,
+    /// Persisted completion seed loaded from the on-disk resume state.
+    /// install() uses this to pre-populate `completion_flags` before
+    /// assembly tasks fire so that previously finished files short-circuit
+    /// instead of reassembling.
+    pub resume_seed: super::CompletedFiles,
 }
 
 struct InstallContext {
@@ -114,7 +119,10 @@ struct InstallContext {
     state_saver: StateSaver,
     adaptive_assembly: Arc<AdaptiveAssembly>,
     profiler: Arc<super::profiling::PipelineProfiler>,
-    completed_files: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Live file completion bitset indexed by `file_idx`. Replaces the prior
+    /// `Arc<Mutex<HashSet<String>>>` with a constant-memory atomic array:
+    /// no per-file String alloc and zero lock contention.
+    completion_flags: Arc<[AtomicBool]>,
 }
 
 static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -728,7 +736,7 @@ fn make_assembly_params(
         last_assembly_update: Arc::clone(&ctx.last_assembly_update),
         total_files: ctx.total_files,
         profiler: Arc::clone(&ctx.profiler),
-        completed_files: Arc::clone(&ctx.completed_files),
+        completion_flags: Arc::clone(&ctx.completion_flags),
     }
 }
 
@@ -1498,7 +1506,10 @@ pub struct InstallOptions {
 pub struct InstallCallbacks {
     pub updater: ProgressUpdater,
     pub state_saver: StateSaver,
-    pub completed_files: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// OnceLock that install() populates once the manifest is parsed and the
+    /// completion bitset sized. Saver reads from it; preinstall leaves it unset
+    /// and the saver writes empty indices.
+    pub completion_state: Arc<OnceLock<Arc<[AtomicBool]>>>,
 }
 
 fn chunk_still_valid_for_resume(chunk_name: &str, chunk_size: u64, chunks_dir: &Path) -> bool {
@@ -1551,6 +1562,7 @@ pub async fn install(
     let ResumeContext {
         prev_manifest_hash,
         mut prev_downloaded_chunks,
+        resume_seed,
     } = resume;
     let current_manifest_hash = combine_manifest_hashes(&installers);
     let manifest_changed = prev_manifest_hash != current_manifest_hash;
@@ -1673,7 +1685,7 @@ pub async fn install(
     let mut resume_bytes_offset: u64 = 0;
     let mut pre_assembled: u64 = 0;
     let completed_chunk_names: Arc<DashSet<String>>;
-    let completed_indices = if options.is_resume {
+    let completed_indices: Option<HashSet<usize>> = if options.is_resume {
         let total = all_files.num_files() as u64;
         (callbacks.updater)(SophonProgress::CalculatingDownloads {
             checked_files: 0,
@@ -1837,6 +1849,67 @@ pub async fn install(
     );
 
     let adaptive_assembly = Arc::new(AdaptiveAssembly::new());
+
+    // Build the live completion bitset. Sized to the manifest's file count;
+    // seeded from the persisted resume state (migrating legacy names to
+    // indices) and the disk-verified resume scan set, then handed to the
+    // InstallContext and the saver-side OnceLock.
+    let completion_flags: Arc<[AtomicBool]> = {
+        let num_files = all_files.num_files();
+        let v: Vec<AtomicBool> = (0..num_files).map(|_| AtomicBool::new(false)).collect();
+        match &resume_seed {
+            super::CompletedFiles::Indices(idxs) => {
+                let mut seeded = 0usize;
+                for &idx in idxs {
+                    if idx < num_files {
+                        v[idx].store(true, Ordering::Release);
+                        seeded += 1;
+                    }
+                }
+                if seeded != 0 {
+                    log::debug!("Resumed with {seeded} pre-completed file indices");
+                }
+            }
+            super::CompletedFiles::Legacy(names) => {
+                if !names.is_empty() {
+                    let mut map: HashMap<&str, usize> = HashMap::with_capacity(num_files);
+                    for idx in 0..num_files {
+                        map.insert(all_files.file_name(idx), idx);
+                    }
+                    let mut migrated = 0usize;
+                    for name in names {
+                        if let Some(&idx) = map.get(name.as_str()) {
+                            v[idx].store(true, Ordering::Release);
+                            migrated += 1;
+                        }
+                    }
+                    log::info!(
+                        "Migrated {migrated} legacy completion names to indices (manifest has {num_files} files)"
+                    );
+                }
+            }
+        }
+        // Disk-verified files from the resume scan are authoritative; set
+        // their bits last so any drift in the persisted seed is corrected.
+        if let Some(set) = completed_indices.as_ref() {
+            for &idx in set {
+                if idx < v.len() {
+                    v[idx].store(true, Ordering::Release);
+                }
+            }
+        }
+        Arc::from(v)
+    };
+    if callbacks
+        .completion_state
+        .set(Arc::clone(&completion_flags))
+        .is_err()
+    {
+        // OnceLock already set — only happens if a prior install reused the
+        // callbacks. Log and continue: the saver reads from the lock, the
+        // InstallContext uses Arc::clone of the fresh bitset.
+        log::warn!("completion_state OnceLock already set; using fresh bitset for InstallContext");
+    }
     let ctx = Arc::new(InstallContext {
         installer_clients,
         installer_downloads,
@@ -1866,7 +1939,7 @@ pub async fn install(
         state_saver: callbacks.state_saver,
         adaptive_assembly: Arc::clone(&adaptive_assembly),
         profiler: Arc::new(super::profiling::PipelineProfiler::new()),
-        completed_files: Arc::clone(&callbacks.completed_files),
+        completion_flags: Arc::clone(&completion_flags),
     });
 
     #[cfg(feature = "sophon-profiling")]
@@ -2840,7 +2913,7 @@ mod tests {
             state_saver: Arc::new(|_| {}),
             adaptive_assembly: Arc::new(AdaptiveAssembly::new()),
             profiler: Arc::new(super::profiling::PipelineProfiler::new()),
-            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            completion_flags: Arc::from(Vec::<AtomicBool>::new()),
         });
 
         let handle = DownloadHandle::new();
@@ -2941,7 +3014,7 @@ mod tests {
             state_saver: Arc::new(|_| {}),
             adaptive_assembly: Arc::new(AdaptiveAssembly::new()),
             profiler: Arc::new(super::profiling::PipelineProfiler::new()),
-            completed_files: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            completion_flags: Arc::from(Vec::<AtomicBool>::new()),
         });
 
         let handle = DownloadHandle::new();

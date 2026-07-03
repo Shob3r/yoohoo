@@ -1,9 +1,9 @@
 //! Tauri command handlers for the Sophon downloader.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, OnceLock};
 
 use serde::Serialize;
 use tauri::path::BaseDirectory;
@@ -20,7 +20,7 @@ use crate::commands::sophon_downloader::{
         clear_download_state, delete_chunks_dir, download_state_path, load_download_state,
         save_download_state,
     },
-    types::{DownloadState, DownloadType, ResumeInfo},
+    types::{CompletedFiles, DownloadState, DownloadType, ResumeInfo},
 };
 
 struct StateMeta {
@@ -32,10 +32,14 @@ struct StateMeta {
     manifest_hash: String,
 }
 
+/// Build the periodic state saver closure. `completion_state` is a
+/// `OnceLock` that `install()` initializes once it knows the manifest's
+/// file count; before then, the saver simply skips. Saves serialize file
+/// completion as `Vec<usize>` indices — the new resume-state format.
 fn make_state_saver(
     app: &AppHandle,
     state: &DownloadState,
-    completed_files: Arc<Mutex<HashSet<String>>>,
+    completion_state: Arc<OnceLock<Arc<[AtomicBool]>>>,
 ) -> game_installer::StateSaver {
     let app = app.clone();
     let meta = StateMeta {
@@ -46,6 +50,7 @@ fn make_state_saver(
         current_tag: state.current_tag.clone(),
         manifest_hash: state.manifest_hash.clone(),
     };
+    let completion_state_inner = Arc::clone(&completion_state);
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct DownloadStateRef<'a> {
@@ -56,10 +61,21 @@ fn make_state_saver(
         current_tag: &'a Option<String>,
         manifest_hash: &'a str,
         downloaded_chunks: &'a HashMap<String, u64>,
-        completed_files: &'a HashSet<String>,
+        completed_files: &'a [usize],
     }
     Arc::new(move |chunks: &HashMap<String, u64>| {
-        let completed = completed_files.lock().unwrap_or_else(|e| e.into_inner());
+        // `install()` populates the OnceLock; `preinstall_download()` (which also
+        // routes through this saver) leaves it unset. Treat unset as an empty
+        // completion set so saves continue and persist non-completion fields.
+        let mut indices: Vec<usize> = Vec::new();
+        if let Some(flags) = completion_state_inner.get() {
+            indices.reserve(flags.len() / 4);
+            for (idx, b) in flags.iter().enumerate() {
+                if b.load(AtomicOrdering::Acquire) {
+                    indices.push(idx);
+                }
+            }
+        }
         let snapshot = DownloadStateRef {
             game_id: &meta.game_id,
             vo_lang: &meta.vo_lang,
@@ -68,13 +84,12 @@ fn make_state_saver(
             current_tag: &meta.current_tag,
             manifest_hash: &meta.manifest_hash,
             downloaded_chunks: chunks,
-            completed_files: &completed,
+            completed_files: &indices,
         };
         let json = match serde_json::to_string(&snapshot) {
             Ok(j) => j,
             Err(_) => return,
         };
-        drop(completed);
         let Some(path) = download_state_path(&app) else {
             return;
         };
@@ -148,16 +163,15 @@ pub async fn sophon_download_version(
         current_tag: None,
         manifest_hash,
         downloaded_chunks: HashMap::new(),
-        completed_files: HashSet::new(),
+        completed_files: CompletedFiles::default(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let completed_files: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(state.completed_files.clone()));
-    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
+    let completion_state: Arc<OnceLock<Arc<[AtomicBool]>>> = Arc::new(OnceLock::new());
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completion_state));
     let app_clone = app_handle.clone();
     let vo_langs: Vec<String> = vec![vo_lang.clone()];
     let result = game_installer::install(
@@ -168,6 +182,7 @@ pub async fn sophon_download_version(
         game_installer::ResumeContext {
             prev_manifest_hash: String::new(),
             prev_downloaded_chunks: HashMap::new(),
+            resume_seed: CompletedFiles::default(),
         },
         game_installer::InstallOptions {
             is_preinstall: false,
@@ -177,7 +192,7 @@ pub async fn sophon_download_version(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
-            completed_files,
+            completion_state,
         },
         &game_id,
         &vo_langs,
@@ -253,16 +268,15 @@ pub async fn sophon_download(
         current_tag: None,
         manifest_hash,
         downloaded_chunks: HashMap::new(),
-        completed_files: HashSet::new(),
+        completed_files: CompletedFiles::default(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let completed_files: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(state.completed_files.clone()));
-    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
+    let completion_state: Arc<OnceLock<Arc<[AtomicBool]>>> = Arc::new(OnceLock::new());
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completion_state));
     let app_clone = app_handle.clone();
     let vo_langs: Vec<String> = vec![vo_lang.clone()];
     let result = game_installer::install(
@@ -273,6 +287,7 @@ pub async fn sophon_download(
         game_installer::ResumeContext {
             prev_manifest_hash: String::new(),
             prev_downloaded_chunks: HashMap::new(),
+            resume_seed: CompletedFiles::default(),
         },
         game_installer::InstallOptions {
             is_preinstall: false,
@@ -282,7 +297,7 @@ pub async fn sophon_download(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
-            completed_files,
+            completion_state,
         },
         &game_id,
         &vo_langs,
@@ -367,16 +382,15 @@ pub async fn sophon_update(
         current_tag: Some(current_tag.clone()),
         manifest_hash,
         downloaded_chunks: HashMap::new(),
-        completed_files: HashSet::new(),
+        completed_files: CompletedFiles::default(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let completed_files: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(state.completed_files.clone()));
-    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
+    let completion_state: Arc<OnceLock<Arc<[AtomicBool]>>> = Arc::new(OnceLock::new());
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completion_state));
     let app_clone = app_handle.clone();
     let vo_langs: Vec<String> = vec![vo_lang.clone()];
     let result = game_installer::install(
@@ -387,6 +401,7 @@ pub async fn sophon_update(
         game_installer::ResumeContext {
             prev_manifest_hash: String::new(),
             prev_downloaded_chunks: HashMap::new(),
+            resume_seed: CompletedFiles::default(),
         },
         game_installer::InstallOptions {
             is_preinstall: false,
@@ -396,7 +411,7 @@ pub async fn sophon_update(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
-            completed_files,
+            completion_state,
         },
         &game_id,
         &vo_langs,
@@ -474,15 +489,15 @@ pub async fn sophon_preinstall(
         current_tag,
         manifest_hash: tag.clone(),
         downloaded_chunks: HashMap::new(),
-        completed_files: HashSet::new(),
+        completed_files: CompletedFiles::default(),
     };
     save_download_state(&app_handle, &state)?;
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
 
-    let completed_files: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completed_files));
+    let completion_state: Arc<OnceLock<Arc<[AtomicBool]>>> = Arc::new(OnceLock::new());
+    let saver = make_state_saver(&app_handle, &state, Arc::clone(&completion_state));
     let app_clone = app_handle.clone();
 
     let download_client = DownloadClient::new().0;
@@ -600,9 +615,8 @@ pub async fn sophon_resume_download(
             downloaded_chunks: prev_chunks.clone(),
             completed_files: state.completed_files.clone(),
         };
-        let completed_files: Arc<Mutex<HashSet<String>>> =
-            Arc::new(Mutex::new(resumed_state.completed_files.clone()));
-        let saver = make_state_saver(&app_handle, &resumed_state, Arc::clone(&completed_files));
+        let completion_state: Arc<OnceLock<Arc<[AtomicBool]>>> = Arc::new(OnceLock::new());
+        let saver = make_state_saver(&app_handle, &resumed_state, Arc::clone(&completion_state));
 
         let handle = DownloadHandle::new();
         *active.0.lock().await = Some(handle.clone());
@@ -687,9 +701,8 @@ pub async fn sophon_resume_download(
         downloaded_chunks: resumed_chunks,
         completed_files: state.completed_files.clone(),
     };
-    let completed_files: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(resumed_state.completed_files.clone()));
-    let saver = make_state_saver(&app_handle, &resumed_state, Arc::clone(&completed_files));
+    let completion_state: Arc<OnceLock<Arc<[AtomicBool]>>> = Arc::new(OnceLock::new());
+    let saver = make_state_saver(&app_handle, &resumed_state, Arc::clone(&completion_state));
 
     let handle = DownloadHandle::new();
     *active.0.lock().await = Some(handle.clone());
@@ -704,6 +717,7 @@ pub async fn sophon_resume_download(
         game_installer::ResumeContext {
             prev_manifest_hash: old_manifest_hash,
             prev_downloaded_chunks: resumed_state.downloaded_chunks,
+            resume_seed: state.completed_files.clone(),
         },
         game_installer::InstallOptions {
             is_preinstall: false,
@@ -713,7 +727,7 @@ pub async fn sophon_resume_download(
         game_installer::InstallCallbacks {
             updater: Arc::new(move |p| emit(&app_clone, p)),
             state_saver: saver,
-            completed_files,
+            completion_state,
         },
         &game_id,
         &vo_langs,
