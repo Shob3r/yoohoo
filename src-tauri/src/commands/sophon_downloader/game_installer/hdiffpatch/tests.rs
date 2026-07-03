@@ -234,7 +234,6 @@ fn hdiff_same_source_and_dest_fails() {
 #[test]
 fn enumerate_cover_headers_cover_count_gt_zero_cover_size_zero() {
     use std::io::Cursor;
-    // Tests are in a submodule of mod.rs.
     let result = super::patch_core::enumerate_cover_headers(
         &mut Cursor::new(Vec::new()),
         0, // cover_size == 0
@@ -291,7 +290,7 @@ fn enumerate_cover_headers_negative_cover_size_fails() {
 #[test]
 fn enumerate_cover_headers_cover_count_exceeds_max() {
     use std::io::Cursor;
-    // MAX_COVER_COUNT is 50_000_000 per patch_core.rs
+    // Use the same limit as patch_core.rs for the boundary test.
     const MAX_COVER_COUNT: i64 = 50_000_000;
     let result = super::patch_core::enumerate_cover_headers(
         &mut Cursor::new(Vec::new()),
