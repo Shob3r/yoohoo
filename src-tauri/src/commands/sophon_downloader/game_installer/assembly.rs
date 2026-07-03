@@ -10,13 +10,13 @@ use std::thread_local;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use md5::{Digest, Md5};
 use tauri_plugin_log::log;
 
 thread_local! {
     static TRANSFER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+use super::assembly_opt::Md5;
 use super::cache::VerificationEntry;
 use super::error::{SophonError, SophonResult};
 use super::installer::ChunkNameLookup;
@@ -228,7 +228,7 @@ pub fn assemble_file(
         }
         None
     } else {
-        Some(Md5::new())
+        Some(Md5::new()?)
     };
 
     let mut transfer_buffer = TRANSFER_BUF.with(|cell| {
@@ -352,7 +352,7 @@ pub fn assemble_file(
     }
 
     if let Some(hasher) = file_hasher {
-        let actual = hex::encode(hasher.finalize());
+        let actual = hex::encode(hasher.finish()?);
         if actual != file_hash_md5 {
             let _ = fs::remove_file(&tmp_path);
             return Err(SophonError::Md5Mismatch {
@@ -423,16 +423,16 @@ fn write_decompressed_chunk_at(
 
         let mut write_offset = offset;
         let mut bytes_written: u64 = 0;
-        let mut chunk_hasher = Md5::new();
+        let mut chunk_hasher = Md5::new()?;
 
         loop {
             let n = decoder.read(buffer)?;
             if n == 0 {
                 break;
             }
-            chunk_hasher.update(&buffer[..n]);
+            chunk_hasher.update(&buffer[..n])?;
             if let Some(hasher) = file_hasher.as_deref_mut() {
-                hasher.update(&buffer[..n]);
+                hasher.update(&buffer[..n])?;
             }
             out_file.write_all_at(&buffer[..n], write_offset)?;
             write_offset += n as u64;
@@ -449,7 +449,7 @@ fn write_decompressed_chunk_at(
 
         const EMPTY_MD5: &str = "00000000000000000000000000000000";
         if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-            let actual = hex::encode(chunk_hasher.finalize());
+            let actual = hex::encode(chunk_hasher.finish()?);
             if actual != chunk_decompressed_hash_md5 {
                 return Err(SophonError::Md5Mismatch {
                     item: chunk_path.display().to_string(),
@@ -497,15 +497,15 @@ fn write_from_old_file(
 
         let mut write_offset = new_offset;
         let mut bytes_written: u64 = 0;
-        let mut chunk_hasher = Md5::new();
+        let mut chunk_hasher = Md5::new()?;
         let mut remaining = expected_size;
 
         while remaining > 0 {
             let to_read = remaining.min(buffer.len() as u64) as usize;
             reader.read_exact(&mut buffer[..to_read])?;
-            chunk_hasher.update(&buffer[..to_read]);
+            chunk_hasher.update(&buffer[..to_read])?;
             if let Some(hasher) = file_hasher.as_deref_mut() {
-                hasher.update(&buffer[..to_read]);
+                hasher.update(&buffer[..to_read])?;
             }
             out_file.write_all_at(&buffer[..to_read], write_offset)?;
             write_offset += to_read as u64;
@@ -523,7 +523,7 @@ fn write_from_old_file(
 
         const EMPTY_MD5: &str = "00000000000000000000000000000000";
         if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-            let actual = hex::encode(chunk_hasher.finalize());
+            let actual = hex::encode(chunk_hasher.finish()?);
             if actual != chunk_decompressed_hash_md5 {
                 return Err(SophonError::Md5Mismatch {
                     item: old_file_path.display().to_string(),
@@ -899,9 +899,9 @@ mod tests {
     }
 
     fn compute_md5_hex(data: &[u8]) -> String {
-        let mut hasher = Md5::new();
-        hasher.update(data);
-        hex::encode(hasher.finalize())
+        let mut hasher = Md5::new().unwrap();
+        hasher.update(data).unwrap();
+        hex::encode(hasher.finish().unwrap())
     }
 
     fn make_chunk(name: &str, offset: u64, decompressed_size: u64) -> SophonManifestAssetChunk {
@@ -1466,7 +1466,11 @@ mod tests {
         let old_file_path = dir.path().join("old_file.bin");
 
         let data = b"test data for hash verification";
-        let expected_md5 = hex::encode(Md5::digest(data));
+        let expected_md5 = {
+            let mut h = Md5::new().unwrap();
+            h.update(data).unwrap();
+            hex::encode(h.finish().unwrap())
+        };
         fs::write(&old_file_path, data).unwrap();
 
         let output_path = dir.path().join("output.bin");
