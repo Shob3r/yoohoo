@@ -70,7 +70,8 @@ openssl = "0.10.81"
 
 [features]
 sophon-profiling = ["tikv-jemalloc-ctl/stats", "tikv-jemallocator/stats"]
-extra-bins = []
+download-cli = []
+benchmark = []
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.7.0"
@@ -91,17 +92,17 @@ path = "src/main.rs"
 [[bin]]
 name = "download_version"
 path = "src/bin/download_version.rs"
-required-features = ["extra-bins"]
+required-features = ["download-cli"]
 
 [[bin]]
 name = "download_preinstall"
 path = "src/bin/download_preinstall.rs"
-required-features = ["extra-bins"]
+required-features = ["download-cli"]
 
 [[bin]]
 name = "download_update"
 path = "src/bin/download_update.rs"
-required-features = ["extra-bins"]
+required-features = ["download-cli"]
 
 [profile.release]
 opt-level = 3
