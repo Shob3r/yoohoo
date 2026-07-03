@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
+use std::os::unix::io::AsRawFd as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -323,6 +324,15 @@ pub fn assemble_file(
         let _ = fs::remove_file(&tmp_path);
         SophonError::Io(err)
     })?;
+    // The assembled output is now durable on disk; evict its pages from the
+    // page cache so the resident set stays small for the next file. The rename
+    // below is a metadata-only operation and does not need the data pages.
+    super::assembly_opt::posix_advise(
+        out_file.as_raw_fd(),
+        0,
+        file_size,
+        libc::POSIX_FADV_DONTNEED,
+    );
     drop(out_file);
 
     if total_written != file_size {

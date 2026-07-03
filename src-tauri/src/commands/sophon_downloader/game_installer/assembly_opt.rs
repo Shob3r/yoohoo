@@ -24,7 +24,12 @@ thread_local! {
 /// Hint the kernel about access to `fd`: SEQUENTIAL enables read-ahead for
 /// streaming reads; DONTNEED evicts pages from the page cache.
 #[inline]
-fn posix_advise(fd: std::os::unix::io::RawFd, offset: u64, len: u64, advice: libc::c_int) {
+pub(crate) fn posix_advise(
+    fd: std::os::unix::io::RawFd,
+    offset: u64,
+    len: u64,
+    advice: libc::c_int,
+) {
     let _ = unsafe { libc::posix_fadvise(fd, offset as libc::off_t, len as libc::off_t, advice) };
 }
 
