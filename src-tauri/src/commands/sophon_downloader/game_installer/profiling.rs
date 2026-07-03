@@ -1,18 +1,18 @@
-#![cfg_attr(not(feature = "pipeline-profiling"), allow(dead_code, unused))]
+#![cfg_attr(not(feature = "sophon-profiling"), allow(dead_code, unused))]
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-#[cfg(feature = "pipeline-profiling")]
+#[cfg(feature = "sophon-profiling")]
 use std::time::Instant;
 
 pub struct PipelineProfiler {
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     start: Instant,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     window_bytes: AtomicU64,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     window_chunks: AtomicU64,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     last_report_nanos: AtomicU64,
     pub download_ns: AtomicU64,
     pub download_count: AtomicU64,
@@ -20,13 +20,13 @@ pub struct PipelineProfiler {
     pub verify_count: AtomicU64,
     pub post_download_ns: AtomicU64,
     pub post_download_count: AtomicU64,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     active_downloads: AtomicUsize,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     peak_active_downloads: AtomicUsize,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     idle_ns: AtomicU64,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     window_idle_ns: AtomicU64,
     pub assembly_decompress_ns: AtomicU64,
     pub assembly_decompress_count: AtomicU64,
@@ -34,9 +34,9 @@ pub struct PipelineProfiler {
     pub assembly_write_count: AtomicU64,
     pub assembly_total_ns: AtomicU64,
     pub assembly_total_count: AtomicU64,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     total_bytes_downloaded: AtomicU64,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     report_count: AtomicU64,
     pub total_chunks: AtomicUsize,
 }
@@ -44,13 +44,13 @@ pub struct PipelineProfiler {
 impl PipelineProfiler {
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             start: Instant::now(),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             window_bytes: AtomicU64::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             window_chunks: AtomicU64::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             last_report_nanos: AtomicU64::new(0),
             download_ns: AtomicU64::new(0),
             download_count: AtomicU64::new(0),
@@ -58,13 +58,13 @@ impl PipelineProfiler {
             verify_count: AtomicU64::new(0),
             post_download_ns: AtomicU64::new(0),
             post_download_count: AtomicU64::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             active_downloads: AtomicUsize::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             peak_active_downloads: AtomicUsize::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             idle_ns: AtomicU64::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             window_idle_ns: AtomicU64::new(0),
             assembly_decompress_ns: AtomicU64::new(0),
             assembly_decompress_count: AtomicU64::new(0),
@@ -72,9 +72,9 @@ impl PipelineProfiler {
             assembly_write_count: AtomicU64::new(0),
             assembly_total_ns: AtomicU64::new(0),
             assembly_total_count: AtomicU64::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             total_bytes_downloaded: AtomicU64::new(0),
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             report_count: AtomicU64::new(0),
             total_chunks: AtomicUsize::new(0),
         }
@@ -82,7 +82,7 @@ impl PipelineProfiler {
 
     #[inline]
     pub fn download_enter(&self) {
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             let prev = self.active_downloads.fetch_add(1, Ordering::Relaxed);
             self.peak_active_downloads
@@ -92,7 +92,7 @@ impl PipelineProfiler {
 
     #[inline]
     pub fn download_exit(&self) {
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             self.active_downloads.fetch_sub(1, Ordering::Relaxed);
         }
@@ -100,7 +100,7 @@ impl PipelineProfiler {
 
     #[inline]
     pub fn record_idle(&self, _ns: u64) {
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             self.idle_ns.fetch_add(_ns, Ordering::Relaxed);
             self.window_idle_ns.fetch_add(_ns, Ordering::Relaxed);
@@ -108,10 +108,10 @@ impl PipelineProfiler {
     }
 
     pub fn report(&self) {
-        #[cfg(not(feature = "pipeline-profiling"))]
+        #[cfg(not(feature = "sophon-profiling"))]
         {}
 
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             use tauri_plugin_log::log;
             let count = self.report_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -295,7 +295,7 @@ impl PipelineProfiler {
 
 pub struct ChunkTimer<'a> {
     profiler: &'a PipelineProfiler,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     phase_start: Instant,
 }
 
@@ -304,14 +304,14 @@ impl<'a> ChunkTimer<'a> {
         profiler.download_enter();
         Self {
             profiler,
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             phase_start: Instant::now(),
         }
     }
 
     #[inline]
     pub fn record_phase(&mut self, phase: ChunkPhase) {
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             let now = Instant::now();
             let elapsed = now.duration_since(self.phase_start);
@@ -344,7 +344,7 @@ impl<'a> ChunkTimer<'a> {
     /// happened).
     #[inline]
     pub fn skip_phase(&mut self) {
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             self.phase_start = Instant::now();
         }
@@ -353,7 +353,7 @@ impl<'a> ChunkTimer<'a> {
     #[inline]
     pub fn finish(self, chunk_size: u64, was_downloaded: bool) {
         self.profiler.download_exit();
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             if was_downloaded {
                 self.profiler
@@ -376,7 +376,7 @@ pub enum ChunkPhase {
 
 pub struct AssemblyTimer<'a> {
     profiler: &'a PipelineProfiler,
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     start: Instant,
 }
 
@@ -384,7 +384,7 @@ impl<'a> AssemblyTimer<'a> {
     pub fn new(profiler: &'a PipelineProfiler) -> Self {
         Self {
             profiler,
-            #[cfg(feature = "pipeline-profiling")]
+            #[cfg(feature = "sophon-profiling")]
             start: Instant::now(),
         }
     }
@@ -412,7 +412,7 @@ impl<'a> AssemblyTimer<'a> {
     }
 
     pub fn finish(self) {
-        #[cfg(feature = "pipeline-profiling")]
+        #[cfg(feature = "sophon-profiling")]
         {
             let elapsed = self.start.elapsed().as_nanos() as u64;
             self.profiler

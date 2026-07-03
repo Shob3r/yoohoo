@@ -165,7 +165,7 @@ pub use preinstall::{apply_preinstall, build_preinstall_plan, preinstall_downloa
 pub use update::{UpdateInfo, check_update};
 
 /// Advance jemalloc epoch and trigger a background decay pass. Call after
-/// major pipeline phase transitions (download → assembly, etc.) to reduce
+/// major sophon phase transitions (download → assembly, etc.) to reduce
 /// resident memory.
 pub fn reclaim_memory() {
     #[cfg(not(target_env = "msvc"))]

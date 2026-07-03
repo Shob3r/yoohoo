@@ -69,7 +69,7 @@ tauri-plugin-deep-link = "2.4.9"
 openssl = "0.10.81"
 
 [features]
-pipeline-profiling = ["tikv-jemalloc-ctl/stats", "tikv-jemallocator/stats"]
+sophon-profiling = ["tikv-jemalloc-ctl/stats", "tikv-jemallocator/stats"]
 extra-bins = []
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]

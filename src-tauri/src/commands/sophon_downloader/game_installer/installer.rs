@@ -1869,7 +1869,7 @@ pub async fn install(
         completed_files: Arc::clone(&callbacks.completed_files),
     });
 
-    #[cfg(feature = "pipeline-profiling")]
+    #[cfg(feature = "sophon-profiling")]
     {
         let profiler = Arc::clone(&ctx.profiler);
         tokio::spawn(async move {
