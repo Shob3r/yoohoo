@@ -8,6 +8,7 @@
 //! Run:  cargo run --release --features benchmark --bin bench_memory -- [op]
 //! where [op] is a substring of one of the operations below; runs all if none.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt as _;
@@ -25,15 +26,21 @@ use elysiae_lib::commands::sophon_downloader::game_installer::{
     assembly::{assemble_file, chunk_filename},
     cache::{VerificationCache, VerificationEntry},
     compact_manifest::{CompactManifest, StringArena},
-    installer::ChunkNameLookup,
+    installer::{ChunkNameLookup, assign_chunk_offsets, intern_old_chunk_offsets},
     sysio,
 };
 use elysiae_lib::commands::sophon_downloader::proto_parse::{
-    SophonManifestAssetChunk, SophonManifestAssetProperty,
+    SophonManifestAssetChunk, SophonManifestAssetProperty, SophonManifestProto,
 };
 
-/// RSS poll interval. 10 ms catches allocator spikes without measurable load.
-const SAMPLE_MS: u64 = 10;
+/// RSS poll interval. 2 ms catches short allocation spikes without measurable
+/// load.
+const SAMPLE_MS: u64 = 2;
+
+/// Duration the diff ops hold their peak allocation so the sampler observes it
+/// before the values drop; without it the allocation completes and frees
+/// within a single poll window.
+const PEAK_HOLD: Duration = Duration::from_millis(40);
 
 /// Resident set size in KiB, read from `/proc/self/statm`.
 fn rss_kib() -> u64 {
@@ -97,6 +104,30 @@ fn measure<F: FnOnce()>(label: &str, op: F) {
     let sampler = RssSampler::start();
     let t = Instant::now();
     op();
+    let dur = t.elapsed();
+    let peak = sampler.finish();
+    let delta = peak as i64 - baseline as i64;
+    println!(
+        "{label:<32} {dur:>6.0} ms   RSS {baseline:>6} -> {peak:>6} KiB   (peak delta {delta:+} KiB)",
+        dur = dur.as_secs_f64() * 1000.0,
+    );
+}
+
+/// Run `setup`, record baseline RSS, then run `op` under the sampler. The
+/// delta reflects only `op`'s allocations, not the fixture data from `setup`.
+fn measure_with_setup<T, S, O>(label: &str, setup: S, op: O)
+where
+    S: FnOnce() -> T,
+    O: FnOnce(T),
+{
+    let context = setup();
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    let baseline = rss_kib();
+    let sampler = RssSampler::start();
+    let t = Instant::now();
+    op(context);
     let dur = t.elapsed();
     let peak = sampler.finish();
     let delta = peak as i64 - baseline as i64;
@@ -291,6 +322,97 @@ fn op_zstd_decompress(dir: &Path) {
     o.sync_all().unwrap();
 }
 
+/// Build a synthetic manifest with `num_files` non-directory assets, each
+/// carrying `chunks_per_file` chunks. Chunk hashes cycle through a pool of
+/// `num_files` unique strings so interning deduplicates them. Asset names
+/// are unique per file. The caller is responsible for trimming the allocator
+/// after construction if measuring RSS of a subsequent operation.
+fn build_synthetic_manifest(num_files: usize, chunks_per_file: usize) -> SophonManifestProto {
+    let hash_pool: Vec<String> = (0..num_files).map(|i| format!("{i:032x}")).collect();
+    let assets: Vec<SophonManifestAssetProperty> = (0..num_files)
+        .map(|f| {
+            let chunks: Vec<SophonManifestAssetChunk> = (0..chunks_per_file)
+                .map(|c| {
+                    let h = &hash_pool[(f + c) % num_files];
+                    SophonManifestAssetChunk {
+                        chunk_name: format!("f{f}c{c}"),
+                        chunk_decompressed_hash_md5: h.clone(),
+                        chunk_on_file_offset: (c * 1024 * 1024) as u64,
+                        chunk_size: 0,
+                        chunk_size_decompressed: 0,
+                        chunk_compressed_hash_xxh: 0,
+                        chunk_compressed_hash_md5: String::new(),
+                        chunk_old_offset: -1,
+                    }
+                })
+                .collect();
+            let size = chunks.iter().map(|c| c.chunk_size_decompressed).sum();
+            let mut hash = format!("{f:032x}");
+            hash.push_str("00");
+            SophonManifestAssetProperty {
+                asset_name: format!("asset_{f}.pak"),
+                asset_chunks: chunks,
+                asset_type: 0,
+                asset_size: size,
+                asset_hash_md5: hash,
+            }
+        })
+        .collect();
+    SophonManifestProto { assets }
+}
+
+/// Replicate the pre-interning approach: `HashMap<(String, String), u64>`
+/// keyed by cloned asset names and chunk hashes.
+fn build_string_key_offsets(manifest: &SophonManifestProto) -> HashMap<(String, String), u64> {
+    manifest
+        .assets
+        .iter()
+        .filter(|f| !f.is_directory())
+        .flat_map(|f| {
+            let name = f.asset_name.clone();
+            f.asset_chunks.iter().map(move |c| {
+                (
+                    (name.clone(), c.chunk_decompressed_hash_md5.clone()),
+                    c.chunk_on_file_offset,
+                )
+            })
+        })
+        .collect()
+}
+
+fn op_diff_interned_keys(mut manifest: SophonManifestProto) {
+    let (offsets, name_to_id, hash_to_id) = intern_old_chunk_offsets(&manifest);
+    assign_chunk_offsets(&mut manifest.assets, &offsets, &name_to_id, &hash_to_id);
+    thread::sleep(PEAK_HOLD);
+}
+
+fn op_diff_string_keys(mut manifest: SophonManifestProto) {
+    let offsets = build_string_key_offsets(&manifest);
+    for file in &mut manifest.assets {
+        for chunk in &mut file.asset_chunks {
+            let key = (
+                file.asset_name.clone(),
+                chunk.chunk_decompressed_hash_md5.clone(),
+            );
+            chunk.chunk_old_offset = offsets
+                .get(&key)
+                .copied()
+                .map(|off| off as i64)
+                .unwrap_or(-1);
+        }
+    }
+    thread::sleep(PEAK_HOLD);
+}
+
+/// Diagnostic: allocate a known size so the RSS delta proves the sampler works.
+fn op_alloc_50mb() {
+    let v: Vec<u8> = vec![0xFF; 50 * 1024 * 1024];
+    let probe = v.iter().copied().fold(0u64, |a, b| a ^ b as u64);
+    std::hint::black_box(probe);
+    thread::sleep(PEAK_HOLD);
+    drop(v);
+}
+
 fn main() {
     let filter = std::env::args().nth(1);
     let dir = temp_dir();
@@ -332,6 +454,37 @@ fn main() {
 
     let d = dir.clone();
     run("assembly_e2e_8x8m", &|| op_assembly_e2e(&d));
+
+    // Diagnostic runs only with an explicit filter so a 50 MiB allocation does
+    // not inflate the baseline of subsequent ops on a full run.
+    if filter
+        .as_deref()
+        .is_some_and(|f| "alloc_50mb_diag".contains(f))
+    {
+        run("alloc_50mb_diag", &|| op_alloc_50mb());
+    }
+
+    if filter
+        .as_deref()
+        .is_none_or(|f| "diff_interned_keys_2000x100".contains(f))
+    {
+        measure_with_setup(
+            "diff_interned_keys_2000x100",
+            || build_synthetic_manifest(2000, 100),
+            op_diff_interned_keys,
+        );
+    }
+
+    if filter
+        .as_deref()
+        .is_none_or(|f| "diff_string_keys_2000x100".contains(f))
+    {
+        measure_with_setup(
+            "diff_string_keys_2000x100",
+            || build_synthetic_manifest(2000, 100),
+            op_diff_string_keys,
+        );
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

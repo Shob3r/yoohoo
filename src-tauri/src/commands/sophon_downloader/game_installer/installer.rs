@@ -342,7 +342,7 @@ fn compute_diff_files(
 /// `(u32, u32) -> offset` table from an old manifest. Extracted so the
 /// interning logic is unit-testable without a network round-trip.
 #[allow(clippy::type_complexity)]
-fn intern_old_chunk_offsets(
+pub fn intern_old_chunk_offsets(
     manifest: &SophonManifestProto,
 ) -> (
     HashMap<(u32, u32), u64>,
@@ -371,7 +371,7 @@ fn intern_old_chunk_offsets(
 /// Stamp each chunk's `chunk_old_offset` with the matching old-file offset
 /// using the interned reverse maps. Chunks with no old match get `-1`.
 #[allow(clippy::type_complexity)]
-fn assign_chunk_offsets(
+pub fn assign_chunk_offsets(
     diff_files: &mut [SophonManifestAssetProperty],
     offsets: &HashMap<(u32, u32), u64>,
     name_to_id: &HashMap<String, u32>,
