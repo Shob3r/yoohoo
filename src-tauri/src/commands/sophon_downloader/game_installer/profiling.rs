@@ -1,4 +1,8 @@
+#![cfg_attr(not(feature = "pipeline-profiling"), allow(dead_code, unused))]
+
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+#[cfg(feature = "pipeline-profiling")]
 use std::time::Instant;
 
 pub struct PipelineProfiler {

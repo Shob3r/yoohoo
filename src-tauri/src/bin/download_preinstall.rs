@@ -102,7 +102,7 @@ async fn async_main() {
 
     eprintln!("Building preinstall plan for {game_id}...");
 
-    let plan = game_installer::build_preinstall_plan(&client, &game_id, &vo_lang, game_dir)
+    let plan = game_installer::build_preinstall_plan(&client, game_id, vo_lang, game_dir)
         .await
         .expect("build_preinstall_plan failed");
 
@@ -175,8 +175,8 @@ async fn async_main() {
         &client,
         &plan,
         game_dir,
-        &game_id,
-        &vo_lang,
+        game_id,
+        vo_lang,
         handle,
         Arc::new(progress),
         saver,

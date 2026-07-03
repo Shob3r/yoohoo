@@ -127,7 +127,7 @@ async fn async_main() {
     let client = reqwest::Client::new();
 
     let (installers, resolved_tag, manifest_hash) =
-        game_installer::build_installers_for_tag(&client, game_id, vo_lang, &tag)
+        game_installer::build_installers_for_tag(&client, game_id, vo_lang, tag)
             .await
             .expect("build_installers_for_tag failed");
 
