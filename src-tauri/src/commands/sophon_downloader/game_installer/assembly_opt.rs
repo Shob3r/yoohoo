@@ -252,8 +252,7 @@ mod tests {
     use super::*;
 
     fn write_at_new(path: &Path) -> File {
-        let f = File::create(path).unwrap();
-        f
+        File::create(path).unwrap()
     }
 
     #[test]

@@ -75,7 +75,6 @@ pub fn copy_file_region_to(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn copy_file_range_basic() {
