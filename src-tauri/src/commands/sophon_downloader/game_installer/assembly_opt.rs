@@ -3,6 +3,8 @@
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use md5::{Digest, Md5};
@@ -10,10 +12,17 @@ use md5::{Digest, Md5};
 use super::FILE_WRITE_BUFFER_SIZE;
 use super::error::{SophonError, SophonResult};
 
-const ASSEMBLY_BUFFER_SIZE: usize = 64 * 1024;
+const ASSEMBLY_BUFFER_SIZE: usize = 256 * 1024;
 
 thread_local! {
     static OPT_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Hint the kernel about access to `fd`: SEQUENTIAL enables read-ahead for
+/// streaming reads; DONTNEED evicts pages from the page cache.
+#[inline]
+fn posix_advise(fd: std::os::unix::io::RawFd, offset: u64, len: u64, advice: libc::c_int) {
+    let _ = unsafe { libc::posix_fadvise(fd, offset as libc::off_t, len as libc::off_t, advice) };
 }
 
 /// Write + seek trait alias.
@@ -31,9 +40,16 @@ pub fn write_chunk_from_mmap(
     mut file_hasher: Option<&mut Md5>,
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
-    use std::os::unix::fs::FileExt;
     let file = File::open(old_file_path).map_err(SophonError::Io)?;
     let file_len = file.metadata().map_err(SophonError::Io)?.len();
+    // Streaming read of a single region: enable read-ahead, then evict the
+    // pages once consumed so the old file does not crowd the page cache.
+    posix_advise(
+        file.as_raw_fd(),
+        old_offset,
+        expected_size,
+        libc::POSIX_FADV_SEQUENTIAL,
+    );
 
     writer.seek(SeekFrom::Start(new_offset))?;
 
@@ -77,6 +93,13 @@ pub fn write_chunk_from_mmap(
         remaining -= n;
     }
 
+    posix_advise(
+        file.as_raw_fd(),
+        old_offset,
+        expected_size,
+        libc::POSIX_FADV_DONTNEED,
+    );
+
     buf.clear();
     OPT_BUFFER.with(|cell| cell.replace(buf));
 
@@ -114,6 +137,11 @@ pub fn decompress_chunk_optimized(
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
     let f = File::open(chunk_path)?;
+    // Compressed chunks are read once and then deleted; advise sequential
+    // read-ahead and evict the pages after decompression to keep the page
+    // cache free for the larger decompressed output.
+    let compressed_fd = f.as_raw_fd();
+    posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
     let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
     let mut decoder = zstd::Decoder::new(buf_reader)?;
 
@@ -163,6 +191,9 @@ pub fn decompress_chunk_optimized(
 
     buffer.clear();
     OPT_BUFFER.with(|cell| cell.replace(buffer));
+
+    // Release the compressed chunk's pages now that decompression is done.
+    posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
 
     if bytes_written != expected_size {
         return Err(SophonError::SizeMismatch {
