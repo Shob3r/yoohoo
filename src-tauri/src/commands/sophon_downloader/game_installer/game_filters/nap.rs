@@ -119,7 +119,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let mut assets = vec![SophonManifestAssetProperty {
-            asset_name: format!("{GAME_DATA_DIR}/audio/file.pck").into(),
+            asset_name: format!("{GAME_DATA_DIR}/audio/file.pck"),
             asset_chunks: vec![],
             asset_type: 0,
             asset_size: 100,

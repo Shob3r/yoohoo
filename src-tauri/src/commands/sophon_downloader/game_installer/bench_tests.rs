@@ -844,7 +844,7 @@ fn bench_parallel_vs_sequential_verification() {
 
     // Sequential verification
     let start = Instant::now();
-    for (path, hash) in file_paths.iter().zip(&hashes) {
+    for (path, _hash) in file_paths.iter().zip(&hashes) {
         let file = fs::File::open(path).expect("open");
         let mut reader = std::io::BufReader::new(file);
         let mut hasher = Md5::new();

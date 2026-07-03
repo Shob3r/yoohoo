@@ -98,8 +98,8 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn adjust_critical_ram() {
-        assert!((ASSEMBLY_CONCURRENCY / 4).max(1) >= 1);
         assert!((ASSEMBLY_CONCURRENCY / 2).max(2) >= 2);
     }
 

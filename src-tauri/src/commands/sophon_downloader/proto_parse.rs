@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn decode_manifest_empty_buf() {
-        let result = decode_manifest(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        let result = decode_manifest([0xFF, 0xFF, 0xFF, 0xFF]);
         assert!(result.is_err());
     }
 
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn decode_patch_manifest_invalid_garbage() {
-        let result = decode_patch_manifest(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        let result = decode_patch_manifest([0xFF, 0xFF, 0xFF, 0xFF]);
         assert!(result.is_err());
     }
 

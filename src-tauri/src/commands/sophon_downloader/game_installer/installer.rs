@@ -2455,6 +2455,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn make_installer_data(files: Vec<SophonManifestAssetProperty>) -> InstallerData {
         InstallerData {
             chunk_download: Arc::new(make_download_info()),
