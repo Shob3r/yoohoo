@@ -17,7 +17,7 @@ pub(crate) fn download_state_path(app: &AppHandle) -> Option<PathBuf> {
     app.path()
         .app_data_dir()
         .map_err(|err| {
-            log::error!("app_data_dir resolution failed: {err}", err = err);
+            log::error!("app_data_dir resolution failed: {err}");
             err
         })
         .ok()
@@ -34,10 +34,7 @@ pub fn save_download_state(app: &AppHandle, state: &DownloadState) -> Result<(),
     if let Some(parent) = path.parent()
         && let Err(err) = fs::create_dir_all(parent)
     {
-        let msg = format!(
-            "Failed to create download state directory: {err}",
-            err = err
-        );
+        let msg = format!("Failed to create download state directory: {err}");
         log::error!("{msg}");
         return Err(msg);
     }
@@ -45,24 +42,24 @@ pub fn save_download_state(app: &AppHandle, state: &DownloadState) -> Result<(),
         Ok(json) => {
             static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
             let seq = SAVE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-            let tmp_path = path.with_extension(format!("save-{seq}.tmp", seq = seq));
+            let tmp_path = path.with_extension(format!("save-{seq}.tmp"));
             if let Err(err) = fs::write(&tmp_path, &json) {
-                let msg = format!("Failed to write temp download state: {err}", err = err);
+                let msg = format!("Failed to write temp download state: {err}");
                 log::error!("{msg}");
                 return Err(msg);
             }
             if let Err(err) = fs::rename(&tmp_path, &path) {
-                let msg = format!("Failed to rename download state file: {err}", err = err);
+                let msg = format!("Failed to rename download state file: {err}");
                 log::error!("{msg}");
                 if let Err(err) = fs::remove_file(&tmp_path) {
-                    log::debug!("Failed to clean up temp state file: {err}", err = err);
+                    log::debug!("Failed to clean up temp state file: {err}");
                 }
                 return Err(msg);
             }
             Ok(())
         }
         Err(err) => {
-            let msg = format!("Failed to serialize download state: {err}", err = err);
+            let msg = format!("Failed to serialize download state: {err}");
             log::error!("{msg}");
             Err(msg)
         }
@@ -83,8 +80,7 @@ pub(crate) fn load_download_state_from(path: &Path) -> Option<DownloadState> {
         Err(err) => {
             log::warn!(
                 "Failed to read download state file {path}: {err}",
-                path = path.display(),
-                err = err
+                path = path.display()
             );
             return None;
         }
@@ -103,11 +99,9 @@ fn preserve_corrupted_state(path: &Path, parse_err: &serde_json::Error) -> Optio
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let backup_path =
-        path.with_extension(format!("corrupted-{timestamp}.json", timestamp = timestamp));
+    let backup_path = path.with_extension(format!("corrupted-{timestamp}.json"));
     log::warn!(
         "Download state file corrupted ({parse_err}), preserving as {backup}",
-        parse_err = parse_err,
         backup = backup_path.display()
     );
     match fs::rename(path, &backup_path) {
@@ -120,8 +114,7 @@ fn preserve_corrupted_state(path: &Path, parse_err: &serde_json::Error) -> Optio
         Err(rename_err) => {
             log::warn!(
                 "Failed to preserve corrupted download state at {backup}: {rename_err}; removing instead",
-                backup = backup_path.display(),
-                rename_err = rename_err
+                backup = backup_path.display()
             );
             let _ = fs::remove_file(path);
         }
@@ -143,10 +136,7 @@ pub fn delete_chunks_dir(app: &AppHandle, output_path: &str) -> bool {
     let game_dir = match app.path().resolve(output_path, BaseDirectory::AppData) {
         Ok(p) => p,
         Err(err) => {
-            log::warn!(
-                "Failed to resolve game dir for chunk cleanup: {err}",
-                err = err
-            );
+            log::warn!("Failed to resolve game dir for chunk cleanup: {err}");
             return false;
         }
     };
@@ -157,8 +147,7 @@ pub fn delete_chunks_dir(app: &AppHandle, output_path: &str) -> bool {
         Err(err) => {
             log::warn!(
                 "Failed to delete chunks directory {dir}: {err}",
-                dir = chunks_dir.display(),
-                err = err
+                dir = chunks_dir.display()
             );
             false
         }

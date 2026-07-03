@@ -60,9 +60,8 @@ impl HDiff {
         let h_info_arr: Vec<&str> = header_info_line.split('&').collect();
         if h_info_arr.len() < 2 || h_info_arr.len() > 3 {
             return Err(format!(
-                "unsupported HDiff header format: expected 2 or 3 parts, got {parts} (raw: {raw})",
-                parts = h_info_arr.len(),
-                raw = header_info_line
+                "unsupported HDiff header format: expected 2 or 3 parts, got {parts} (raw: {header_info_line})",
+                parts = h_info_arr.len()
             )
             .into());
         }
@@ -111,9 +110,8 @@ impl HDiff {
             let old_len = old_file.metadata()?.len() as i64;
             if old_len != header_info.old_data_size {
                 return Err(format!(
-                    "input file size mismatch: expected {expected} bytes, got {actual} bytes",
-                    expected = header_info.old_data_size,
-                    actual = old_len
+                    "input file size mismatch: expected {expected} bytes, got {old_len} bytes",
+                    expected = header_info.old_data_size
                 )
                 .into());
             }
