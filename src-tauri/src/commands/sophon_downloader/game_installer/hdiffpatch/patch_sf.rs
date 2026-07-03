@@ -23,13 +23,26 @@ impl PatchSF {
         patch_path: &str,
         on_progress: Option<&dyn Fn(u64)>,
     ) -> std::io::Result<()> {
+        let padding: u64 = match self.header_info.comp_mode {
+            super::CompressionMode::Zlib => 1,
+            _ => 0,
+        };
         let sci = &self.header_info.single_chunk_info;
+        let diff_start =
+            sci.diff_data_pos
+                .checked_add(padding as i64)
+                .ok_or_else(|| std::io::Error::other("diff_data_pos overflow"))? as u64;
+        let diff_comp = if sci.compressed_size > 0 {
+            (sci.compressed_size as u64).saturating_sub(padding)
+        } else {
+            sci.compressed_size as u64
+        };
         let (mut diff, _) = get_clip_stream(
             File::open(patch_path)?,
             self.header_info.comp_mode,
-            sci.diff_data_pos as u64,
+            diff_start,
             sci.uncompressed_size as u64,
-            sci.compressed_size as u64,
+            diff_comp,
             false,
         )?;
         if self.header_info.chunk_info.cover_count < 0 {
