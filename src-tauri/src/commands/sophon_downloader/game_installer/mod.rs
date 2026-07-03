@@ -1,26 +1,24 @@
 //! Sophon chunk-based game installer.
 mod adaptive_assembly;
 mod api;
-mod assembly;
+pub mod assembly;
 mod assembly_opt;
-mod cache;
-mod compact_manifest;
+pub mod cache;
+pub mod compact_manifest;
 mod download;
 mod error;
 mod game_filters;
 mod handle;
 mod hdiffpatch;
-mod installer;
+pub mod installer;
 mod plugin_api;
 mod plugin_install;
 mod preinstall;
 mod update;
 
 mod profiling;
-mod sysio;
+pub mod sysio;
 
-#[cfg(test)]
-mod bench_tests;
 #[cfg(test)]
 mod integration_tests;
 
