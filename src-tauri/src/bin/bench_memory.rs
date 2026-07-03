@@ -156,21 +156,24 @@ fn op_read_md5_with_fadvise(path: &Path, mib: usize, advise: bool) {
     let _ = hex::encode(h.finalize());
 }
 
-/// Build the same end-to-end assembly fixture the criterion bench uses.
-fn build_assembly_fixture(
+/// Create chunk files on disk and build the manifest without retaining the raw
+/// assembled bytes in memory. Drops all intermediate data and trims the
+/// allocator so RSS reflects only what assembly itself allocates.
+fn setup_assembly_fixture(
     chunks_dir: &Path,
     chunk_mib: usize,
     num_chunks: usize,
-) -> (CompactManifest, Vec<u8>, String) {
-    let mut raw = Vec::with_capacity(chunk_mib * 1024 * 1024 * num_chunks);
+) -> CompactManifest {
     let chunks: Vec<SophonManifestAssetChunk> = (0..num_chunks)
         .map(|i| {
             let name = format!("ck{i:02}");
             let data = vec![(i as u8).wrapping_mul(7).wrapping_add(0x40); chunk_mib * 1024 * 1024];
+            let md5 = hex::encode(Md5::digest(&data));
             let comp = zstd::encode_all(&data[..], 3).unwrap();
             fs::write(chunks_dir.join(chunk_filename(&name)), &comp).unwrap();
-            raw.extend_from_slice(&data);
             let offset = (i * chunk_mib * 1024 * 1024) as u64;
+            drop(data);
+            drop(comp);
             SophonManifestAssetChunk {
                 chunk_name: name,
                 chunk_decompressed_hash_md5: String::new(),
@@ -178,24 +181,29 @@ fn build_assembly_fixture(
                 chunk_size: 0,
                 chunk_size_decompressed: (chunk_mib * 1024 * 1024) as u64,
                 chunk_compressed_hash_xxh: 0,
-                chunk_compressed_hash_md5: String::new(),
+                chunk_compressed_hash_md5: md5,
                 chunk_old_offset: -1,
             }
         })
         .collect();
-    let file_md5 = hex::encode(Md5::digest(&raw));
     let file = SophonManifestAssetProperty {
         asset_name: "assembled.bin".to_string(),
         asset_chunks: chunks,
         asset_type: 0,
-        asset_size: raw.len() as u64,
-        asset_hash_md5: file_md5.clone(),
+        asset_size: (chunk_mib * num_chunks * 1024 * 1024) as u64,
+        asset_hash_md5: String::new(),
     };
-    (CompactManifest::from(vec![file]), raw, file_md5)
+    let manifest = CompactManifest::from(vec![file]);
+    // Return freed memory to the OS so it doesn't inflate the assembly
+    // RSS measurement.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    manifest
 }
 
 fn temp_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("bench_memory_{}", std::process::id()))
+    std::path::PathBuf::from("/var/tmp").join(format!("bench_memory_{}", std::process::id()))
 }
 
 fn op_assembly_e2e(dir: &Path) {
@@ -205,7 +213,7 @@ fn op_assembly_e2e(dir: &Path) {
     fs::create_dir_all(&game_dir).unwrap();
     fs::create_dir_all(&chunks_dir).unwrap();
     fs::create_dir_all(&tmp_dir).unwrap();
-    let (manifest, _raw, _md5) = build_assembly_fixture(&chunks_dir, 8, 8);
+    let manifest = setup_assembly_fixture(&chunks_dir, 8, 8);
     let name_refs: Vec<&str> = (0..8)
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
