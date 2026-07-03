@@ -19,12 +19,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
 use md5::{Digest, Md5};
 
 use elysiae_lib::commands::sophon_downloader::game_installer::{
     assembly::{assemble_file, chunk_filename},
-    cache::VerificationEntry,
+    cache::{VerificationCache, VerificationEntry},
     compact_manifest::{CompactManifest, StringArena},
     installer::ChunkNameLookup,
     sysio,
@@ -214,7 +213,7 @@ fn op_assembly_e2e(dir: &Path) {
     let refcounts: Vec<std::sync::atomic::AtomicUsize> = (0..8)
         .map(|_| std::sync::atomic::AtomicUsize::new(1000))
         .collect();
-    let cache: DashMap<String, VerificationEntry> = DashMap::new();
+    let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
     assemble_file(
         &manifest,
         0,

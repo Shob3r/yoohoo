@@ -18,12 +18,11 @@ use std::os::unix::fs::FileExt;
 use std::sync::atomic::AtomicUsize;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use dashmap::DashMap;
 use md5::{Digest, Md5};
 
 use elysiae_lib::commands::sophon_downloader::game_installer::{
     assembly::{assemble_file, chunk_filename},
-    cache::VerificationEntry,
+    cache::{VerificationCache, VerificationEntry},
     compact_manifest::{CompactManifest, StringArena},
     installer::ChunkNameLookup,
     sysio,
@@ -309,7 +308,7 @@ fn bench_assembly_e2e(c: &mut Criterion) {
     let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
     // High refcount so chunk files survive across bench iterations.
     let refcounts: Vec<AtomicUsize> = (0..num_chunks).map(|_| AtomicUsize::new(1000)).collect();
-    let cache: DashMap<String, VerificationEntry> = DashMap::new();
+    let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
 
     let mut group = c.benchmark_group("assembly_e2e");
     group.throughput(Throughput::Bytes(total_bytes));
@@ -333,8 +332,6 @@ fn bench_assembly_e2e(c: &mut Criterion) {
     });
     group.finish();
 
-    // Correctness: the assembled file must match the expected bytes. Runs once
-    // after timing so the bench doubles as a smoke test.
     let assembled = fs::read(game_dir.join("assembled.bin")).unwrap();
     assert_eq!(assembled, raw, "assembled file bytes must match");
 }
@@ -349,13 +346,14 @@ fn bench_verify_file_md5(c: &mut Criterion) {
     fill_file(&path, VERIFY_MIB as usize, 0xAB);
     let md5 = hex::encode(Md5::digest(fs::read(&path).unwrap()));
     let bytes = VERIFY_MIB * 1024 * 1024;
-    let cache: DashMap<String, VerificationEntry> = DashMap::new();
+    let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
 
     let mut group = c.benchmark_group("verify_file_md5");
     group.throughput(Throughput::Bytes(bytes));
     group.bench_function("miss", |b| {
         let game_dir = game_dir.clone();
         b.iter(|| {
+            cache.clear();
             evict_page_cache(&path);
             let _ =
                 elysiae_lib::commands::sophon_downloader::game_installer::cache::check_file_md5_cached(

@@ -9,6 +9,8 @@ use std::os::unix::io::AsRawFd;
 
 use dashmap::DashMap;
 
+pub use dashmap::DashMap as VerificationCache;
+
 #[cfg(test)]
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
