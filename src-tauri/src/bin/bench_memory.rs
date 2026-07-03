@@ -299,6 +299,21 @@ fn main() {
     });
 
     let d = dir.clone();
+    run("read_md5_128m_no_advise", &|| {
+        let big = d.join("big.bin");
+        fill_file(&big, 128, 0xCD);
+        evict_page_cache(&big);
+        op_read_md5_with_fadvise(&big, 128, false);
+    });
+
+    let d = dir.clone();
+    run("read_md5_128m_fadvise", &|| {
+        let big = d.join("big.bin");
+        evict_page_cache(&big);
+        op_read_md5_with_fadvise(&big, 128, true);
+    });
+
+    let d = dir.clone();
     run("copy_file_range_64m", &|| op_copy_file_range(&d));
 
     let d = dir.clone();
@@ -309,17 +324,6 @@ fn main() {
 
     let d = dir.clone();
     run("assembly_e2e_8x8m", &|| op_assembly_e2e(&d));
-
-    let big = dir.join("big.bin");
-    fill_file(&big, 128, 0xCD);
-    run("read_md5_128m_no_advise", &|| {
-        evict_page_cache(&big);
-        op_read_md5_with_fadvise(&big, 128, false);
-    });
-    run("read_md5_128m_fadvise", &|| {
-        evict_page_cache(&big);
-        op_read_md5_with_fadvise(&big, 128, true);
-    });
 
     let _ = fs::remove_dir_all(&dir);
 }
