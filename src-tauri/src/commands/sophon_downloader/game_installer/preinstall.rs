@@ -1288,13 +1288,15 @@ pub async fn apply_preinstall(
                 const COPY_MAX_RETRIES: usize = 4;
                 let mut fallback_to_download = false;
                 let mut skip_progress = false;
+                let asset = Arc::new(asset.clone());
 
                 for attempt in 0..=COPY_MAX_RETRIES {
                     let gd = game_dir.to_path_buf();
                     let cd = chunks_dir.to_path_buf();
-                    let a = asset.clone();
+                    let a = Arc::clone(&asset);
                     let result =
-                        tokio::task::spawn_blocking(move || apply_copy_over(&gd, &cd, &a)).await?;
+                        tokio::task::spawn_blocking(move || apply_copy_over(&gd, &cd, a.as_ref()))
+                            .await?;
 
                     match result {
                         Ok(()) => break,
@@ -1343,7 +1345,7 @@ pub async fn apply_preinstall(
                         client,
                         game_dir,
                         &state,
-                        asset,
+                        asset.as_ref(),
                         &download_over_context,
                         handle,
                     )
