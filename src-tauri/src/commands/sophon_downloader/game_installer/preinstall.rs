@@ -42,7 +42,6 @@ use dashmap::DashMap;
 
 use futures_util::StreamExt;
 use futures_util::future::try_join_all;
-use md5::{Digest as _, Md5};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri_plugin_log::log;
@@ -1038,7 +1037,7 @@ async fn download_patch_chunk_inner(
     let mut stream = resp.bytes_stream();
     let file = tokio::fs::File::create(dest).await?;
     let mut file = super::download::EvictingWriter::new(file);
-    let mut hasher = Md5::new();
+    let mut hasher = super::assembly_opt::Md5::new()?;
     let mut total_len = 0u64;
 
     loop {
@@ -1072,7 +1071,7 @@ async fn download_patch_chunk_inner(
                         actual: total_len,
                     });
                 }
-                hasher.update(&bytes);
+                hasher.update(&bytes)?;
                 file.write_all(&bytes).await?;
             }
             Some(Err(e)) => {
@@ -1096,7 +1095,7 @@ async fn download_patch_chunk_inner(
     }
 
     if !expected_md5.is_empty() {
-        let digest: [u8; 16] = hasher.finalize().into();
+        let digest: [u8; 16] = hasher.finish()?;
         if !md5_hex_eq(&digest, expected_md5) {
             let _ = tokio::fs::remove_file(dest).await;
             return Err(SophonError::Md5Mismatch {
@@ -1117,7 +1116,10 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
         return false;
     };
     let mut reader = std::io::BufReader::with_capacity(super::FILE_WRITE_BUFFER_SIZE, file);
-    let mut hasher = Md5::new();
+    let mut hasher = match super::assembly_opt::Md5::new() {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
     borrow_verify_buffer(|buf| {
         if buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
             *buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
@@ -1126,7 +1128,11 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
         loop {
             match reader.read(buf) {
                 Ok(0) => break,
-                Ok(n) => hasher.update(&buf[..n]),
+                Ok(n) => {
+                    if hasher.update(&buf[..n]).is_err() {
+                        return false;
+                    }
+                }
                 Err(err) => {
                     log::warn!(
                         "Failed to read file for MD5 verification: {path_display}: {err}",
@@ -1136,8 +1142,10 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
                 }
             }
         }
-        let digest: [u8; 16] = hasher.finalize().into();
-        md5_hex_eq(&digest, expected_md5)
+        match hasher.finish() {
+            Ok(digest) => md5_hex_eq(&digest, expected_md5),
+            Err(_) => false,
+        }
     })
 }
 
@@ -2301,6 +2309,7 @@ use crate::commands::sophon_downloader::SophonProgress;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use md5::Digest;
 
     #[test]
     fn patch_method_serialization() {
