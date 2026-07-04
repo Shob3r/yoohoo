@@ -20,13 +20,14 @@ const EMPTY_MD5: &str = "00000000000000000000000000000000";
 pub(crate) const MAX_WINDOW_LOG: u32 = 26;
 
 /// Compute the minimum `WindowLogMax` that fits a zstd frame of
-/// `decompressed_size`. Matches the frame's power-of-two window plus a 1-bit
-/// safety margin, clamped to libzstd's `[10, 26]` valid range.
+/// `decompressed_size`. The zstd window must be a power of 2 and at least
+/// as large as the decompressed size, so we round up to the next power of
+/// two and use its log2. Clamped to libzstd's `[10, 26]` valid range.
 #[inline]
 pub(crate) fn window_log_for_size(decompressed_size: u64) -> u32 {
     const MIN_WINDOW_LOG: u32 = 10;
     let pow2 = decompressed_size.max(1).next_power_of_two();
-    let log = pow2.trailing_zeros() + 1;
+    let log = pow2.trailing_zeros();
     log.clamp(MIN_WINDOW_LOG, MAX_WINDOW_LOG)
 }
 
@@ -706,10 +707,10 @@ mod tests {
         assert_eq!(window_log_for_size(1), 10);
         assert_eq!(window_log_for_size(2), 10);
         assert_eq!(window_log_for_size(4), 10);
-        assert_eq!(window_log_for_size(1024), 11);
-        assert_eq!(window_log_for_size(1 << 20), 21);
-        assert_eq!(window_log_for_size((1 << 20) + 1), 22);
-        assert_eq!(window_log_for_size(1 << 23), 24);
+        assert_eq!(window_log_for_size(1024), 10);
+        assert_eq!(window_log_for_size(1 << 20), 20);
+        assert_eq!(window_log_for_size((1 << 20) + 1), 21);
+        assert_eq!(window_log_for_size(1 << 23), 23);
         assert_eq!(window_log_for_size(1u64 << 32), MAX_WINDOW_LOG);
         assert_eq!(window_log_for_size(0), 10);
     }
