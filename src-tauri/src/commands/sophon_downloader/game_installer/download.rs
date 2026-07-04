@@ -3,13 +3,12 @@ use std::path::Path;
 
 use futures_util::StreamExt;
 use libc;
-use md5::{Digest, Md5};
 use reqwest::Client;
 use tauri_plugin_log::log;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 use super::CHUNK_WRITE_BUFFER_SIZE;
-use super::assembly_opt::{md5_hex_eq, md5_to_hex};
+use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex};
 use super::compact_manifest::ChunkRef;
 use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
@@ -89,7 +88,11 @@ fn ensure_hash_buf(buf: &mut Vec<u8>) {
     }
 }
 
-fn pread_hash_slice(path: &Path, max_bytes: u64, f: &mut dyn FnMut(&[u8])) -> SophonResult<()> {
+fn pread_hash_slice(
+    path: &Path,
+    max_bytes: u64,
+    f: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
+) -> SophonResult<()> {
     if max_bytes == 0 {
         return Ok(());
     }
@@ -104,20 +107,20 @@ fn pread_hash_slice(path: &Path, max_bytes: u64, f: &mut dyn FnMut(&[u8])) -> So
             if n == 0 {
                 break;
             }
-            f(&buf[..n]);
+            f(&buf[..n])?;
             offset += n as u64;
         }
         Ok(())
     })
 }
 
-fn pread_hash_md5(path: &Path) -> SophonResult<String> {
+fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
-    let mut hasher = Md5::new();
+    let mut hasher = Md5::new()?;
     if len == 0 {
-        hasher.update(b"");
-        return Ok(hex::encode(hasher.finalize()));
+        hasher.update(b"")?;
+        return hasher.finish().map_err(SophonError::Io);
     }
     HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
@@ -132,10 +135,10 @@ fn pread_hash_md5(path: &Path) -> SophonResult<String> {
             if n == 0 {
                 break;
             }
-            hasher.update(&buf[..n]);
+            hasher.update(&buf[..n])?;
             offset += n as u64;
         }
-        Ok(hex::encode(hasher.finalize()))
+        hasher.finish().map_err(SophonError::Io)
     })
 }
 
@@ -173,20 +176,24 @@ async fn verify_existing_file_hash(path: &Path, expected_hash: &str) -> SophonRe
         return Ok(true);
     }
     let path = path.to_path_buf();
-    let expected_hash = expected_hash.to_ascii_lowercase();
-    tokio::task::spawn_blocking(move || {
-        let actual = match expected_hash.len() {
-            32 => pread_hash_md5(&path),
-            16 => pread_hash_xxh64(&path),
-            _ => {
-                log::warn!(
-                    "Unknown hash format (length={len}) for verification",
-                    len = expected_hash.len()
-                );
-                return Ok(false);
-            }
-        }?;
-        Ok(actual == expected_hash)
+    let expected_len = expected_hash.len();
+    let expected_lower = expected_hash.to_ascii_lowercase();
+    tokio::task::spawn_blocking(move || match expected_len {
+        32 => {
+            let digest = pread_hash_md5_digest(&path)?;
+            Ok(md5_hex_eq(&digest, &expected_lower))
+        }
+        16 => {
+            let actual = pread_hash_xxh64(&path)?;
+            Ok(actual == expected_lower)
+        }
+        _ => {
+            log::warn!(
+                "Unknown hash format (length={len}) for verification",
+                len = expected_len
+            );
+            Ok(false)
+        }
     })
     .await?
 }
@@ -334,7 +341,7 @@ async fn download_full_file_with_response(
     let file = tokio::fs::File::create(dest).await?;
     let mut file = EvictingWriter::new(file);
     let mut stream = resp.bytes_stream();
-    let mut hasher = Md5::new();
+    let mut hasher = Md5::new()?;
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> =
         if chunk.chunk_compressed_hash_md5.len() == 16 {
             Some(xxhash_rust::xxh64::Xxh64::new(0))
@@ -376,7 +383,7 @@ async fn download_full_file_with_response(
                         actual: total_len,
                     });
                 }
-                hasher.update(&bytes);
+                hasher.update(&bytes)?;
                 if let Some(ref mut h) = xxh64_hasher {
                     h.update(&bytes);
                 }
@@ -411,7 +418,7 @@ async fn download_full_file_with_response(
         let expected = &chunk.chunk_compressed_hash_md5;
         match expected.len() {
             32 => {
-                let digest: [u8; 16] = hasher.finalize().into();
+                let digest: [u8; 16] = hasher.finish().map_err(SophonError::Io)?;
                 if !md5_hex_eq(&digest, expected) {
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Md5Mismatch {
@@ -492,11 +499,14 @@ async fn download_with_resume(
     check_available_space(dest, remaining)?;
 
     // Seed the hasher with existing file content using pread
-    let mut hasher = Md5::new();
+    let mut hasher = Md5::new()?;
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> =
         if chunk.chunk_compressed_hash_md5.len() == 16 {
             let mut h = xxhash_rust::xxh64::Xxh64::new(0);
-            pread_hash_slice(dest, existing_size, &mut |chunk| h.update(chunk))?;
+            pread_hash_slice(dest, existing_size, &mut |chunk| {
+                h.update(chunk);
+                Ok(())
+            })?;
             Some(h)
         } else {
             None
@@ -548,7 +558,7 @@ async fn download_with_resume(
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Io(err));
                 }
-                hasher.update(&bytes);
+                hasher.update(&bytes)?;
                 if let Some(ref mut h) = xxh64_hasher {
                     h.update(&bytes);
                 }
@@ -579,7 +589,7 @@ async fn download_with_resume(
         let expected = &chunk.chunk_compressed_hash_md5;
         match expected.len() {
             32 => {
-                let digest: [u8; 16] = hasher.finalize().into();
+                let digest: [u8; 16] = hasher.finish().map_err(SophonError::Io)?;
                 if !md5_hex_eq(&digest, expected) {
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Md5Mismatch {
