@@ -281,58 +281,166 @@ pub fn assemble_file(
         });
     }
 
-    for ci in chunk_range.start..chunk_range.end {
-        let chunk = all_files.chunk(ci as usize);
-        if chunk.chunk_old_offset >= 0 {
-            debug_assert!(
-                chunk.chunk_old_offset >= 0,
-                "chunk_old_offset must be non-negative"
-            );
-            let bytes_written = write_from_old_file(
-                &target_path,
-                &out_file,
-                chunk.chunk_on_file_offset,
-                chunk.chunk_old_offset as u64,
-                chunk.chunk_size_decompressed,
-                file_hasher.as_mut(),
-                &mut transfer_buffer,
-                chunk.chunk_decompressed_hash_md5,
-            )
-            .inspect_err(|_| {
-                let _ = fs::remove_file(&tmp_path);
-            })?;
-            total_written += bytes_written;
-        // Old-source chunks were never downloaded.
-        } else {
-            if !validate_chunk_name(chunk.chunk_name) {
-                return Err(SophonError::PathTraversal(chunk.chunk_name.into()));
+    let total_chunks = (chunk_range.end - chunk_range.start) as usize;
+    let num_workers = std::thread::available_parallelism()
+        .map(|n| n.get().min(8))
+        .unwrap_or(1);
+    let parallelize =
+        all_chunks_have_hashes && file_hasher.is_none() && num_workers > 1 && total_chunks >= 4;
+
+    if parallelize {
+        let total_written_atomic = std::sync::atomic::AtomicU64::new(0);
+        let first_error = std::sync::Mutex::new(None);
+        let processed_chunks: std::sync::Mutex<Vec<&str>> =
+            std::sync::Mutex::new(Vec::with_capacity(total_chunks));
+        let raw_fd = out_file.as_raw_fd();
+
+        std::thread::scope(|s| {
+            for worker in 0..num_workers {
+                let indices: Vec<u32> = (chunk_range.start..chunk_range.end)
+                    .enumerate()
+                    .filter(|(i, _)| i % num_workers == worker)
+                    .map(|(_, ci)| ci)
+                    .collect();
+                if indices.is_empty() {
+                    continue;
+                }
+                let tw = &total_written_atomic;
+                let err = &first_error;
+                let proc = &processed_chunks;
+                let target = &target_path;
+                let out = &out_file;
+                let files = all_files;
+                let cdir = chunks_dir;
+                s.spawn(move || {
+                    let mut transfer_buf = TRANSFER_BUF.with(|cell| {
+                        let mut buf = cell.take();
+                        if buf.capacity() < FILE_WRITE_BUFFER_SIZE {
+                            buf = Vec::with_capacity(FILE_WRITE_BUFFER_SIZE);
+                        }
+                        unsafe { buf.set_len(FILE_WRITE_BUFFER_SIZE) };
+                        buf
+                    });
+                    for ci in indices {
+                        if err.lock().unwrap().is_some() {
+                            break;
+                        }
+                        let chunk = files.chunk(ci as usize);
+                        let result = if chunk.chunk_old_offset >= 0 {
+                            write_from_old_file(
+                                target,
+                                out,
+                                chunk.chunk_on_file_offset,
+                                chunk.chunk_old_offset as u64,
+                                chunk.chunk_size_decompressed,
+                                None,
+                                &mut transfer_buf,
+                                chunk.chunk_decompressed_hash_md5,
+                            )
+                        } else {
+                            if !validate_chunk_name(chunk.chunk_name) {
+                                Err(SophonError::PathTraversal(chunk.chunk_name.into()))
+                            } else {
+                                let mut chunk_path = cdir.join(chunk.chunk_name);
+                                chunk_path.set_extension("zstd");
+                                write_decompressed_chunk_at(
+                                    &chunk_path,
+                                    out,
+                                    chunk.chunk_on_file_offset,
+                                    chunk.chunk_size_decompressed,
+                                    None,
+                                    &mut transfer_buf,
+                                    chunk.chunk_decompressed_hash_md5,
+                                )
+                            }
+                        };
+                        match result {
+                            Ok(bytes) => {
+                                tw.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+                                if chunk.chunk_old_offset < 0 {
+                                    proc.lock().unwrap().push(chunk.chunk_name);
+                                }
+                                super::assembly_opt::sync_and_evict_range(
+                                    raw_fd,
+                                    chunk.chunk_on_file_offset,
+                                    chunk.chunk_size_decompressed,
+                                );
+                            }
+                            Err(e) => {
+                                let mut guard = err.lock().unwrap();
+                                if guard.is_none() {
+                                    *guard = Some(e);
+                                }
+                            }
+                        }
+                    }
+                    transfer_buf.clear();
+                    TRANSFER_BUF.with(|cell| cell.replace(transfer_buf));
+                });
             }
-            let mut chunk_path = chunks_dir.join(chunk.chunk_name);
-            chunk_path.set_extension("zstd");
+        });
 
-            let bytes_written = write_decompressed_chunk_at(
-                &chunk_path,
-                &out_file,
+        guard.chunks = processed_chunks.into_inner().unwrap();
+        total_written = total_written_atomic.into_inner();
+
+        if let Some(e) = first_error.into_inner().unwrap() {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    } else {
+        for ci in chunk_range.start..chunk_range.end {
+            let chunk = all_files.chunk(ci as usize);
+            if chunk.chunk_old_offset >= 0 {
+                debug_assert!(
+                    chunk.chunk_old_offset >= 0,
+                    "chunk_old_offset must be non-negative"
+                );
+                let bytes_written = write_from_old_file(
+                    &target_path,
+                    &out_file,
+                    chunk.chunk_on_file_offset,
+                    chunk.chunk_old_offset as u64,
+                    chunk.chunk_size_decompressed,
+                    file_hasher.as_mut(),
+                    &mut transfer_buffer,
+                    chunk.chunk_decompressed_hash_md5,
+                )
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&tmp_path);
+                })?;
+                total_written += bytes_written;
+            // Old-source chunks were never downloaded.
+            } else {
+                if !validate_chunk_name(chunk.chunk_name) {
+                    return Err(SophonError::PathTraversal(chunk.chunk_name.into()));
+                }
+                let mut chunk_path = chunks_dir.join(chunk.chunk_name);
+                chunk_path.set_extension("zstd");
+
+                let bytes_written = write_decompressed_chunk_at(
+                    &chunk_path,
+                    &out_file,
+                    chunk.chunk_on_file_offset,
+                    chunk.chunk_size_decompressed,
+                    file_hasher.as_mut(),
+                    &mut transfer_buffer,
+                    chunk.chunk_decompressed_hash_md5,
+                )
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&tmp_path);
+                })?;
+
+                total_written += bytes_written;
+                guard.chunks.push(chunk.chunk_name);
+            }
+            // Flush and evict each chunk's output range to keep peak resident
+            // memory low during assembly of large multi-chunk files.
+            super::assembly_opt::sync_and_evict_range(
+                out_file.as_raw_fd(),
                 chunk.chunk_on_file_offset,
                 chunk.chunk_size_decompressed,
-                file_hasher.as_mut(),
-                &mut transfer_buffer,
-                chunk.chunk_decompressed_hash_md5,
-            )
-            .inspect_err(|_| {
-                let _ = fs::remove_file(&tmp_path);
-            })?;
-
-            total_written += bytes_written;
-            guard.chunks.push(chunk.chunk_name);
+            );
         }
-        // Flush and evict each chunk's output range to keep peak resident
-        // memory low during assembly of large multi-chunk files.
-        super::assembly_opt::sync_and_evict_range(
-            out_file.as_raw_fd(),
-            chunk.chunk_on_file_offset,
-            chunk.chunk_size_decompressed,
-        );
     }
 
     out_file.sync_data().map_err(|err| {
