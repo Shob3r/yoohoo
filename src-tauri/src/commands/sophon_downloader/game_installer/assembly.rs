@@ -792,17 +792,10 @@ pub async fn spawn_assembly_task(
     params: AssemblyTaskParams,
     updater: impl Fn(SophonProgress) + Send + Sync + 'static,
 ) -> SophonResult<()> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let result = run_assembly_task(params, updater);
-        let _ = tx.send(result);
-    });
-    match rx.await {
-        Ok(result) => result,
-        Err(_) => Err(SophonError::Io(std::io::Error::other(
-            "assembly thread cancelled",
-        ))),
-    }
+    tokio::task::spawn_blocking(move || run_assembly_task(params, updater))
+        .await
+        .map_err(|_| SophonError::Io(std::io::Error::other("assembly task cancelled")))
+        .and_then(|r| r)
 }
 
 #[cfg(test)]
