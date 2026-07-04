@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use md5::{Digest, Md5};
 use reqwest::Client;
 use tauri_plugin_log::log;
 use tokio::io::AsyncWriteExt;
@@ -96,7 +95,7 @@ async fn download_zip(
 
     let mut file = tokio::fs::File::create(dest).await?;
     let mut stream = resp.bytes_stream();
-    let mut hasher = Md5::new();
+    let mut hasher = super::assembly_opt::Md5::new()?;
     let mut downloaded: u64 = 0;
 
     let name = dest
@@ -109,7 +108,7 @@ async fn download_zip(
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
-        hasher.update(&bytes);
+        hasher.update(&bytes)?;
         file.write_all(&bytes).await?;
         downloaded += bytes.len() as u64;
 
@@ -132,7 +131,7 @@ async fn download_zip(
 
     file.flush().await?;
 
-    let digest: [u8; 16] = hasher.finalize().into();
+    let digest: [u8; 16] = hasher.finish()?;
     if !md5_hex_eq(&digest, expected_md5) {
         let _ = fs::remove_file(dest);
         return Err(SophonError::Md5Mismatch {
@@ -900,9 +899,9 @@ mod tests {
     fn md5_comparison_case_insensitive() {
         // Compute expected_md5 in lowercase manually for a known input.
         fn md5_hex(input: &[u8]) -> String {
-            let mut hasher = Md5::new();
-            hasher.update(input);
-            hex::encode(hasher.finalize())
+            let mut hasher = super::super::assembly_opt::Md5::new().unwrap();
+            hasher.update(input).unwrap();
+            hex::encode(hasher.finish().unwrap())
         }
         let lower = md5_hex(b"abc123");
         let upper = lower.to_ascii_uppercase();
