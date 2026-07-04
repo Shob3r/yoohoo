@@ -11,6 +11,8 @@ use dashmap::DashMap;
 
 pub use dashmap::DashMap as VerificationCache;
 
+pub(crate) const VERIFICATION_CACHE_MAX_ENTRIES: usize = 5_000;
+
 #[cfg(test)]
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
@@ -58,7 +60,7 @@ pub fn load_verification_cache(game_dir: &Path) -> DashMap<String, VerificationE
         },
     };
     // Trim cache to half the max if it exceeds the limit.
-    const MAX_CACHE_ENTRIES: usize = 5_000;
+    const MAX_CACHE_ENTRIES: usize = VERIFICATION_CACHE_MAX_ENTRIES;
     let trim_keys: Vec<String> = if serializable.files.len() > MAX_CACHE_ENTRIES {
         let count = serializable.files.len();
         let to_trim: Vec<_> = serializable
@@ -175,6 +177,11 @@ pub fn check_file_md5_with_cache_key(
     let matches = actual == expected_md5;
 
     if matches {
+        if cache.len() >= VERIFICATION_CACHE_MAX_ENTRIES {
+            // At capacity; skip insert to bound memory. Load-time trim
+            // reclaims entries on the next session.
+            return Ok(true);
+        }
         cache.insert(
             cache_key.to_string(),
             VerificationEntry {
@@ -618,5 +625,40 @@ mod tests {
         let content = fs::read_to_string(&cache_path).unwrap();
         assert!(content.contains("f"));
         assert!(content.contains("42"));
+    }
+
+    /// Insertion is skipped once the cache reaches
+    /// `VERIFICATION_CACHE_MAX_ENTRIES`, bounding RSS at runtime. The
+    /// verified file still returns `true`.
+    #[test]
+    fn check_file_md5_cached_skips_insert_at_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().to_path_buf();
+        let file_path = game_dir.join("capped.dat");
+        fs::write(&file_path, b"capped").unwrap();
+        let md5 = {
+            let mut hasher = Md5::new();
+            hasher.update(b"capped");
+            hex::encode(hasher.finalize())
+        };
+        let cache: DashMap<String, VerificationEntry> = DashMap::new();
+        for i in 0..VERIFICATION_CACHE_MAX_ENTRIES {
+            cache.insert(
+                format!("fill_{i}"),
+                VerificationEntry {
+                    size: 0,
+                    md5: String::new(),
+                    mtime_secs: 0,
+                },
+            );
+        }
+        assert_eq!(cache.len(), VERIFICATION_CACHE_MAX_ENTRIES);
+        let result = check_file_md5_cached(&file_path, 6, &md5, &game_dir, &cache).unwrap();
+        assert!(result, "verification still passes at capacity");
+        assert_eq!(
+            cache.len(),
+            VERIFICATION_CACHE_MAX_ENTRIES,
+            "cache must not grow past the cap"
+        );
     }
 }
