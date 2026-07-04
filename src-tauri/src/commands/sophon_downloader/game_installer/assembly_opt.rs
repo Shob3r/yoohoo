@@ -112,6 +112,19 @@ fn hex_nibble(b: u8) -> Option<u8> {
 
 thread_local! {
     static OPT_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static ZSTD_DCTX: RefCell<Option<zstd::zstd_safe::DCtx<'static>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn take_dctx() -> zstd::zstd_safe::DCtx<'static> {
+    ZSTD_DCTX.with(|cell| {
+        cell.borrow_mut()
+            .take()
+            .unwrap_or_else(zstd::zstd_safe::DCtx::create)
+    })
+}
+
+pub(crate) fn return_dctx(ctx: zstd::zstd_safe::DCtx<'static>) {
+    ZSTD_DCTX.with(|cell| cell.borrow_mut().replace(ctx));
 }
 
 /// Hint the kernel about access to `fd`: SEQUENTIAL enables read-ahead for
@@ -330,51 +343,65 @@ fn decompress_chunk_with_window(
     let f = File::open(chunk_path)?;
     let compressed_fd = f.as_raw_fd();
     posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-    let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
-    let mut decoder = zstd::Decoder::new(buf_reader)?;
-    decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
-    let mut bytes_written: u64 = 0;
-    let mut write_offset = offset;
-    let mut chunk_hasher = Md5::new()?;
+    let (bytes_written, chunk_hasher) = {
+        let mut ctx = take_dctx();
+        ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+            .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx reset")))?;
+        ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))
+            .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx WindowLogMax")))?;
 
-    let mut buffer = OPT_BUFFER.with(|cell| {
-        let mut buf = cell.take();
-        if buf.capacity() < ASSEMBLY_BUFFER_SIZE {
-            buf = Vec::with_capacity(ASSEMBLY_BUFFER_SIZE);
-        }
-        unsafe { buf.set_len(ASSEMBLY_BUFFER_SIZE) };
-        buf
-    });
+        let (bytes, chunk_hasher) = {
+            let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
+            let mut decoder = zstd::Decoder::with_context(buf_reader, &mut ctx);
 
-    match file_hasher.as_deref_mut() {
-        Some(hasher) => loop {
-            let n = decoder.read(&mut buffer)?;
-            if n == 0 {
-                break;
+            let mut chunk_hasher = Md5::new()?;
+
+            let mut buffer = OPT_BUFFER.with(|cell| {
+                let mut buf = cell.take();
+                if buf.capacity() < ASSEMBLY_BUFFER_SIZE {
+                    buf = Vec::with_capacity(ASSEMBLY_BUFFER_SIZE);
+                }
+                unsafe { buf.set_len(ASSEMBLY_BUFFER_SIZE) };
+                buf
+            });
+
+            let mut bytes: u64 = 0;
+            let mut write_offset = offset;
+            match file_hasher.as_deref_mut() {
+                Some(hasher) => loop {
+                    let n = decoder.read(&mut buffer)?;
+                    if n == 0 {
+                        break;
+                    }
+                    chunk_hasher.update(&buffer[..n])?;
+                    hasher.update(&buffer[..n])?;
+                    out_file.write_all_at(&buffer[..n], write_offset)?;
+                    write_offset += n as u64;
+                    bytes += n as u64;
+                },
+                None => loop {
+                    let n = decoder.read(&mut buffer)?;
+                    if n == 0 {
+                        break;
+                    }
+                    if chunk_hash_required(chunk_decompressed_hash_md5) {
+                        chunk_hasher.update(&buffer[..n])?;
+                    }
+                    out_file.write_all_at(&buffer[..n], write_offset)?;
+                    write_offset += n as u64;
+                    bytes += n as u64;
+                },
             }
-            chunk_hasher.update(&buffer[..n])?;
-            hasher.update(&buffer[..n])?;
-            out_file.write_all_at(&buffer[..n], write_offset)?;
-            write_offset += n as u64;
-            bytes_written += n as u64;
-        },
-        None => loop {
-            let n = decoder.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            if chunk_hash_required(chunk_decompressed_hash_md5) {
-                chunk_hasher.update(&buffer[..n])?;
-            }
-            out_file.write_all_at(&buffer[..n], write_offset)?;
-            write_offset += n as u64;
-            bytes_written += n as u64;
-        },
-    }
 
-    buffer.clear();
-    OPT_BUFFER.with(|cell| cell.replace(buffer));
+            buffer.clear();
+            OPT_BUFFER.with(|cell| cell.replace(buffer));
+            (bytes, chunk_hasher)
+        }; // decoder dropped, ctx borrow released
+
+        return_dctx(ctx);
+        (bytes, chunk_hasher)
+    };
 
     posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
 

@@ -16,7 +16,7 @@ thread_local! {
     static TRANSFER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex};
+use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, return_dctx, take_dctx};
 use super::cache::VerificationEntry;
 use super::error::{SophonError, SophonResult};
 use super::installer::ChunkNameLookup;
@@ -450,27 +450,42 @@ fn inline_decompress(
     window_log: u32,
 ) -> SophonResult<u64> {
     let f = File::open(chunk_path)?;
-    let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
-    let mut decoder = zstd::Decoder::new(buf_reader)?;
-    decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
-    let mut write_offset = offset;
-    let mut bytes_written: u64 = 0;
-    let mut chunk_hasher = Md5::new()?;
+    let (bytes_written, chunk_hasher) = {
+        let mut ctx = take_dctx();
+        ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+            .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx reset")))?;
+        ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))
+            .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx WindowLogMax")))?;
 
-    loop {
-        let n = decoder.read(buffer)?;
-        if n == 0 {
-            break;
-        }
-        chunk_hasher.update(&buffer[..n])?;
-        if let Some(hasher) = file_hasher.as_deref_mut() {
-            hasher.update(&buffer[..n])?;
-        }
-        out_file.write_all_at(&buffer[..n], write_offset)?;
-        write_offset += n as u64;
-        bytes_written += n as u64;
-    }
+        let (bytes, chunk_hasher) = {
+            let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
+            let mut decoder = zstd::Decoder::with_context(buf_reader, &mut ctx);
+
+            let mut chunk_hasher = Md5::new()?;
+            let mut write_offset = offset;
+            let mut bytes: u64 = 0;
+
+            loop {
+                let n = decoder.read(buffer)?;
+                if n == 0 {
+                    break;
+                }
+                chunk_hasher.update(&buffer[..n])?;
+                if let Some(hasher) = file_hasher.as_deref_mut() {
+                    hasher.update(&buffer[..n])?;
+                }
+                out_file.write_all_at(&buffer[..n], write_offset)?;
+                write_offset += n as u64;
+                bytes += n as u64;
+            }
+
+            (bytes, chunk_hasher)
+        }; // decoder dropped, ctx borrow released
+
+        return_dctx(ctx);
+        (bytes, chunk_hasher)
+    };
 
     if bytes_written != expected_size {
         return Err(SophonError::SizeMismatch {
