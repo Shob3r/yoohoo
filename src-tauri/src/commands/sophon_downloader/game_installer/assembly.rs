@@ -282,8 +282,9 @@ pub fn assemble_file(
     }
 
     let total_chunks = (chunk_range.end - chunk_range.start) as usize;
+    const MAX_PARALLEL_WORKERS: usize = 4;
     let num_workers = std::thread::available_parallelism()
-        .map(|n| n.get().min(8))
+        .map(|n| n.get().min(MAX_PARALLEL_WORKERS))
         .unwrap_or(1);
     let parallelize =
         all_chunks_have_hashes && file_hasher.is_none() && num_workers > 1 && total_chunks >= 4;
