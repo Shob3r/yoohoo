@@ -16,7 +16,7 @@ thread_local! {
     static TRANSFER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-use super::assembly_opt::Md5;
+use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex};
 use super::cache::VerificationEntry;
 use super::error::{SophonError, SophonResult};
 use super::installer::ChunkNameLookup;
@@ -47,8 +47,7 @@ pub fn decrement_chunk_refcount(
     };
     let prev = chunk_refcounts[idx].fetch_sub(1, Ordering::AcqRel);
     if prev == 1 {
-        let _ =
-            fs::remove_file(chunks_dir.join(format!("{name}.zstd", name = chunk_lookup.get(idx))));
+        let _ = fs::remove_file(chunks_dir.join(chunk_filename(chunk_lookup.get(idx))));
     }
 }
 
@@ -352,13 +351,13 @@ pub fn assemble_file(
     }
 
     if let Some(hasher) = file_hasher {
-        let actual = hex::encode(hasher.finish()?);
-        if actual != file_hash_md5 {
+        let digest = hasher.finish()?;
+        if !md5_hex_eq(&digest, file_hash_md5) {
             let _ = fs::remove_file(&tmp_path);
             return Err(SophonError::Md5Mismatch {
                 item: file_name.to_string(),
                 expected: file_hash_md5.to_string(),
-                actual,
+                actual: md5_to_hex(&digest),
             });
         }
     }
@@ -483,12 +482,12 @@ fn inline_decompress(
 
     const EMPTY_MD5: &str = "00000000000000000000000000000000";
     if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-        let actual = hex::encode(chunk_hasher.finish()?);
-        if actual != chunk_decompressed_hash_md5 {
+        let digest = chunk_hasher.finish()?;
+        if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
             return Err(SophonError::Md5Mismatch {
                 item: chunk_path.display().to_string(),
                 expected: chunk_decompressed_hash_md5.to_string(),
-                actual,
+                actual: md5_to_hex(&digest),
             });
         }
     }
@@ -556,12 +555,12 @@ fn write_from_old_file(
 
         const EMPTY_MD5: &str = "00000000000000000000000000000000";
         if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-            let actual = hex::encode(chunk_hasher.finish()?);
-            if actual != chunk_decompressed_hash_md5 {
+            let digest = chunk_hasher.finish()?;
+            if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
                 return Err(SophonError::Md5Mismatch {
                     item: old_file_path.display().to_string(),
                     expected: chunk_decompressed_hash_md5.to_string(),
-                    actual,
+                    actual: md5_to_hex(&digest),
                 });
             }
         }

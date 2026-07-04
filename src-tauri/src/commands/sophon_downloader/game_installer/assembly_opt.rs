@@ -49,11 +49,64 @@ impl Md5 {
             .map_err(|e| io::Error::other(e.to_string()))
     }
 
-    pub fn finish(mut self) -> io::Result<Vec<u8>> {
-        self.inner
+    pub fn finish(mut self) -> io::Result<[u8; 16]> {
+        let digest = self
+            .inner
             .finish()
-            .map(|d| d.to_vec())
-            .map_err(|e| io::Error::other(e.to_string()))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let mut out = [0u8; 16];
+        let n = digest.len().min(16);
+        out[..n].copy_from_slice(&digest[..n]);
+        Ok(out)
+    }
+}
+
+/// Compare an MD5 digest against an expected lowercase hex string without
+/// allocating. Returns false on length mismatch.
+#[inline]
+pub(crate) fn md5_hex_eq(digest: &[u8; 16], expected: &str) -> bool {
+    if expected.len() != 32 {
+        return false;
+    }
+    let bytes = expected.as_bytes();
+    let mut i = 0;
+    while i < 16 {
+        let hi = hex_nibble(bytes[i * 2]);
+        let lo = hex_nibble(bytes[i * 2 + 1]);
+        match (hi, lo) {
+            (Some(h), Some(l)) if (h << 4) | l == digest[i] => i += 1,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Encode an MD5 digest to a lowercase hex String. Only for error paths.
+#[inline]
+pub(crate) fn md5_to_hex(digest: &[u8; 16]) -> String {
+    let mut s = String::with_capacity(32);
+    for b in digest {
+        s.push(hex_digit(b >> 4));
+        s.push(hex_digit(b & 0xf));
+    }
+    s
+}
+
+#[inline]
+fn hex_digit(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        _ => (b'a' + n - 10) as char,
+    }
+}
+
+#[inline]
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -202,12 +255,12 @@ pub fn write_chunk_from_mmap(
     }
 
     if needs_chunk_hash {
-        let actual = hex::encode(chunk_hasher.finish()?);
-        if actual != chunk_decompressed_hash_md5 {
+        let digest = chunk_hasher.finish()?;
+        if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
             return Err(SophonError::Md5Mismatch {
                 item: old_file_path.display().to_string(),
                 expected: chunk_decompressed_hash_md5.to_string(),
-                actual,
+                actual: md5_to_hex(&digest),
             });
         }
     }
@@ -334,12 +387,12 @@ fn decompress_chunk_with_window(
     }
 
     if chunk_hash_required(chunk_decompressed_hash_md5) {
-        let actual = hex::encode(chunk_hasher.finish()?);
-        if actual != chunk_decompressed_hash_md5 {
+        let digest = chunk_hasher.finish()?;
+        if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
             return Err(SophonError::Md5Mismatch {
                 item: chunk_path.display().to_string(),
                 expected: chunk_decompressed_hash_md5.to_string(),
-                actual,
+                actual: md5_to_hex(&digest),
             });
         }
     }
@@ -449,5 +502,29 @@ mod tests {
         assert_eq!(window_log_for_size(1 << 23), 24);
         assert_eq!(window_log_for_size(1u64 << 32), MAX_WINDOW_LOG);
         assert_eq!(window_log_for_size(0), 10);
+    }
+
+    #[test]
+    fn md5_hex_eq_matches_string_comparison() {
+        let data = b"the quick brown fox";
+        let mut h = Md5::new().unwrap();
+        h.update(data).unwrap();
+        let digest = h.finish().unwrap();
+        let hex = md5_to_hex(&digest);
+        assert!(md5_hex_eq(&digest, &hex));
+        assert!(!md5_hex_eq(&digest, "00000000000000000000000000000000"));
+        assert!(!md5_hex_eq(&digest, "deadbeef"));
+        assert!(!md5_hex_eq(&digest, &hex[..31]));
+    }
+
+    #[test]
+    fn md5_to_hex_roundtrips_against_hex_encode() {
+        let data = b"-stack md5 test payload-";
+        let mut h = Md5::new().unwrap();
+        h.update(data).unwrap();
+        let digest = h.finish().unwrap();
+        let stack = md5_to_hex(&digest);
+        let heap = hex::encode(digest);
+        assert_eq!(stack, heap);
     }
 }

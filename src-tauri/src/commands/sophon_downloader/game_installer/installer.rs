@@ -349,10 +349,18 @@ pub fn intern_old_chunk_offsets(
     HashMap<String, u32>,
     HashMap<String, u32>,
 ) {
-    let mut name_to_id: HashMap<String, u32> = HashMap::new();
-    let mut hash_to_id: HashMap<String, u32> = HashMap::new();
-    let mut offsets: HashMap<(u32, u32), u64> = HashMap::new();
-    for f in manifest.assets.iter().filter(|f| !f.is_directory()) {
+    let non_dir: Vec<&SophonManifestAssetProperty> = manifest
+        .assets
+        .iter()
+        .filter(|f| !f.is_directory())
+        .collect();
+    let total_chunks: usize = non_dir.iter().map(|f| f.asset_chunks.len()).sum();
+    let asset_count = non_dir.len();
+
+    let mut name_to_id: HashMap<String, u32> = HashMap::with_capacity(asset_count);
+    let mut hash_to_id: HashMap<String, u32> = HashMap::with_capacity(asset_count);
+    let mut offsets: HashMap<(u32, u32), u64> = HashMap::with_capacity(total_chunks);
+    for f in non_dir {
         let next_name_id = name_to_id.len() as u32;
         let name_id = *name_to_id
             .entry(f.asset_name.clone())
