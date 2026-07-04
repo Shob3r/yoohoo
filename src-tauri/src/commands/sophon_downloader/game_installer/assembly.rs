@@ -664,7 +664,7 @@ pub fn run_assembly_task(
     }
 
     let tmp_dir = &all_tmp_dirs[tmp_dir_idx];
-    let file_name = all_files.file_name(file_idx).to_string();
+    let file_name = all_files.file_name(file_idx);
     let chunk_range = all_files.file_chunk_range(file_idx);
 
     // Claim the slot for this file once: the swap returns the previous value,
@@ -711,7 +711,7 @@ pub fn run_assembly_task(
 
     let file_size = all_files.file_size(file_idx);
     let file_hash_md5 = all_files.file_hash_md5(file_idx);
-    let target_path = game_dir.join(file_name.as_str());
+    let target_path = game_dir.join(file_name);
     let needs_assembly = if target_path.exists() {
         let metadata = match target_path.metadata() {
             Ok(m) => m,
@@ -796,7 +796,7 @@ pub fn run_assembly_task(
         // Release the claim so a later retry can reprocess this file_idx.
         completion_flags[file_idx].store(false, Ordering::Release);
         return Err(SophonError::AssemblyFailed {
-            file: file_name.clone(),
+            file: file_name.to_string(),
             error: err.to_string(),
         });
     }

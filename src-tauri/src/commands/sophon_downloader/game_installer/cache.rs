@@ -127,11 +127,8 @@ pub fn check_file_md5_cached(
     game_dir: &Path,
     cache: &DashMap<String, VerificationEntry>,
 ) -> io::Result<bool> {
-    let cache_key = path
-        .strip_prefix(game_dir)
-        .unwrap_or(path)
-        .display()
-        .to_string();
+    let relative = path.strip_prefix(game_dir).unwrap_or(path);
+    let cache_key = relative.to_string_lossy();
     check_file_md5_with_cache_key(path, expected_size, expected_md5, &cache_key, cache)
 }
 
@@ -178,8 +175,6 @@ pub fn check_file_md5_with_cache_key(
 
     if matches {
         if cache.len() >= VERIFICATION_CACHE_MAX_ENTRIES {
-            // At capacity; skip insert to bound memory. Load-time trim
-            // reclaims entries on the next session.
             return Ok(true);
         }
         cache.insert(
