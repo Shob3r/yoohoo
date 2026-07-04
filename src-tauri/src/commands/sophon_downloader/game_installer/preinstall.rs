@@ -1731,9 +1731,10 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
             let remaining = asset.patch_chunk_length - HDIFF_MAGIC.len() as u64;
             let mut limited = (&mut chunk_file).take(remaining);
             borrow_copy_buffer(|copy_buf| -> std::io::Result<()> {
-                if copy_buf.len() < super::FILE_WRITE_BUFFER_SIZE {
-                    copy_buf.resize(super::FILE_WRITE_BUFFER_SIZE, 0);
+                if copy_buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
+                    *copy_buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
                 }
+                unsafe { copy_buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
                 loop {
                     let n = limited.read(copy_buf)?;
                     if n == 0 {
@@ -1775,9 +1776,10 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
         let mut writer = BufWriter::with_capacity(super::FILE_WRITE_BUFFER_SIZE, file);
         let mut limited = (&mut chunk_file).take(asset.patch_chunk_length);
         borrow_copy_buffer(|copy_buf| -> std::io::Result<()> {
-            if copy_buf.len() < super::FILE_WRITE_BUFFER_SIZE {
-                copy_buf.resize(super::FILE_WRITE_BUFFER_SIZE, 0);
+            if copy_buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
+                *copy_buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
             }
+            unsafe { copy_buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
             loop {
                 let n = limited.read(copy_buf)?;
                 if n == 0 {
@@ -1948,9 +1950,10 @@ fn apply_hdiff_patch(
             std::io::BufWriter::with_capacity(super::FILE_WRITE_BUFFER_SIZE, diff_file);
         let mut limited = (&mut chunk_file).take(asset.patch_chunk_length);
         borrow_copy_buffer(|copy_buf| -> std::io::Result<()> {
-            if copy_buf.len() < super::FILE_WRITE_BUFFER_SIZE {
-                copy_buf.resize(super::FILE_WRITE_BUFFER_SIZE, 0);
+            if copy_buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
+                *copy_buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
             }
+            unsafe { copy_buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
             loop {
                 let n = limited.read(copy_buf)?;
                 if n == 0 {
