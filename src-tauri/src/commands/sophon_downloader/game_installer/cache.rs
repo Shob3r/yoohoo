@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tauri_plugin_log::log;
 
 use super::VERIFICATION_CACHE_FILE;
+use super::assembly_opt::md5_hex_eq;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationEntry {
@@ -170,8 +171,8 @@ pub fn check_file_md5_with_cache_key(
         return Ok(false);
     }
 
-    let actual = file_md5_hex(path)?;
-    let matches = actual == expected_md5;
+    let actual = file_md5_digest(path)?;
+    let matches = md5_hex_eq(&actual, expected_md5);
 
     if matches {
         if cache.len() >= VERIFICATION_CACHE_MAX_ENTRIES {
@@ -203,10 +204,18 @@ thread_local! {
 }
 
 pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
+    let digest = file_md5_digest(path)?;
+    Ok(hex::encode(digest))
+}
+
+fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let file = File::open(path)?;
     let len = file.metadata()?.len();
     if len == 0 {
-        return Ok(String::from("d41d8cd98f00b204e9800998ecf8427e"));
+        return Ok([
+            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8,
+            0x42, 0x7e,
+        ]);
     }
 
     #[cfg(unix)]
@@ -250,7 +259,10 @@ pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
     let hash = hasher
         .finish()
         .map_err(|e| io::Error::other(e.to_string()))?;
-    Ok(hex::encode(hash.as_ref()))
+    let mut out = [0u8; 16];
+    let n = hash.len().min(16);
+    out[..n].copy_from_slice(&hash[..n]);
+    Ok(out)
 }
 
 #[cfg(test)]
