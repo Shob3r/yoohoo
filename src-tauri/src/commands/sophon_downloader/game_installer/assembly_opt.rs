@@ -13,7 +13,7 @@ use super::sysio;
 
 const ASSEMBLY_BUFFER_SIZE: usize = 64 * 1024;
 
-const ONESHOT_MAX_SIZE: usize = 8 * 1024 * 1024;
+const ONESHOT_MAX_SIZE: usize = 16 * 1024 * 1024;
 
 const EMPTY_MD5: &str = "00000000000000000000000000000000";
 
