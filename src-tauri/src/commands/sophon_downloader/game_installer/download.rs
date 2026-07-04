@@ -465,6 +465,18 @@ async fn download_full_file_with_response(
 
     drop(file);
 
+    if total_len > 0 {
+        let dest_clone = dest.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(f) = std::fs::File::open(&dest_clone) {
+                use std::os::unix::io::AsRawFd;
+                super::assembly_opt::posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+            }
+        })
+        .await
+        .ok();
+    }
+
     Ok(())
 }
 
@@ -635,6 +647,18 @@ async fn download_with_resume(
     }
 
     drop(file);
+
+    if total_len > 0 {
+        let dest_clone = dest.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(f) = std::fs::File::open(&dest_clone) {
+                use std::os::unix::io::AsRawFd;
+                super::assembly_opt::posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+            }
+        })
+        .await
+        .ok();
+    }
 
     Ok(())
 }
