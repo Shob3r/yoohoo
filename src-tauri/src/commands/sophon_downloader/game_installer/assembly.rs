@@ -726,7 +726,7 @@ pub fn run_assembly_task(
         };
         if metadata.len() != file_size {
             true
-        } else if let Some(entry) = verify_cache.get(&target_path.display().to_string())
+        } else if let Some(entry) = verify_cache.get(target_path.to_string_lossy().as_ref())
             && entry.size == file_size
             && entry.md5 == file_hash_md5
         {
