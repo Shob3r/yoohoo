@@ -540,16 +540,15 @@ async fn process_preinstall_chunk(
 
     let chunk_path = chunks_dir.join(&chunk_info.patch_name);
 
-    let needs_download =
-        if chunk_path.exists() && verify_file_hash(&chunk_path, &chunk_info.patch_md5) {
-            downloaded_bytes.fetch_add(chunk_info.patch_size, Ordering::Relaxed);
-            if !already_downloaded {
-                chunk_bytes_map.insert(chunk_info.patch_name.clone(), chunk_info.patch_size);
-            }
-            false
-        } else {
-            true
-        };
+    let needs_download = if verify_file_hash(&chunk_path, &chunk_info.patch_md5) {
+        downloaded_bytes.fetch_add(chunk_info.patch_size, Ordering::Relaxed);
+        if !already_downloaded {
+            chunk_bytes_map.insert(chunk_info.patch_name.clone(), chunk_info.patch_size);
+        }
+        false
+    } else {
+        true
+    };
 
     if needs_download {
         download_patch_chunk_with_retries(
