@@ -170,14 +170,14 @@ fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
     })
 }
 
-fn pread_hash_xxh64(path: &Path) -> SophonResult<String> {
+fn pread_hash_xxh64_digest(path: &Path) -> SophonResult<u64> {
     use xxhash_rust::xxh64::Xxh64;
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let mut hasher = Xxh64::new(0);
     if len == 0 {
         hasher.update(b"");
-        return Ok(format!("{:016x}", hasher.digest()));
+        return Ok(hasher.digest());
     }
     HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
@@ -195,7 +195,7 @@ fn pread_hash_xxh64(path: &Path) -> SophonResult<String> {
             hasher.update(&buf[..n]);
             offset += n as u64;
         }
-        Ok(format!("{:016x}", hasher.digest()))
+        Ok(hasher.digest())
     })
 }
 
@@ -204,16 +204,16 @@ async fn verify_existing_file_hash(path: &Path, expected_hash: &str) -> SophonRe
         return Ok(true);
     }
     let path = path.to_path_buf();
+    let expected_hash = expected_hash.to_string();
     let expected_len = expected_hash.len();
-    let expected_lower = expected_hash.to_ascii_lowercase();
     tokio::task::spawn_blocking(move || match expected_len {
         32 => {
             let digest = pread_hash_md5_digest(&path)?;
-            Ok(md5_hex_eq(&digest, &expected_lower))
+            Ok(md5_hex_eq(&digest, &expected_hash))
         }
         16 => {
-            let actual = pread_hash_xxh64(&path)?;
-            Ok(actual == expected_lower)
+            let digest = pread_hash_xxh64_digest(&path)?;
+            Ok(xxh64_hex_eq(digest, &expected_hash))
         }
         _ => {
             log::warn!(

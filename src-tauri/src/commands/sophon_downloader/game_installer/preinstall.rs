@@ -1179,8 +1179,8 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
                 }
             }
         }
-        let actual = format!("{:016x}", hasher.digest());
-        actual == expected_xxh64
+        let digest = hasher.digest();
+        super::assembly_opt::xxh64_hex_eq(digest, expected_xxh64)
     })
 }
 
