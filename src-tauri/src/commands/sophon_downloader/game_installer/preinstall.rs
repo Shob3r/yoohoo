@@ -1773,6 +1773,9 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
         let patch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             apply_hdiff_patch_from_files(game_dir, &diff_temp, asset)
         }));
+        if let Ok(f) = fs::File::open(&diff_temp) {
+            posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+        }
         let _ = fs::remove_file(&diff_temp);
         posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         match patch_result {
@@ -2014,6 +2017,9 @@ fn apply_hdiff_patch(
         hdiff.apply(None)
     }));
 
+    if let Ok(f) = fs::File::open(&diff_temp) {
+        posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
     let _ = fs::remove_file(&diff_temp);
 
     match patch_result {
