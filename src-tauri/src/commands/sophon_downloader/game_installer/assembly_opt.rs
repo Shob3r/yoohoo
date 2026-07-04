@@ -202,6 +202,7 @@ fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
         if ptr == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
+        libc::madvise(ptr, len, libc::MADV_SEQUENTIAL);
         Ok(MmapGuard { ptr, len })
     }
 }
