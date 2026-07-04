@@ -688,12 +688,11 @@ pub async fn preinstall_download(
         return Err(SophonError::Cancelled);
     }
 
-    let chunk_infos: Vec<PatchChunkInfo> = plan.unique_chunks.clone();
+    let queue: Arc<Mutex<VecDeque<PatchChunkInfo>>> =
+        Arc::new(Mutex::new(plan.unique_chunks.iter().cloned().collect()));
     const WORKER_COUNT: usize = super::DOWNLOAD_CONCURRENCY;
     let cancelled = Arc::new(AtomicU8::new(0));
     let first_error: Arc<Mutex<Option<SophonError>>> = Arc::new(Mutex::new(None));
-    let queue: Arc<Mutex<VecDeque<PatchChunkInfo>>> =
-        Arc::new(Mutex::new(chunk_infos.into_iter().collect()));
     let mut workers = tokio::task::JoinSet::new();
 
     let diff_downloads = plan.diff_downloads.clone();
