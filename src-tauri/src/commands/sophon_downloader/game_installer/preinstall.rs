@@ -1,6 +1,8 @@
+use libc;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -50,7 +52,7 @@ use super::api::{
     fetch_build, fetch_front_door, fetch_manifest, fetch_patch_build, fetch_patch_manifest,
     is_known_vo_locale, vo_lang_matches,
 };
-use super::assembly_opt::{md5_hex_eq, md5_to_hex};
+use super::assembly_opt::{md5_hex_eq, md5_to_hex, posix_advise};
 use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
 use super::read_installed_tag;
@@ -1115,12 +1117,14 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
     let Ok(file) = fs::File::open(path) else {
         return false;
     };
+    let fd = file.as_raw_fd();
+    posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
     let mut reader = std::io::BufReader::with_capacity(super::FILE_WRITE_BUFFER_SIZE, file);
     let mut hasher = match super::assembly_opt::Md5::new() {
         Ok(h) => h,
         Err(_) => return false,
     };
-    borrow_verify_buffer(|buf| {
+    let result = borrow_verify_buffer(|buf| {
         if buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
             *buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
         }
@@ -1146,7 +1150,9 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
             Ok(digest) => md5_hex_eq(&digest, expected_md5),
             Err(_) => false,
         }
-    })
+    });
+    posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+    result
 }
 
 pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
@@ -1157,9 +1163,11 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
         );
         return false;
     };
+    let fd = file.as_raw_fd();
+    posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
     let mut reader = std::io::BufReader::with_capacity(super::FILE_WRITE_BUFFER_SIZE, file);
     let mut hasher = xxhash_rust::xxh64::Xxh64::new(0);
-    borrow_verify_buffer(|buf| {
+    let result = borrow_verify_buffer(|buf| {
         if buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
             *buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
         }
@@ -1181,7 +1189,9 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
         }
         let digest = hasher.digest();
         super::assembly_opt::xxh64_hex_eq(digest, expected_xxh64)
-    })
+    });
+    posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+    result
 }
 
 pub(super) fn verify_file_hash(path: &Path, expected_hash: &str) -> bool {
