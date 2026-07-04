@@ -1,4 +1,5 @@
 use std::os::unix::fs::FileExt;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use futures_util::StreamExt;
@@ -8,35 +9,62 @@ use tauri_plugin_log::log;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 use super::CHUNK_WRITE_BUFFER_SIZE;
-use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex};
+use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, posix_advise};
 use super::compact_manifest::ChunkRef;
 use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
 use crate::commands::sophon_downloader::api_scrape::DownloadInfo;
 
+/// Evict pages every `EVICT_INTERVAL` bytes written to keep the page-cache
+/// footprint bounded during large downloads.
+const EVICT_INTERVAL: u64 = 4 * 1024 * 1024;
+
 /// Buffered writer over a tokio file handle, sized to
-/// `CHUNK_WRITE_BUFFER_SIZE`.
+/// `CHUNK_WRITE_BUFFER_SIZE`. Periodically evicts written pages from the
+/// page cache to bound resident memory during large downloads.
 pub(crate) struct EvictingWriter {
     inner: BufWriter<tokio::fs::File>,
+    written: u64,
+    last_evict: u64,
 }
 
 impl EvictingWriter {
     pub(crate) fn new(file: tokio::fs::File) -> Self {
         Self {
             inner: BufWriter::with_capacity(CHUNK_WRITE_BUFFER_SIZE, file),
+            written: 0,
+            last_evict: 0,
         }
     }
 
-    pub(crate) fn with_offset(file: tokio::fs::File, _offset: u64) -> Self {
-        Self::new(file)
+    pub(crate) fn with_offset(file: tokio::fs::File, offset: u64) -> Self {
+        Self {
+            inner: BufWriter::with_capacity(CHUNK_WRITE_BUFFER_SIZE, file),
+            written: offset,
+            last_evict: offset,
+        }
     }
 
     pub(crate) async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        self.inner.write_all(buf).await
+        self.inner.write_all(buf).await?;
+        self.written += buf.len() as u64;
+        let since = self.written - self.last_evict;
+        if since >= EVICT_INTERVAL {
+            self.flush().await?;
+            let fd = self.inner.get_ref().as_raw_fd();
+            posix_advise(fd, 0, self.written, libc::POSIX_FADV_DONTNEED);
+            self.last_evict = self.written;
+        }
+        Ok(())
     }
 
     pub(crate) async fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush().await
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn written(&self) -> u64 {
+        self.written
     }
 }
 
