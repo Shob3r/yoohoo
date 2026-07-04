@@ -127,7 +127,6 @@ fn hex_nibble(b: u8) -> Option<u8> {
 thread_local! {
     static OPT_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static ONESHOT_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    static COMPRESSED_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static ZSTD_DCTX: RefCell<Option<zstd::zstd_safe::DCtx<'static>>> = const { RefCell::new(None) };
 }
 
@@ -141,6 +140,46 @@ pub(crate) fn take_dctx() -> zstd::zstd_safe::DCtx<'static> {
 
 pub(crate) fn return_dctx(ctx: zstd::zstd_safe::DCtx<'static>) {
     ZSTD_DCTX.with(|cell| cell.borrow_mut().replace(ctx));
+}
+
+struct MmapGuard {
+    ptr: *mut libc::c_void,
+    len: usize,
+}
+
+impl MmapGuard {
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
+    }
+}
+
+impl Drop for MmapGuard {
+    fn drop(&mut self) {
+        if self.ptr != libc::MAP_FAILED && !self.ptr.is_null() {
+            unsafe { libc::munmap(self.ptr, self.len) };
+        }
+    }
+}
+
+fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
+    let len = file.metadata()?.len() as usize;
+    if len == 0 {
+        return Err(io::Error::other("empty file"));
+    }
+    unsafe {
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            file.as_raw_fd(),
+            0,
+        );
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(MmapGuard { ptr, len })
+    }
 }
 
 fn decompress_chunk_oneshot(
@@ -157,25 +196,8 @@ fn decompress_chunk_oneshot(
     let expected_usize = expected_size as usize;
 
     let f = File::open(chunk_path)?;
-    let compressed_len = f.metadata()?.len() as usize;
-
-    let mut compressed_buf = COMPRESSED_BUF.with(|cell| {
-        let mut buf = cell.take();
-        if buf.capacity() < compressed_len {
-            buf = Vec::with_capacity(compressed_len);
-        }
-        unsafe { buf.set_len(compressed_len) };
-        buf
-    });
-    let mut read = 0;
-    while read < compressed_len {
-        let n = f.read_at(&mut compressed_buf[read..], read as u64)?;
-        if n == 0 {
-            break;
-        }
-        read += n;
-    }
-    let compressed = &compressed_buf[..read];
+    let mmap = mmap_read_only(&f)?;
+    let compressed = mmap.as_slice();
 
     let mut output = ONESHOT_BUF.with(|cell| {
         let mut buf = cell.take();
@@ -232,8 +254,6 @@ fn decompress_chunk_oneshot(
 
     output.clear();
     ONESHOT_BUF.with(|cell| cell.replace(output));
-    compressed_buf.clear();
-    COMPRESSED_BUF.with(|cell| cell.replace(compressed_buf));
     result
 }
 
