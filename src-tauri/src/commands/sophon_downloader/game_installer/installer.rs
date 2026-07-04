@@ -2311,8 +2311,13 @@ pub async fn verify_integrity(
 
     // Phase 2a: Collect unique chunks that need re-downloading across all
     // failed files, then download them in parallel.
-    let mut redownload_items: Vec<(String, u64, Arc<DownloadInfo>)> = Vec::new();
-    let mut seen_chunks: HashSet<String> = HashSet::new();
+    let total_chunks_upper: usize = failed_verifications
+        .iter()
+        .map(|(a, _, _)| a.asset_chunks.len())
+        .sum();
+    let mut redownload_items: Vec<(String, u64, Arc<DownloadInfo>)> =
+        Vec::with_capacity(total_chunks_upper);
+    let mut seen_chunks: HashSet<String> = HashSet::with_capacity(total_chunks_upper);
     for (asset, chunk_download, _) in &failed_verifications {
         for chunk in &asset.asset_chunks {
             if seen_chunks.contains(&chunk.chunk_name) {

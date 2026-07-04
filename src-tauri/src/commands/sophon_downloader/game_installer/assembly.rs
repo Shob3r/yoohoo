@@ -240,7 +240,7 @@ pub fn assemble_file(
         buf
     });
     let mut guard = DecrementGuard {
-        chunks: Vec::new(),
+        chunks: Vec::with_capacity((chunk_range.end - chunk_range.start) as usize),
         chunk_lookup,
         chunk_refcounts,
         chunks_dir,
