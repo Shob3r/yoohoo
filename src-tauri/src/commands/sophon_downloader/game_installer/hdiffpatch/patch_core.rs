@@ -33,14 +33,23 @@ pub(crate) fn write_cover_stream_to_output(
     let mut new_pos_back = 0i64;
     let mut total_written: u64 = 0;
     let mut rle_struct = RleRefClip::default();
-    let (left, right) = clips.split_at_mut(2);
-    let headers = enumerate_cover_headers(
-        &mut *left[0],
+    let (cover_slice, rest_slice) = clips.split_first_mut().unwrap();
+    let cover_reader = &mut **cover_slice;
+    let rest_slice: &mut [Box<dyn Read>] = rest_slice;
+    let [rle_ctrl_box, rle_code_box, new_data_box] = rest_slice else {
+        return Err(std::io::Error::other("expected 3 remaining clip streams"));
+    };
+    let rle_ctrl_reader = &mut **rle_ctrl_box;
+    let rle_code_reader = &mut **rle_code_box;
+    let new_data_reader = &mut **new_data_box;
+    let headers = enumerate_cover_headers_checked(
+        cover_reader,
         header_info.chunk_info.cover_buf_size,
         header_info.chunk_info.cover_count,
     )?;
 
-    for cover in &headers {
+    for cover_result in headers {
+        let cover = cover_result?;
         if cover.new_pos < new_pos_back {
             return Err(std::io::Error::other(
                 "backward or overlapping covers in patch",
@@ -59,7 +68,7 @@ pub(crate) fn write_cover_stream_to_output(
             let copy_length = cover.new_pos - new_pos_back;
             tbytes_copy_stream_from_old_clip(
                 &mut cache,
-                &mut *right[1],
+                new_data_reader,
                 copy_length,
                 &mut shared_buffer,
             )?;
@@ -68,8 +77,8 @@ pub(crate) fn write_cover_stream_to_output(
                 &mut cache,
                 copy_length,
                 &mut shared_buffer,
-                &mut *left[1],
-                &mut *right[0],
+                rle_ctrl_reader,
+                rle_code_reader,
             )?;
         }
 
@@ -80,8 +89,8 @@ pub(crate) fn write_cover_stream_to_output(
             cover.old_pos,
             cover.cover_length,
             &mut shared_buffer,
-            &mut *left[1],
-            &mut *right[0],
+            rle_ctrl_reader,
+            rle_code_reader,
         )?;
         new_pos_back = cover
             .new_pos
@@ -106,7 +115,7 @@ pub(crate) fn write_cover_stream_to_output(
         }
         tbytes_copy_stream_from_old_clip(
             &mut cache,
-            &mut *right[1],
+            new_data_reader,
             copy_length,
             &mut shared_buffer,
         )?;
@@ -115,8 +124,8 @@ pub(crate) fn write_cover_stream_to_output(
             &mut cache,
             copy_length,
             &mut shared_buffer,
-            &mut *left[1],
-            &mut *right[0],
+            rle_ctrl_reader,
+            rle_code_reader,
         )?;
         let cache_len = cache.get_ref().len() as u64;
         write_cache_to_output(&mut cache, output_stream)?;
@@ -610,6 +619,7 @@ impl<'a> Iterator for CoverHeaderIterator<'a> {
 
 impl<'a> ExactSizeIterator for CoverHeaderIterator<'a> {}
 
+#[cfg(test)]
 pub(crate) fn enumerate_cover_headers(
     cover_reader: &mut dyn Read,
     cover_size: i64,
@@ -636,7 +646,7 @@ pub(crate) fn enumerate_cover_headers(
     CoverHeaderIterator::new(cover_reader, cover_size, cover_count)?.collect()
 }
 
-#[allow(dead_code, clippy::needless_lifetimes)]
+#[allow(clippy::needless_lifetimes)]
 pub(crate) fn enumerate_cover_headers_checked<'a>(
     cover_reader: &'a mut dyn Read,
     cover_size: i64,

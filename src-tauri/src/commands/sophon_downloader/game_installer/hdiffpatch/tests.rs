@@ -352,6 +352,54 @@ fn enumerate_cover_headers_truncated_data_returns_error() {
     );
 }
 
+/// Streaming iterator variant yields headers without collecting.
+#[test]
+fn enumerate_cover_headers_checked_streams_same_headers() {
+    use std::io::Cursor;
+
+    // Two headers: p_sign=0x01 (inc_old_pos=1), copy_length=0, cover_length=0.
+    let data = [0x01u8, 0x00, 0x00, 0x01, 0x00, 0x00];
+    let mut cursor = Cursor::new(&data[..]);
+    let mut iter =
+        super::patch_core::enumerate_cover_headers_checked(&mut cursor, data.len() as i64, 2)
+            .expect("iterator construction");
+    let h0 = iter.next().unwrap().expect("first header");
+    assert_eq!(h0.old_pos, 1);
+    assert_eq!(h0.new_pos, 0);
+    assert_eq!(h0.cover_length, 0);
+    let h1 = iter.next().unwrap().expect("second header");
+    assert_eq!(h1.old_pos, 2);
+    assert_eq!(h1.new_pos, 0);
+    assert_eq!(h1.cover_length, 0);
+    assert!(iter.next().is_none(), "should be exhausted after 2 headers");
+}
+
+/// zstd buffered mode decodes with a tight window log.
+#[test]
+fn get_clip_stream_zstd_buffered_tight_window_decodes_small_frame() {
+    let original = b"small zstd frame for tight window test";
+    let compressed = zstd::encode_all(std::io::Cursor::new(&original[..]), 3).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tight.zst");
+    std::fs::write(&path, &compressed).unwrap();
+
+    let file = std::fs::File::open(&path).unwrap();
+    let (mut reader, file_bytes) = super::compression::get_clip_stream(
+        file,
+        super::CompressionMode::Zstd,
+        0,
+        original.len() as u64,
+        compressed.len() as u64,
+        true,
+    )
+    .unwrap();
+    assert_eq!(file_bytes, compressed.len() as u64);
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output).unwrap();
+    assert_eq!(output, original);
+}
+
 /// LZ4 compression mode parses from string.
 #[test]
 fn compression_mode_lz4_parsing() {

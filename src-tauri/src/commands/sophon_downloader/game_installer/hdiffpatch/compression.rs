@@ -4,6 +4,16 @@ use flate2::read::DeflateDecoder;
 use tauri_plugin_log::log;
 
 use super::CompressionMode;
+use crate::commands::sophon_downloader::game_installer::assembly_opt::{
+    MAX_WINDOW_LOG, window_log_for_size,
+};
+
+/// True when a zstd decode error indicates the `WindowLogMax` cap was
+/// too small for the frame's actual window.
+fn is_window_too_small_err(e: &std::io::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("out of bound") || msg.contains("too much memory for decoding")
+}
 
 pub(crate) fn get_clip_stream(
     mut file: std::fs::File,
@@ -46,17 +56,14 @@ pub(crate) fn get_clip_stream(
 
     match comp_mode {
         CompressionMode::Zstd => {
-            let window_log: u32 = if cfg!(target_pointer_width = "64") {
-                26
-            } else {
-                25
-            };
+            // Clone the fd before consuming into LimitedFile so a retry on
+            // "too much memory for decoding" can re-wrap without reopening
+            // by path (caller may not have the path handy).
+            let mut retry_file = file.try_clone()?;
             let limited = LimitedFile {
                 file,
                 remaining: comp_length,
             };
-            let mut decoder = zstd::stream::read::Decoder::new(limited)?;
-            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
             if is_buffered {
                 if length > MAX_BUFFERED_SIZE {
@@ -64,10 +71,31 @@ pub(crate) fn get_clip_stream(
                         "buffered zstd stream exceeds maximum size",
                     ));
                 }
+                let tight_log = window_log_for_size(length);
+                let mut decoder = zstd::stream::read::Decoder::new(limited)?;
+                decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(tight_log))?;
                 let mut out = Vec::with_capacity(length as usize);
-                decoder.read_to_end(&mut out)?;
+                match decoder.read_to_end(&mut out) {
+                    Ok(_) => {}
+                    Err(ref e) if is_window_too_small_err(e) => {
+                        retry_file.seek(SeekFrom::Start(start))?;
+                        let retry_limited = LimitedFile {
+                            file: retry_file,
+                            remaining: comp_length,
+                        };
+                        let mut retry = zstd::stream::read::Decoder::new(retry_limited)?;
+                        retry.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(
+                            MAX_WINDOW_LOG,
+                        ))?;
+                        out.clear();
+                        retry.read_to_end(&mut out)?;
+                    }
+                    Err(e) => return Err(e),
+                }
                 Ok((Box::new(Cursor::new(out)), file_bytes))
             } else {
+                let mut decoder = zstd::stream::read::Decoder::new(limited)?;
+                decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(MAX_WINDOW_LOG))?;
                 Ok((Box::new(decoder), file_bytes))
             }
         }
