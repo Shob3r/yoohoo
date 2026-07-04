@@ -468,45 +468,37 @@ async fn build_diff_installers(
                 let (mut old_chunk_offsets, name_to_id, hash_to_id) =
                     intern_old_chunk_offsets(&old_result.manifest);
 
-                let old_file_sizes: Vec<(String, u64)> = old_result
-                    .manifest
-                    .assets
-                    .iter()
-                    .filter(|f| !f.is_directory())
-                    .map(|f| (f.asset_name.clone(), f.asset_size))
-                    .collect();
-
-                let mut old_md5_map = build_old_md5_map(old_result.manifest);
+                let old_manifest = old_result.manifest;
                 let gd = game_dir.to_path_buf();
-                let corrupted: HashSet<String> = tokio::task::spawn_blocking(move || {
-                    let mut bad = HashSet::new();
-                    for (name, expected_size) in &old_file_sizes {
-                        let path = gd.join(name);
-                        match std::fs::metadata(&path) {
-                            Ok(meta) => {
-                                if meta.len() != *expected_size {
-                                    bad.insert(name.clone());
-                                }
-                            }
-                            Err(_) => {
-                                bad.insert(name.clone());
+                let name_to_id_for_check = name_to_id.clone();
+                let (corrupted_name_ids, mut old_md5_map) =
+                    tokio::task::spawn_blocking(move || {
+                        let mut bad: HashSet<u32> = HashSet::new();
+                        for f in old_manifest.assets.iter().filter(|f| !f.is_directory()) {
+                            let path = gd.join(&f.asset_name);
+                            let corrupted = match std::fs::metadata(&path) {
+                                Ok(meta) => meta.len() != f.asset_size,
+                                Err(_) => true,
+                            };
+                            if corrupted && let Some(id) = name_to_id_for_check.get(&f.asset_name) {
+                                bad.insert(*id);
                             }
                         }
-                    }
-                    bad
-                })
-                .await?;
+                        let md5_map = build_old_md5_map(old_manifest);
+                        (bad, md5_map)
+                    })
+                    .await?;
 
-                if !corrupted.is_empty() {
+                if !corrupted_name_ids.is_empty() {
                     log::warn!(
                         "Excluding {count} corrupted old files from chunk reuse (wrong size on disk)",
-                        count = corrupted.len()
+                        count = corrupted_name_ids.len()
                     );
-                    old_md5_map.retain(|name, _| !corrupted.contains(name));
-                    let corrupted_name_ids: HashSet<u32> = name_to_id
+                    let corrupted_names: HashSet<&str> = name_to_id
                         .iter()
-                        .filter_map(|(n, id)| corrupted.contains(n).then_some(*id))
+                        .filter_map(|(n, id)| corrupted_name_ids.contains(id).then_some(n.as_str()))
                         .collect();
+                    old_md5_map.retain(|name, _| !corrupted_names.contains(name.as_str()));
                     old_chunk_offsets
                         .retain(|(name_id, _), _| !corrupted_name_ids.contains(name_id));
                 }
