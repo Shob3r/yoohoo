@@ -16,9 +16,7 @@ thread_local! {
     static TRANSFER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-use super::assembly_opt::{
-    Md5, md5_hex_eq, md5_to_hex, return_dctx, return_md5, take_dctx, take_md5,
-};
+use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, return_md5, take_md5};
 use super::cache::VerificationEntry;
 use super::error::{SophonError, SophonResult};
 use super::installer::ChunkNameLookup;
@@ -222,6 +220,10 @@ pub fn assemble_file(
     out_file.set_len(file_size)?;
 
     let mut total_written: u64 = 0;
+    let all_chunks_have_hashes = (chunk_range.start..chunk_range.end).all(|ci| {
+        let chunk = all_files.chunk(ci as usize);
+        super::assembly_opt::chunk_hash_required(chunk.chunk_decompressed_hash_md5)
+    });
     let mut file_hasher = if file_hash_md5.is_empty() {
         if !is_dir {
             log::warn!(
@@ -229,6 +231,8 @@ pub fn assemble_file(
                 name = file_name
             );
         }
+        None
+    } else if all_chunks_have_hashes {
         None
     } else {
         Some(take_md5()?)
@@ -331,7 +335,7 @@ pub fn assemble_file(
         );
     }
 
-    out_file.sync_all().map_err(|err| {
+    out_file.sync_data().map_err(|err| {
         let _ = fs::remove_file(&tmp_path);
         SophonError::Io(err)
     })?;
@@ -401,127 +405,17 @@ fn write_decompressed_chunk_at(
     offset: u64,
     expected_size: u64,
     file_hasher: Option<&mut Md5>,
-    buffer: &mut [u8],
+    _buffer: &mut [u8],
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
-    const OPT_THRESHOLD: u64 = 1024 * 1024;
-
-    if expected_size >= OPT_THRESHOLD {
-        super::assembly_opt::decompress_chunk_optimized(
-            chunk_path,
-            out_file,
-            offset,
-            expected_size,
-            file_hasher,
-            chunk_decompressed_hash_md5,
-        )
-    } else {
-        let dynamic_log = super::assembly_opt::window_log_for_size(expected_size);
-        let mut file_hasher = file_hasher;
-        let result = inline_decompress(
-            chunk_path,
-            out_file,
-            offset,
-            expected_size,
-            &mut file_hasher,
-            buffer,
-            chunk_decompressed_hash_md5,
-            dynamic_log,
-        );
-        if super::assembly_opt::is_window_too_small(&result) {
-            return inline_decompress(
-                chunk_path,
-                out_file,
-                offset,
-                expected_size,
-                &mut file_hasher,
-                buffer,
-                chunk_decompressed_hash_md5,
-                super::assembly_opt::MAX_WINDOW_LOG,
-            );
-        }
-        result
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn inline_decompress(
-    chunk_path: &Path,
-    out_file: &File,
-    offset: u64,
-    expected_size: u64,
-    file_hasher: &mut Option<&mut Md5>,
-    buffer: &mut [u8],
-    chunk_decompressed_hash_md5: &str,
-    window_log: u32,
-) -> SophonResult<u64> {
-    let f = File::open(chunk_path)?;
-
-    let (bytes_written, mut chunk_hasher) = {
-        let mut ctx = take_dctx();
-        ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
-            .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx reset")))?;
-        ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))
-            .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx WindowLogMax")))?;
-
-        let (bytes, chunk_hasher) = {
-            let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
-            let mut decoder = zstd::Decoder::with_context(buf_reader, &mut ctx);
-
-            let need_chunk_hash =
-                super::assembly_opt::chunk_hash_required(chunk_decompressed_hash_md5);
-            let mut chunk_hasher: Option<Md5> = if need_chunk_hash {
-                Some(take_md5()?)
-            } else {
-                None
-            };
-            let mut write_offset = offset;
-            let mut bytes: u64 = 0;
-
-            loop {
-                let n = decoder.read(buffer)?;
-                if n == 0 {
-                    break;
-                }
-                if let Some(ref mut ch) = chunk_hasher {
-                    ch.update(&buffer[..n])?;
-                }
-                if let Some(hasher) = file_hasher.as_deref_mut() {
-                    hasher.update(&buffer[..n])?;
-                }
-                out_file.write_all_at(&buffer[..n], write_offset)?;
-                write_offset += n as u64;
-                bytes += n as u64;
-            }
-
-            (bytes, chunk_hasher)
-        }; // decoder dropped, ctx borrow released
-
-        return_dctx(ctx);
-        (bytes, chunk_hasher)
-    };
-
-    if bytes_written != expected_size {
-        return Err(SophonError::SizeMismatch {
-            item: chunk_path.display().to_string(),
-            expected: expected_size,
-            actual: bytes_written,
-        });
-    }
-
-    if let Some(ref mut ch) = chunk_hasher {
-        let digest = ch.finish()?;
-        return_md5(chunk_hasher.take().unwrap());
-        if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
-            return Err(SophonError::Md5Mismatch {
-                item: chunk_path.display().to_string(),
-                expected: chunk_decompressed_hash_md5.to_string(),
-                actual: md5_to_hex(&digest),
-            });
-        }
-    }
-
-    Ok(bytes_written)
+    super::assembly_opt::decompress_chunk_optimized(
+        chunk_path,
+        out_file,
+        offset,
+        expected_size,
+        file_hasher,
+        chunk_decompressed_hash_md5,
+    )
 }
 
 /// Copy decompressed bytes from an existing file to `out_file`. Large chunks

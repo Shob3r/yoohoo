@@ -247,12 +247,14 @@ fn bench_zstd_decompress(c: &mut Criterion) {
     group.finish();
 }
 /// Build a single-file `CompactManifest` over `num_chunks` equal decompressed
-/// chunks of `chunk_mib` MiB each, zstd-compressed on disk. Returns the
-/// manifest and the raw assembled bytes.
+/// chunks of `chunk_mib` MiB each, zstd-compressed on disk. When
+/// `with_chunk_hashes` is true, each chunk's `chunk_decompressed_hash_md5` is
+/// populated, enabling chunk-level verification and file-hash elision.
 fn build_assembly_fixture(
     chunks_dir: &std::path::Path,
     chunk_mib: usize,
     num_chunks: usize,
+    with_chunk_hashes: bool,
 ) -> (CompactManifest, Vec<u8>) {
     let mut raw = Vec::with_capacity(chunk_mib * 1024 * 1024 * num_chunks);
     let chunks: Vec<SophonManifestAssetChunk> = (0..num_chunks)
@@ -263,9 +265,14 @@ fn build_assembly_fixture(
             fs::write(chunks_dir.join(chunk_filename(&name)), &comp).unwrap();
             raw.extend_from_slice(&data);
             let offset = (i * chunk_mib * 1024 * 1024) as u64;
+            let chunk_hash = if with_chunk_hashes {
+                hex::encode(Md5::digest(&data))
+            } else {
+                String::new()
+            };
             SophonManifestAssetChunk {
                 chunk_name: name,
-                chunk_decompressed_hash_md5: String::new(),
+                chunk_decompressed_hash_md5: chunk_hash,
                 chunk_on_file_offset: offset,
                 chunk_size: 0,
                 chunk_size_decompressed: (chunk_mib * 1024 * 1024) as u64,
@@ -300,20 +307,16 @@ fn bench_assembly_e2e(c: &mut Criterion) {
     let chunk_mib = 8;
     let num_chunks = 8;
     let total_bytes = (chunk_mib * num_chunks) as u64 * 1024 * 1024;
-    let (manifest, raw) = build_assembly_fixture(&chunks_dir, chunk_mib, num_chunks);
+
+    let (manifest, raw) = build_assembly_fixture(&chunks_dir, chunk_mib, num_chunks, false);
 
     let name_refs: Vec<&str> = (0..num_chunks)
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
     let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
-    // High refcount so chunk files survive across bench iterations.
     let refcounts: Vec<AtomicUsize> = (0..num_chunks).map(|_| AtomicUsize::new(1000)).collect();
     let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
 
-    // Run assembly once outside the timed loop: fails loudly on a regression
-    // and seeds the output file so filter-out runs do not panic on a missing
-    // post-bench assertion. The assertion is the only correctness gate here;
-    // the warmup call is not timed.
     assemble_file(
         &manifest,
         0,
@@ -349,6 +352,51 @@ fn bench_assembly_e2e(c: &mut Criterion) {
             .expect("assemble");
         });
     });
+
+    let (manifest_ch, raw_ch) = build_assembly_fixture(&chunks_dir, chunk_mib, num_chunks, true);
+    let game_dir2 = dir.path().join("game_ch");
+    let tmp_dir2 = dir.path().join("tmp_ch");
+    fs::create_dir_all(&game_dir2).unwrap();
+    fs::create_dir_all(&tmp_dir2).unwrap();
+    assemble_file(
+        &manifest_ch,
+        0,
+        &game_dir2,
+        &chunks_dir,
+        &tmp_dir2,
+        &lookup,
+        &refcounts,
+        &cache,
+        true,
+    )
+    .expect("warmup assemble (chunk hashes)");
+    let assembled_ch = fs::read(game_dir2.join("assembled.bin")).unwrap();
+    assert_eq!(
+        assembled_ch, raw_ch,
+        "assemble_file (chunk hashes) bytes must match raw input"
+    );
+
+    group.bench_function(
+        BenchmarkId::new("assemble_file_chunk_verified", num_chunks),
+        |b| {
+            let game_dir2 = game_dir2.clone();
+            let tmp_dir2 = tmp_dir2.clone();
+            b.iter(|| {
+                assemble_file(
+                    &manifest_ch,
+                    0,
+                    &game_dir2,
+                    &chunks_dir,
+                    &tmp_dir2,
+                    &lookup,
+                    &refcounts,
+                    &cache,
+                    true,
+                )
+                .expect("assemble");
+            });
+        },
+    );
     group.finish();
 }
 
