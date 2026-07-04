@@ -1970,33 +1970,30 @@ fn apply_hdiff_patch(
     let diff_temp = game_dir.join(format!("patching/{safe_patch_name}.diff"));
     let _ = fs::remove_file(&diff_temp);
     {
-        let mut chunk_file = fs::File::open(&chunk_path)?;
+        let chunk_file = fs::File::open(&chunk_path)?;
         let chunk_fd = chunk_file.as_raw_fd();
         posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-        chunk_file.seek(SeekFrom::Start(asset.patch_offset))?;
 
         if let Some(parent) = diff_temp.parent() {
             fs::create_dir_all(parent)?;
         }
         let diff_file = fs::File::create(&diff_temp)?;
-        let mut writer =
-            std::io::BufWriter::with_capacity(super::FILE_WRITE_BUFFER_SIZE, diff_file);
-        let mut limited = (&mut chunk_file).take(asset.patch_chunk_length);
-        borrow_copy_buffer(|copy_buf| -> std::io::Result<()> {
-            if copy_buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
-                *copy_buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
-            }
-            unsafe { copy_buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
-            loop {
-                let n = limited.read(copy_buf)?;
-                if n == 0 {
-                    break;
-                }
-                writer.write_all(&copy_buf[..n])?;
-            }
-            Ok(())
-        })?;
-        writer.flush()?;
+        diff_file.set_len(asset.patch_chunk_length)?;
+        let copied = super::sysio::copy_file_range(
+            chunk_fd,
+            asset.patch_offset,
+            diff_file.as_raw_fd(),
+            0,
+            asset.patch_chunk_length,
+        )?;
+        if copied != asset.patch_chunk_length {
+            let _ = fs::remove_file(&diff_temp);
+            return Err(SophonError::SizeMismatch {
+                item: asset.target_file_path.clone(),
+                expected: asset.patch_chunk_length,
+                actual: copied,
+            });
+        }
     }
 
     let target_path = validate_asset_path(game_dir, &asset.target_file_path)?;
