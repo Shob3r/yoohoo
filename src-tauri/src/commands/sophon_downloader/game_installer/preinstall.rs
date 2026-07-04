@@ -1616,7 +1616,7 @@ fn is_filtered_asset(cache: &FilterCache, asset: &PatchAssetInfo) -> bool {
     }
 
     if cache.blacklist_entries.is_some() || cache.ignored_lang_patterns.is_some() {
-        let asset_lower = asset.target_file_path.to_lowercase();
+        let asset_lower = asset.target_file_path.to_ascii_lowercase();
 
         if let Some(ref entries) = cache.blacklist_entries {
             for entry in entries {
