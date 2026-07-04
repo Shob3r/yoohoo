@@ -1721,6 +1721,8 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
 
     let target_path = validate_asset_path(game_dir, &asset.target_file_path)?;
     let mut chunk_file = fs::File::open(&chunk_path)?;
+    let chunk_fd = chunk_file.as_raw_fd();
+    posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
     chunk_file.seek(SeekFrom::Start(asset.patch_offset))?;
 
     // Check if this is an HDiff patch by reading just the magic bytes
@@ -1755,11 +1757,13 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
                 Ok(())
             })?;
             writer.flush()?;
+            posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         }
         let patch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             apply_hdiff_patch_from_files(game_dir, &diff_temp, asset)
         }));
         let _ = fs::remove_file(&diff_temp);
+        posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         match patch_result {
             Ok(result) => return result,
             Err(_) => {
@@ -1821,6 +1825,7 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
     }
     fs::rename(&temp_path, &target_path)?;
 
+    posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
     Ok(())
 }
 
@@ -1950,6 +1955,8 @@ fn apply_hdiff_patch(
     let _ = fs::remove_file(&diff_temp);
     {
         let mut chunk_file = fs::File::open(&chunk_path)?;
+        let chunk_fd = chunk_file.as_raw_fd();
+        posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
         chunk_file.seek(SeekFrom::Start(asset.patch_offset))?;
 
         if let Some(parent) = diff_temp.parent() {
