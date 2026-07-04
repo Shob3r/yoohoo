@@ -557,18 +557,19 @@ async fn download_with_resume(
 
     // Seed the hasher with existing file content using pread
     let mut hasher = Md5::new()?;
-    let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> =
-        if chunk.chunk_compressed_hash_md5.len() == 16 {
-            let mut h = xxhash_rust::xxh64::Xxh64::new(0);
-            pread_hash_slice(dest, existing_size, &mut |chunk| {
-                h.update(chunk);
-                Ok(())
-            })?;
-            Some(h)
-        } else {
-            None
-        };
-    pread_hash_slice(dest, existing_size, &mut |chunk| hasher.update(chunk))?;
+    let needs_xxh64 = chunk.chunk_compressed_hash_md5.len() == 16;
+    let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> = if needs_xxh64 {
+        Some(xxhash_rust::xxh64::Xxh64::new(0))
+    } else {
+        None
+    };
+    pread_hash_slice(dest, existing_size, &mut |chunk| {
+        hasher.update(chunk)?;
+        if let Some(ref mut h) = xxh64_hasher {
+            h.update(chunk);
+        }
+        Ok(())
+    })?;
 
     let file = tokio::fs::OpenOptions::new()
         .append(true)
