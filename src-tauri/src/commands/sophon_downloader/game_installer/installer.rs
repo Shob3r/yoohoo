@@ -2182,15 +2182,15 @@ pub async fn verify_integrity(
     }
 
     let mut manifest_results: Vec<SophonManifestProto> = Vec::with_capacity(qualifying.len());
-    let mut chunk_downloads: Vec<DownloadInfo> = Vec::with_capacity(qualifying.len());
+    let mut chunk_downloads: Vec<Arc<DownloadInfo>> = Vec::with_capacity(qualifying.len());
     for meta in &qualifying {
         let result =
             api::fetch_manifest(client, &meta.manifest_download, &meta.manifest.id).await?;
         manifest_results.push(result.manifest);
-        chunk_downloads.push(meta.chunk_download.clone());
+        chunk_downloads.push(Arc::new(meta.chunk_download.clone()));
     }
 
-    let all_assets: Vec<(SophonManifestAssetProperty, DownloadInfo)> = manifest_results
+    let all_assets: Vec<(SophonManifestAssetProperty, Arc<DownloadInfo>)> = manifest_results
         .into_iter()
         .zip(chunk_downloads)
         .flat_map(|(manifest, dl)| {
@@ -2198,7 +2198,7 @@ pub async fn verify_integrity(
                 .assets
                 .into_iter()
                 .filter(|a| !a.is_directory())
-                .map(move |a| (a, dl.clone()))
+                .map(move |a| (a, Arc::clone(&dl)))
         })
         .collect();
 
@@ -2270,7 +2270,7 @@ pub async fn verify_integrity(
 
     let mut failed_verifications: Vec<(
         SophonManifestAssetProperty,
-        DownloadInfo,
+        Arc<DownloadInfo>,
         std::path::PathBuf,
     )> = Vec::new();
     while let Some(result) = verify_stream.next().await {
@@ -2311,7 +2311,7 @@ pub async fn verify_integrity(
 
     // Phase 2a: Collect unique chunks that need re-downloading across all
     // failed files, then download them in parallel.
-    let mut redownload_items: Vec<(String, u64, DownloadInfo)> = Vec::new();
+    let mut redownload_items: Vec<(String, u64, Arc<DownloadInfo>)> = Vec::new();
     let mut seen_chunks: HashSet<String> = HashSet::new();
     for (asset, chunk_download, _) in &failed_verifications {
         for chunk in &asset.asset_chunks {
@@ -2333,7 +2333,7 @@ pub async fn verify_integrity(
                 redownload_items.push((
                     chunk.chunk_name.clone(),
                     chunk.chunk_size,
-                    (*chunk_download).clone(),
+                    Arc::clone(chunk_download),
                 ));
             }
         }
