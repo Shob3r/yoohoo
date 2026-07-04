@@ -13,6 +13,8 @@ use super::sysio;
 
 const ASSEMBLY_BUFFER_SIZE: usize = 64 * 1024;
 
+const ONESHOT_MAX_SIZE: usize = 8 * 1024 * 1024;
+
 const EMPTY_MD5: &str = "00000000000000000000000000000000";
 
 pub(crate) const MAX_WINDOW_LOG: u32 = 26;
@@ -124,6 +126,7 @@ fn hex_nibble(b: u8) -> Option<u8> {
 
 thread_local! {
     static OPT_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static ONESHOT_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static ZSTD_DCTX: RefCell<Option<zstd::zstd_safe::DCtx<'static>>> = const { RefCell::new(None) };
 }
 
@@ -137,6 +140,121 @@ pub(crate) fn take_dctx() -> zstd::zstd_safe::DCtx<'static> {
 
 pub(crate) fn return_dctx(ctx: zstd::zstd_safe::DCtx<'static>) {
     ZSTD_DCTX.with(|cell| cell.borrow_mut().replace(ctx));
+}
+
+struct MmapGuard {
+    ptr: *mut libc::c_void,
+    len: usize,
+}
+
+impl MmapGuard {
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
+    }
+}
+
+impl Drop for MmapGuard {
+    fn drop(&mut self) {
+        if self.ptr != libc::MAP_FAILED && !self.ptr.is_null() {
+            unsafe { libc::munmap(self.ptr, self.len) };
+        }
+    }
+}
+
+fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
+    let len = file.metadata()?.len() as usize;
+    if len == 0 {
+        return Err(io::Error::other("empty file"));
+    }
+    unsafe {
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            file.as_raw_fd(),
+            0,
+        );
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(MmapGuard { ptr, len })
+    }
+}
+
+fn decompress_chunk_oneshot(
+    chunk_path: &Path,
+    out_file: &File,
+    offset: u64,
+    expected_size: u64,
+    file_hasher: &mut Option<&mut Md5>,
+    chunk_decompressed_hash_md5: &str,
+) -> SophonResult<u64> {
+    if expected_size == 0 {
+        return Ok(0);
+    }
+    let expected_usize = expected_size as usize;
+
+    let f = File::open(chunk_path)?;
+    let mmap = mmap_read_only(&f)?;
+    let compressed = mmap.as_slice();
+
+    let mut output = ONESHOT_BUF.with(|cell| {
+        let mut buf = cell.take();
+        if buf.capacity() < expected_usize {
+            buf = Vec::with_capacity(expected_usize);
+        }
+        unsafe { buf.set_len(expected_usize) };
+        buf
+    });
+
+    let result = (|| {
+        let mut ctx = take_dctx();
+        ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+            .map_err(|_| SophonError::Io(io::Error::other("zstd DCtx reset")))?;
+        let window_log = window_log_for_size(expected_size);
+        ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))
+            .map_err(|_| SophonError::Io(io::Error::other("zstd DCtx WindowLogMax")))?;
+
+        let written = ctx
+            .decompress(&mut output, compressed)
+            .map_err(|e| SophonError::Io(io::Error::other(e.to_string())))?;
+        return_dctx(ctx);
+
+        if written != expected_usize {
+            return Err(SophonError::SizeMismatch {
+                item: chunk_path.display().to_string(),
+                expected: expected_size,
+                actual: written as u64,
+            });
+        }
+
+        let need_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
+        if need_chunk_hash {
+            let mut chunk_hasher = take_md5()?;
+            chunk_hasher.update(&output)?;
+            let digest = chunk_hasher.finish()?;
+            return_md5(chunk_hasher);
+            if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
+                return Err(SophonError::Md5Mismatch {
+                    item: chunk_path.display().to_string(),
+                    expected: chunk_decompressed_hash_md5.to_string(),
+                    actual: md5_to_hex(&digest),
+                });
+            }
+        }
+
+        if let Some(hasher) = file_hasher.as_deref_mut() {
+            hasher.update(&output)?;
+        }
+
+        out_file.write_all_at(&output, offset)?;
+        Ok(expected_size)
+    })();
+
+    output.clear();
+    ONESHOT_BUF.with(|cell| cell.replace(output));
+    result
 }
 
 /// Hint the kernel about access to `fd`: SEQUENTIAL enables read-ahead for
@@ -315,8 +433,23 @@ pub fn decompress_chunk_optimized(
     file_hasher: Option<&mut Md5>,
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
-    let dynamic_log = window_log_for_size(expected_size);
     let mut file_hasher = file_hasher;
+
+    if expected_size > 0 && expected_size <= ONESHOT_MAX_SIZE as u64 {
+        let result = decompress_chunk_oneshot(
+            chunk_path,
+            out_file,
+            offset,
+            expected_size,
+            &mut file_hasher,
+            chunk_decompressed_hash_md5,
+        );
+        if !is_window_too_small(&result) {
+            return result;
+        }
+    }
+
+    let dynamic_log = window_log_for_size(expected_size);
     let result = decompress_chunk_with_window(
         chunk_path,
         out_file,
