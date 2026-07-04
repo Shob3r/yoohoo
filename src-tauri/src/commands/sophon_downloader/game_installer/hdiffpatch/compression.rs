@@ -5,7 +5,7 @@ use tauri_plugin_log::log;
 
 use super::CompressionMode;
 use crate::commands::sophon_downloader::game_installer::assembly_opt::{
-    MAX_WINDOW_LOG, window_log_for_size,
+    MAX_WINDOW_LOG, return_dctx, take_dctx, window_log_for_size,
 };
 
 /// True when a zstd decode error indicates the `WindowLogMax` cap was
@@ -72,26 +72,49 @@ pub(crate) fn get_clip_stream(
                     ));
                 }
                 let tight_log = window_log_for_size(length);
-                let mut decoder = zstd::stream::read::Decoder::new(limited)?;
-                decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(tight_log))?;
-                let mut out = Vec::with_capacity(length as usize);
-                match decoder.read_to_end(&mut out) {
-                    Ok(_) => {}
-                    Err(ref e) if is_window_too_small_err(e) => {
-                        retry_file.seek(SeekFrom::Start(start))?;
-                        let retry_limited = LimitedFile {
-                            file: retry_file,
-                            remaining: comp_length,
-                        };
-                        let mut retry = zstd::stream::read::Decoder::new(retry_limited)?;
-                        retry.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(
-                            MAX_WINDOW_LOG,
-                        ))?;
-                        out.clear();
+                let mut ctx = take_dctx();
+
+                let out = {
+                    ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+                        .map_err(|_| std::io::Error::other("zstd DCtx reset"))?;
+                    ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(tight_log))
+                        .map_err(|_| std::io::Error::other("zstd DCtx WindowLogMax"))?;
+                    let buf_reader = std::io::BufReader::with_capacity(64 * 1024, limited);
+                    let mut out = Vec::with_capacity(length as usize);
+                    {
+                        let mut decoder =
+                            zstd::stream::read::Decoder::with_context(buf_reader, &mut ctx);
+                        match decoder.read_to_end(&mut out) {
+                            Ok(_) => out,
+                            Err(ref e) if is_window_too_small_err(e) => Vec::new(),
+                            Err(e) => return Err(e),
+                        }
+                    }
+                };
+
+                let out = if !out.is_empty() {
+                    out
+                } else {
+                    ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+                        .map_err(|_| std::io::Error::other("zstd DCtx reset"))?;
+                    ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(MAX_WINDOW_LOG))
+                        .map_err(|_| std::io::Error::other("zstd DCtx WindowLogMax"))?;
+                    retry_file.seek(SeekFrom::Start(start))?;
+                    let retry_limited = LimitedFile {
+                        file: retry_file,
+                        remaining: comp_length,
+                    };
+                    let retry_reader = std::io::BufReader::with_capacity(64 * 1024, retry_limited);
+                    let mut out = Vec::with_capacity(length as usize);
+                    {
+                        let mut retry =
+                            zstd::stream::read::Decoder::with_context(retry_reader, &mut ctx);
                         retry.read_to_end(&mut out)?;
                     }
-                    Err(e) => return Err(e),
-                }
+                    out
+                };
+
+                return_dctx(ctx);
                 Ok((Box::new(Cursor::new(out)), file_bytes))
             } else {
                 let mut decoder = zstd::stream::read::Decoder::new(limited)?;
