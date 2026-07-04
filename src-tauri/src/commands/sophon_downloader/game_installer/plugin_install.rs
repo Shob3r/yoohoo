@@ -12,6 +12,7 @@ use tauri_plugin_log::log;
 use tokio::io::AsyncWriteExt;
 use zip::ZipArchive;
 
+use super::assembly_opt::{md5_hex_eq, md5_to_hex};
 use super::cache;
 use super::error::{SophonError, SophonResult};
 use super::plugin_api::{
@@ -131,14 +132,13 @@ async fn download_zip(
 
     file.flush().await?;
 
-    let actual_md5 = hex::encode(hasher.finalize());
-    // hex::encode emits lowercase, but the upstream API does not guarantee case.
-    if actual_md5 != expected_md5.to_ascii_lowercase() {
+    let digest: [u8; 16] = hasher.finalize().into();
+    if !md5_hex_eq(&digest, expected_md5) {
         let _ = fs::remove_file(dest);
         return Err(SophonError::Md5Mismatch {
             item: name,
             expected: expected_md5.to_string(),
-            actual: actual_md5,
+            actual: md5_to_hex(&digest),
         });
     }
 
