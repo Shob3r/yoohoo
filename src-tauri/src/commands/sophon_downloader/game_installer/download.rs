@@ -9,6 +9,7 @@ use tauri_plugin_log::log;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 use super::CHUNK_WRITE_BUFFER_SIZE;
+use super::assembly_opt::{md5_hex_eq, md5_to_hex};
 use super::compact_manifest::ChunkRef;
 use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
@@ -410,13 +411,13 @@ async fn download_full_file_with_response(
         let expected = &chunk.chunk_compressed_hash_md5;
         match expected.len() {
             32 => {
-                let actual = hex::encode(hasher.finalize());
-                if actual != expected.to_ascii_lowercase() {
+                let digest: [u8; 16] = hasher.finalize().into();
+                if !md5_hex_eq(&digest, expected) {
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Md5Mismatch {
                         item: chunk.chunk_name.to_string(),
                         expected: expected.to_string(),
-                        actual,
+                        actual: md5_to_hex(&digest),
                     });
                 }
             }
@@ -578,13 +579,13 @@ async fn download_with_resume(
         let expected = &chunk.chunk_compressed_hash_md5;
         match expected.len() {
             32 => {
-                let actual = hex::encode(hasher.finalize());
-                if actual != expected.to_ascii_lowercase() {
+                let digest: [u8; 16] = hasher.finalize().into();
+                if !md5_hex_eq(&digest, expected) {
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Md5Mismatch {
                         item: chunk.chunk_name.to_string(),
                         expected: expected.to_string(),
-                        actual,
+                        actual: md5_to_hex(&digest),
                     });
                 }
             }
