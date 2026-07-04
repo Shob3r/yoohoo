@@ -220,21 +220,16 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     }
 
     #[cfg(unix)]
-    {
-        unsafe {
-            libc::posix_fadvise(
-                file.as_raw_fd(),
-                0,
-                len as libc::off_t,
-                libc::POSIX_FADV_SEQUENTIAL,
-            );
-        }
+    let fd = file.as_raw_fd();
+    #[cfg(unix)]
+    unsafe {
+        libc::posix_fadvise(fd, 0, len as libc::off_t, libc::POSIX_FADV_SEQUENTIAL);
     }
 
     let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::md5())
         .map_err(|e| io::Error::other(e.to_string()))?;
 
-    CACHE_HASH_BUF.with(|cell| {
+    let result = CACHE_HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
         if buf.len() < CACHE_HASH_BUF_SIZE {
             buf.resize(CACHE_HASH_BUF_SIZE, 0);
@@ -255,7 +250,14 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
             offset += n as u64;
         }
         Ok::<_, io::Error>(())
-    })?;
+    });
+
+    #[cfg(unix)]
+    unsafe {
+        libc::posix_fadvise(fd, 0, len as libc::off_t, libc::POSIX_FADV_DONTNEED);
+    }
+
+    result?;
 
     let hash = hasher
         .finish()
