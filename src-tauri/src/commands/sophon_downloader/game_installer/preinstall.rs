@@ -1282,6 +1282,7 @@ pub async fn apply_preinstall(
         }
 
         let is_filtered = is_filtered_asset(&filter_cache, asset);
+        let asset = Arc::new(asset.clone());
 
         match asset.patch_method {
             PatchMethod::CopyOver => {
@@ -1360,11 +1361,12 @@ pub async fn apply_preinstall(
                 for attempt in 0..=PATCH_MAX_RETRIES {
                     let gd = game_dir.to_path_buf();
                     let cd = chunks_dir.to_path_buf();
-                    let a = asset.clone();
+                    let a = Arc::clone(&asset);
                     let fc = filter_cache.clone();
-                    let result =
-                        tokio::task::spawn_blocking(move || apply_hdiff_patch(&gd, &cd, &a, &fc))
-                            .await?;
+                    let result = tokio::task::spawn_blocking(move || {
+                        apply_hdiff_patch(&gd, &cd, a.as_ref(), &fc)
+                    })
+                    .await?;
 
                     match result {
                         Ok(()) => break,
@@ -1413,7 +1415,7 @@ pub async fn apply_preinstall(
                         client,
                         game_dir,
                         &state,
-                        asset,
+                        asset.as_ref(),
                         &download_over_context,
                         handle,
                     )
@@ -1425,7 +1427,7 @@ pub async fn apply_preinstall(
                     client,
                     game_dir,
                     &state,
-                    asset,
+                    asset.as_ref(),
                     &download_over_context,
                     handle,
                 )
