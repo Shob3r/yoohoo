@@ -7,10 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 thread_local! {
-    /// Reusable per-thread copy buffer for streaming chunks into temp files.
-    /// Avoids allocating a fresh buffer per asset.
-    static COPY_BUFFER: std::cell::RefCell<Vec<u8>> =
-        const { std::cell::RefCell::new(Vec::new()) };
     /// Reusable per-thread verification buffer. Avoids allocating 256 KiB per call.
     static VERIFY_BUFFER: std::cell::RefCell<Vec<u8>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -23,12 +19,6 @@ where
     VERIFY_BUFFER.with(|cell| f(&mut cell.borrow_mut()))
 }
 
-fn borrow_copy_buffer<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut Vec<u8>) -> R,
-{
-    COPY_BUFFER.with(|cell| f(&mut cell.borrow_mut()))
-}
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -1753,25 +1743,24 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
                 fs::create_dir_all(parent)?;
             }
             let diff_file = fs::File::create(&diff_temp)?;
-            let mut writer = BufWriter::with_capacity(super::FILE_WRITE_BUFFER_SIZE, diff_file);
-            writer.write_all(HDIFF_MAGIC.as_ref())?;
+            diff_file.set_len(asset.patch_chunk_length)?;
+            std::os::unix::fs::FileExt::write_all_at(&diff_file, HDIFF_MAGIC.as_ref(), 0)?;
             let remaining = asset.patch_chunk_length - HDIFF_MAGIC.len() as u64;
-            let mut limited = (&mut chunk_file).take(remaining);
-            borrow_copy_buffer(|copy_buf| -> std::io::Result<()> {
-                if copy_buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
-                    *copy_buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
-                }
-                unsafe { copy_buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
-                loop {
-                    let n = limited.read(copy_buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    writer.write_all(&copy_buf[..n])?;
-                }
-                Ok(())
-            })?;
-            writer.flush()?;
+            let copied = super::sysio::copy_file_range(
+                chunk_fd,
+                asset.patch_offset + HDIFF_MAGIC.len() as u64,
+                diff_file.as_raw_fd(),
+                HDIFF_MAGIC.len() as u64,
+                remaining,
+            )?;
+            if copied != remaining {
+                let _ = fs::remove_file(&diff_temp);
+                return Err(SophonError::SizeMismatch {
+                    item: asset.target_file_path.clone(),
+                    expected: remaining,
+                    actual: copied,
+                });
+            }
             posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         }
         let patch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
