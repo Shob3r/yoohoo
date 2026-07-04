@@ -16,7 +16,9 @@ thread_local! {
     static TRANSFER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, return_dctx, take_dctx};
+use super::assembly_opt::{
+    Md5, md5_hex_eq, md5_to_hex, return_dctx, return_md5, take_dctx, take_md5,
+};
 use super::cache::VerificationEntry;
 use super::error::{SophonError, SophonResult};
 use super::installer::ChunkNameLookup;
@@ -227,7 +229,7 @@ pub fn assemble_file(
         }
         None
     } else {
-        Some(Md5::new()?)
+        Some(take_md5()?)
     };
 
     let mut transfer_buffer = TRANSFER_BUF.with(|cell| {
@@ -350,8 +352,9 @@ pub fn assemble_file(
         });
     }
 
-    if let Some(hasher) = file_hasher {
+    if let Some(mut hasher) = file_hasher {
         let digest = hasher.finish()?;
+        return_md5(hasher);
         if !md5_hex_eq(&digest, file_hash_md5) {
             let _ = fs::remove_file(&tmp_path);
             return Err(SophonError::Md5Mismatch {
@@ -451,7 +454,7 @@ fn inline_decompress(
 ) -> SophonResult<u64> {
     let f = File::open(chunk_path)?;
 
-    let (bytes_written, chunk_hasher) = {
+    let (bytes_written, mut chunk_hasher) = {
         let mut ctx = take_dctx();
         ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
             .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx reset")))?;
@@ -462,9 +465,13 @@ fn inline_decompress(
             let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
             let mut decoder = zstd::Decoder::with_context(buf_reader, &mut ctx);
 
-            let mut chunk_hasher = Md5::new()?;
             let need_chunk_hash =
                 super::assembly_opt::chunk_hash_required(chunk_decompressed_hash_md5);
+            let mut chunk_hasher: Option<Md5> = if need_chunk_hash {
+                Some(take_md5()?)
+            } else {
+                None
+            };
             let mut write_offset = offset;
             let mut bytes: u64 = 0;
 
@@ -473,8 +480,8 @@ fn inline_decompress(
                 if n == 0 {
                     break;
                 }
-                if need_chunk_hash {
-                    chunk_hasher.update(&buffer[..n])?;
+                if let Some(ref mut ch) = chunk_hasher {
+                    ch.update(&buffer[..n])?;
                 }
                 if let Some(hasher) = file_hasher.as_deref_mut() {
                     hasher.update(&buffer[..n])?;
@@ -499,9 +506,9 @@ fn inline_decompress(
         });
     }
 
-    const EMPTY_MD5: &str = "00000000000000000000000000000000";
-    if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-        let digest = chunk_hasher.finish()?;
+    if let Some(ref mut ch) = chunk_hasher {
+        let digest = ch.finish()?;
+        return_md5(chunk_hasher.take().unwrap());
         if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
             return Err(SophonError::Md5Mismatch {
                 item: chunk_path.display().to_string(),
@@ -548,15 +555,19 @@ fn write_from_old_file(
 
         let mut write_offset = new_offset;
         let mut bytes_written: u64 = 0;
-        let mut chunk_hasher = Md5::new()?;
         let need_chunk_hash = super::assembly_opt::chunk_hash_required(chunk_decompressed_hash_md5);
+        let mut chunk_hasher: Option<Md5> = if need_chunk_hash {
+            Some(take_md5()?)
+        } else {
+            None
+        };
         let mut remaining = expected_size;
 
         while remaining > 0 {
             let to_read = remaining.min(buffer.len() as u64) as usize;
             reader.read_exact(&mut buffer[..to_read])?;
-            if need_chunk_hash {
-                chunk_hasher.update(&buffer[..to_read])?;
+            if let Some(ref mut ch) = chunk_hasher {
+                ch.update(&buffer[..to_read])?;
             }
             if let Some(hasher) = file_hasher.as_deref_mut() {
                 hasher.update(&buffer[..to_read])?;
@@ -575,9 +586,9 @@ fn write_from_old_file(
             });
         }
 
-        const EMPTY_MD5: &str = "00000000000000000000000000000000";
-        if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-            let digest = chunk_hasher.finish()?;
+        if let Some(ref mut ch) = chunk_hasher {
+            let digest = ch.finish()?;
+            return_md5(chunk_hasher.take().unwrap());
             if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
                 return Err(SophonError::Md5Mismatch {
                     item: old_file_path.display().to_string(),

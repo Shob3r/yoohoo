@@ -49,7 +49,7 @@ impl Md5 {
             .map_err(|e| io::Error::other(e.to_string()))
     }
 
-    pub fn finish(mut self) -> io::Result<[u8; 16]> {
+    pub fn finish(&mut self) -> io::Result<[u8; 16]> {
         let digest = self
             .inner
             .finish()
@@ -59,6 +59,18 @@ impl Md5 {
         out[..n].copy_from_slice(&digest[..n]);
         Ok(out)
     }
+}
+
+thread_local! {
+    static MD5_POOL: RefCell<Option<Md5>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn take_md5() -> SophonResult<Md5> {
+    MD5_POOL.with(|cell| cell.borrow_mut().take().map(Ok).unwrap_or_else(Md5::new))
+}
+
+pub(crate) fn return_md5(md5: Md5) {
+    MD5_POOL.with(|cell| cell.borrow_mut().replace(md5));
 }
 
 /// Compare an MD5 digest against an expected lowercase hex string without
@@ -217,8 +229,11 @@ pub fn write_chunk_from_mmap(
 
     let expected_size_u = expected_size as usize;
 
-    let mut chunk_hasher = Md5::new()?;
-    let need_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
+    let mut chunk_hasher: Option<Md5> = if needs_chunk_hash {
+        Some(take_md5()?)
+    } else {
+        None
+    };
     let mut buf = OPT_BUFFER.with(|cell| {
         let mut buf = cell.take();
         if buf.capacity() < ASSEMBLY_BUFFER_SIZE {
@@ -240,8 +255,8 @@ pub fn write_chunk_from_mmap(
         if n == 0 {
             break;
         }
-        if need_chunk_hash {
-            chunk_hasher.update(&buf[..n])?;
+        if let Some(ref mut ch) = chunk_hasher {
+            ch.update(&buf[..n])?;
         }
         if let Some(hasher) = file_hasher.as_deref_mut() {
             hasher.update(&buf[..n])?;
@@ -270,8 +285,9 @@ pub fn write_chunk_from_mmap(
         });
     }
 
-    if needs_chunk_hash {
-        let digest = chunk_hasher.finish()?;
+    if let Some(ref mut ch) = chunk_hasher {
+        let digest = ch.finish()?;
+        return_md5(chunk_hasher.take().unwrap());
         if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
             return Err(SophonError::Md5Mismatch {
                 item: old_file_path.display().to_string(),
@@ -347,7 +363,7 @@ fn decompress_chunk_with_window(
     let compressed_fd = f.as_raw_fd();
     posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
 
-    let (bytes_written, chunk_hasher) = {
+    let (bytes_written, mut chunk_hasher) = {
         let mut ctx = take_dctx();
         ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
             .map_err(|_| SophonError::Io(std::io::Error::other("zstd DCtx reset")))?;
@@ -358,7 +374,12 @@ fn decompress_chunk_with_window(
             let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
             let mut decoder = zstd::Decoder::with_context(buf_reader, &mut ctx);
 
-            let mut chunk_hasher = Md5::new()?;
+            let need_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
+            let mut chunk_hasher = if need_chunk_hash {
+                Some(take_md5()?)
+            } else {
+                None
+            };
 
             let mut buffer = OPT_BUFFER.with(|cell| {
                 let mut buf = cell.take();
@@ -371,15 +392,14 @@ fn decompress_chunk_with_window(
 
             let mut bytes: u64 = 0;
             let mut write_offset = offset;
-            let need_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
             match file_hasher.as_deref_mut() {
                 Some(hasher) => loop {
                     let n = decoder.read(&mut buffer)?;
                     if n == 0 {
                         break;
                     }
-                    if need_chunk_hash {
-                        chunk_hasher.update(&buffer[..n])?;
+                    if let Some(ref mut ch) = chunk_hasher {
+                        ch.update(&buffer[..n])?;
                     }
                     hasher.update(&buffer[..n])?;
                     out_file.write_all_at(&buffer[..n], write_offset)?;
@@ -391,8 +411,8 @@ fn decompress_chunk_with_window(
                     if n == 0 {
                         break;
                     }
-                    if need_chunk_hash {
-                        chunk_hasher.update(&buffer[..n])?;
+                    if let Some(ref mut ch) = chunk_hasher {
+                        ch.update(&buffer[..n])?;
                     }
                     out_file.write_all_at(&buffer[..n], write_offset)?;
                     write_offset += n as u64;
@@ -419,8 +439,9 @@ fn decompress_chunk_with_window(
         });
     }
 
-    if chunk_hash_required(chunk_decompressed_hash_md5) {
-        let digest = chunk_hasher.finish()?;
+    if let Some(ref mut ch) = chunk_hasher {
+        let digest = ch.finish()?;
+        return_md5(chunk_hasher.take().unwrap());
         if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
             return Err(SophonError::Md5Mismatch {
                 item: chunk_path.display().to_string(),
