@@ -203,12 +203,6 @@ thread_local! {
     static CACHE_HASH_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-#[cfg(test)]
-pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
-    let digest = file_md5_digest(path)?;
-    Ok(hex::encode(digest))
-}
-
 pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let file = File::open(path)?;
     let len = file.metadata()?.len();
