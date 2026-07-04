@@ -1687,10 +1687,11 @@ pub(super) fn filter_patch_assets_for_removed_features(
 fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -> SophonResult<()> {
     validate_patch_name(&asset.patch_name)?;
     let chunk_path = chunks_dir.join(&asset.patch_name);
-    if !chunk_path.exists() {
-        return Err(SophonError::PatchChunkNotFound(asset.patch_name.clone()));
-    }
-    if !asset.patch_hash.is_empty() && !verify_file_hash(&chunk_path, &asset.patch_hash) {
+    if asset.patch_hash.is_empty() {
+        if !chunk_path.exists() {
+            return Err(SophonError::PatchChunkNotFound(asset.patch_name.clone()));
+        }
+    } else if !verify_file_hash(&chunk_path, &asset.patch_hash) {
         return Err(SophonError::Md5Mismatch {
             item: asset.patch_name.clone(),
             expected: asset.patch_hash.clone(),
