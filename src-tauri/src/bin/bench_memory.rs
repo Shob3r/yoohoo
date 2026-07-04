@@ -194,25 +194,30 @@ fn setup_assembly_fixture(
     chunks_dir: &Path,
     chunk_size: u64,
     num_chunks: usize,
+    with_chunk_hashes: bool,
 ) -> CompactManifest {
     let chunks: Vec<SophonManifestAssetChunk> = (0..num_chunks)
         .map(|i| {
             let name = format!("ck{i:02}");
             let data = vec![(i as u8).wrapping_mul(7).wrapping_add(0x40); chunk_size as usize];
-            let md5 = hex::encode(Md5::digest(&data));
             let comp = zstd::encode_all(&data[..], 3).unwrap();
             fs::write(chunks_dir.join(chunk_filename(&name)), &comp).unwrap();
             let offset = (i as u64) * chunk_size;
+            let chunk_hash = if with_chunk_hashes {
+                hex::encode(Md5::digest(&data))
+            } else {
+                String::new()
+            };
             drop(data);
             drop(comp);
             SophonManifestAssetChunk {
                 chunk_name: name,
-                chunk_decompressed_hash_md5: String::new(),
+                chunk_decompressed_hash_md5: chunk_hash,
                 chunk_on_file_offset: offset,
                 chunk_size: 0,
                 chunk_size_decompressed: chunk_size,
                 chunk_compressed_hash_xxh: 0,
-                chunk_compressed_hash_md5: md5,
+                chunk_compressed_hash_md5: String::new(),
                 chunk_old_offset: -1,
             }
         })
@@ -244,7 +249,37 @@ fn op_assembly_e2e(dir: &Path) {
     fs::create_dir_all(&game_dir).unwrap();
     fs::create_dir_all(&chunks_dir).unwrap();
     fs::create_dir_all(&tmp_dir).unwrap();
-    let manifest = setup_assembly_fixture(&chunks_dir, 8 * 1024 * 1024, 8);
+    let manifest = setup_assembly_fixture(&chunks_dir, 8 * 1024 * 1024, 8, false);
+    let name_refs: Vec<&str> = (0..8)
+        .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
+        .collect();
+    let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
+    let refcounts: Vec<std::sync::atomic::AtomicUsize> = (0..8)
+        .map(|_| std::sync::atomic::AtomicUsize::new(1000))
+        .collect();
+    let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
+    assemble_file(
+        &manifest,
+        0,
+        &game_dir,
+        &chunks_dir,
+        &tmp_dir,
+        &lookup,
+        &refcounts,
+        &cache,
+        true,
+    )
+    .expect("assemble");
+}
+
+fn op_assembly_e2e_parallel(dir: &Path) {
+    let game_dir = dir.join("game_p");
+    let chunks_dir = dir.join("chunks_p");
+    let tmp_dir = dir.join("tmp_p");
+    fs::create_dir_all(&game_dir).unwrap();
+    fs::create_dir_all(&chunks_dir).unwrap();
+    fs::create_dir_all(&tmp_dir).unwrap();
+    let manifest = setup_assembly_fixture(&chunks_dir, 8 * 1024 * 1024, 8, true);
     let name_refs: Vec<&str> = (0..8)
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
@@ -274,7 +309,7 @@ fn op_assembly_e2e_small(dir: &Path) {
     fs::create_dir_all(&game_dir).unwrap();
     fs::create_dir_all(&chunks_dir).unwrap();
     fs::create_dir_all(&tmp_dir).unwrap();
-    let manifest = setup_assembly_fixture(&chunks_dir, 256 * 1024, 32);
+    let manifest = setup_assembly_fixture(&chunks_dir, 256 * 1024, 32, false);
     let name_refs: Vec<&str> = (0..32)
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
@@ -503,6 +538,11 @@ fn main() {
 
     let d = dir.clone();
     run("assembly_e2e_8x8m", &|| op_assembly_e2e(&d));
+
+    let d = dir.clone();
+    run("assembly_e2e_parallel_8x8m", &|| {
+        op_assembly_e2e_parallel(&d)
+    });
 
     let d = dir.clone();
     run("assembly_e2e_32x256k", &|| op_assembly_e2e_small(&d));
