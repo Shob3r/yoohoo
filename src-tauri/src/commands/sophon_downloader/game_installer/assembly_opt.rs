@@ -236,9 +236,6 @@ fn decompress_chunk_oneshot(
         let mut ctx = take_dctx();
         ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
             .map_err(|_| SophonError::Io(io::Error::other("zstd DCtx reset")))?;
-        let window_log = window_log_for_size(expected_size);
-        ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))
-            .map_err(|_| SophonError::Io(io::Error::other("zstd DCtx WindowLogMax")))?;
 
         let written = ctx
             .decompress(&mut output, compressed)
