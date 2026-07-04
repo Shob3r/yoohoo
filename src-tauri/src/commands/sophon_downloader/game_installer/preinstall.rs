@@ -1802,26 +1802,24 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
     let safe_path = asset.target_file_path.replace(['/', '\\', '\0', ':'], "_");
     // Use both hash and path to avoid collisions when target_file_hash is empty.
     let temp_path = game_dir.join(format!("patching/copyover_{safe_path}_{safe_hash}.tmp"));
-    chunk_file.seek(SeekFrom::Start(asset.patch_offset))?;
     {
         let file = fs::File::create(&temp_path)?;
-        let mut writer = BufWriter::with_capacity(super::FILE_WRITE_BUFFER_SIZE, file);
-        let mut limited = (&mut chunk_file).take(asset.patch_chunk_length);
-        borrow_copy_buffer(|copy_buf| -> std::io::Result<()> {
-            if copy_buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
-                *copy_buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
-            }
-            unsafe { copy_buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
-            loop {
-                let n = limited.read(copy_buf)?;
-                if n == 0 {
-                    break;
-                }
-                writer.write_all(&copy_buf[..n])?;
-            }
-            Ok(())
-        })?;
-        writer.flush()?;
+        file.set_len(asset.patch_chunk_length)?;
+        let copied = super::sysio::copy_file_range(
+            chunk_fd,
+            asset.patch_offset,
+            file.as_raw_fd(),
+            0,
+            asset.patch_chunk_length,
+        )?;
+        if copied != asset.patch_chunk_length {
+            let _ = fs::remove_file(&temp_path);
+            return Err(SophonError::SizeMismatch {
+                item: asset.target_file_path.clone(),
+                expected: asset.patch_chunk_length,
+                actual: copied,
+            });
+        }
     }
     let actual_size = fs::metadata(&temp_path)?.len();
     if actual_size != asset.target_file_size {
