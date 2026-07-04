@@ -9,7 +9,7 @@ use tauri_plugin_log::log;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 use super::CHUNK_WRITE_BUFFER_SIZE;
-use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, posix_advise};
+use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, posix_advise, xxh64_hex_eq};
 use super::compact_manifest::ChunkRef;
 use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
@@ -457,18 +457,19 @@ async fn download_full_file_with_response(
                 }
             }
             16 => {
-                let actual = if let Some(h) = xxh64_hasher {
-                    format!("{:016x}", h.digest())
+                let matched = if let Some(ref h) = xxh64_hasher {
+                    let digest = h.digest();
+                    xxh64_hex_eq(digest, expected)
                 } else {
                     file.flush().await?;
-                    if verify_existing_file_hash(dest, expected).await? {
-                        String::new()
-                    } else {
-                        expected.to_string()
-                    }
+                    verify_existing_file_hash(dest, expected).await?
                 };
-                if !actual.is_empty() && actual != expected.to_ascii_lowercase() {
+                if !matched {
                     let _ = tokio::fs::remove_file(dest).await;
+                    let actual = xxh64_hasher
+                        .as_ref()
+                        .map(|h| format!("{:016x}", h.digest()))
+                        .unwrap_or_else(|| expected.to_string());
                     return Err(SophonError::Md5Mismatch {
                         item: chunk.chunk_name.to_string(),
                         expected: expected.to_string(),
@@ -498,7 +499,7 @@ async fn download_full_file_with_response(
         tokio::task::spawn_blocking(move || {
             if let Ok(f) = std::fs::File::open(&dest_clone) {
                 use std::os::unix::io::AsRawFd;
-                super::assembly_opt::posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+                posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
             }
         })
         .await
@@ -640,18 +641,19 @@ async fn download_with_resume(
                 }
             }
             16 => {
-                let actual = if let Some(h) = xxh64_hasher {
-                    format!("{:016x}", h.digest())
+                let matched = if let Some(ref h) = xxh64_hasher {
+                    let digest = h.digest();
+                    xxh64_hex_eq(digest, expected)
                 } else {
                     file.flush().await?;
-                    if verify_existing_file_hash(dest, expected).await? {
-                        String::new()
-                    } else {
-                        expected.to_string()
-                    }
+                    verify_existing_file_hash(dest, expected).await?
                 };
-                if !actual.is_empty() && actual != expected.to_ascii_lowercase() {
+                if !matched {
                     let _ = tokio::fs::remove_file(dest).await;
+                    let actual = xxh64_hasher
+                        .as_ref()
+                        .map(|h| format!("{:016x}", h.digest()))
+                        .unwrap_or_else(|| expected.to_string());
                     return Err(SophonError::Md5Mismatch {
                         item: chunk.chunk_name.to_string(),
                         expected: expected.to_string(),
@@ -681,7 +683,7 @@ async fn download_with_resume(
         tokio::task::spawn_blocking(move || {
             if let Ok(f) = std::fs::File::open(&dest_clone) {
                 use std::os::unix::io::AsRawFd;
-                super::assembly_opt::posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+                posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
             }
         })
         .await

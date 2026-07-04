@@ -95,6 +95,29 @@ pub(crate) fn md5_hex_eq(digest: &[u8; 16], expected: &str) -> bool {
     true
 }
 
+/// Compare a u64 value against a 16-char lowercase hex string without
+/// allocating. Used for XXH64 hash verification.
+#[inline]
+pub(crate) fn xxh64_hex_eq(value: u64, expected: &str) -> bool {
+    if expected.len() != 16 {
+        return false;
+    }
+    let bytes = expected.as_bytes();
+    let mut acc: u64 = 0;
+    let mut i = 0;
+    while i < 16 {
+        let nibble = match bytes[i] {
+            b'0'..=b'9' => bytes[i] - b'0',
+            b'a'..=b'f' => bytes[i] - b'a' + 10,
+            b'A'..=b'F' => bytes[i] - b'A' + 10,
+            _ => return false,
+        };
+        acc = (acc << 4) | nibble as u64;
+        i += 1;
+    }
+    acc == value
+}
+
 /// Encode an MD5 digest to a lowercase hex String. Only for error paths.
 #[inline]
 pub(crate) fn md5_to_hex(digest: &[u8; 16]) -> String {
@@ -713,5 +736,27 @@ mod tests {
         let stack = md5_to_hex(&digest);
         let heap = hex::encode(digest);
         assert_eq!(stack, heap);
+    }
+
+    #[test]
+    fn xxh64_hex_eq_matches_known_value() {
+        let value: u64 = 0x0123456789abcdef;
+        let hex = format!("{:016x}", value);
+        assert!(xxh64_hex_eq(value, &hex));
+        assert!(xxh64_hex_eq(value, &hex.to_uppercase()));
+    }
+
+    #[test]
+    fn xxh64_hex_eq_rejects_mismatch() {
+        let value: u64 = 0x0123456789abcdef;
+        assert!(!xxh64_hex_eq(value, "fedcba9876543210"));
+        assert!(!xxh64_hex_eq(value, "0123456789abcde"));
+        assert!(!xxh64_hex_eq(value, "0123456789abcdeeff"));
+    }
+
+    #[test]
+    fn xxh64_hex_eq_zero() {
+        assert!(xxh64_hex_eq(0, "0000000000000000"));
+        assert!(!xxh64_hex_eq(1, "0000000000000000"));
     }
 }
