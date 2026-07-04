@@ -192,17 +192,17 @@ fn op_read_md5_with_fadvise(path: &Path, mib: usize, advise: bool) {
 /// allocator so RSS reflects only what assembly itself allocates.
 fn setup_assembly_fixture(
     chunks_dir: &Path,
-    chunk_mib: usize,
+    chunk_size: u64,
     num_chunks: usize,
 ) -> CompactManifest {
     let chunks: Vec<SophonManifestAssetChunk> = (0..num_chunks)
         .map(|i| {
             let name = format!("ck{i:02}");
-            let data = vec![(i as u8).wrapping_mul(7).wrapping_add(0x40); chunk_mib * 1024 * 1024];
+            let data = vec![(i as u8).wrapping_mul(7).wrapping_add(0x40); chunk_size as usize];
             let md5 = hex::encode(Md5::digest(&data));
             let comp = zstd::encode_all(&data[..], 3).unwrap();
             fs::write(chunks_dir.join(chunk_filename(&name)), &comp).unwrap();
-            let offset = (i * chunk_mib * 1024 * 1024) as u64;
+            let offset = (i as u64) * chunk_size;
             drop(data);
             drop(comp);
             SophonManifestAssetChunk {
@@ -210,7 +210,7 @@ fn setup_assembly_fixture(
                 chunk_decompressed_hash_md5: String::new(),
                 chunk_on_file_offset: offset,
                 chunk_size: 0,
-                chunk_size_decompressed: (chunk_mib * 1024 * 1024) as u64,
+                chunk_size_decompressed: chunk_size,
                 chunk_compressed_hash_xxh: 0,
                 chunk_compressed_hash_md5: md5,
                 chunk_old_offset: -1,
@@ -221,7 +221,7 @@ fn setup_assembly_fixture(
         asset_name: "assembled.bin".to_string(),
         asset_chunks: chunks,
         asset_type: 0,
-        asset_size: (chunk_mib * num_chunks * 1024 * 1024) as u64,
+        asset_size: chunk_size * num_chunks as u64,
         asset_hash_md5: String::new(),
     };
     let manifest = CompactManifest::from(vec![file]);
@@ -244,12 +244,42 @@ fn op_assembly_e2e(dir: &Path) {
     fs::create_dir_all(&game_dir).unwrap();
     fs::create_dir_all(&chunks_dir).unwrap();
     fs::create_dir_all(&tmp_dir).unwrap();
-    let manifest = setup_assembly_fixture(&chunks_dir, 8, 8);
+    let manifest = setup_assembly_fixture(&chunks_dir, 8 * 1024 * 1024, 8);
     let name_refs: Vec<&str> = (0..8)
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
     let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
     let refcounts: Vec<std::sync::atomic::AtomicUsize> = (0..8)
+        .map(|_| std::sync::atomic::AtomicUsize::new(1000))
+        .collect();
+    let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
+    assemble_file(
+        &manifest,
+        0,
+        &game_dir,
+        &chunks_dir,
+        &tmp_dir,
+        &lookup,
+        &refcounts,
+        &cache,
+        true,
+    )
+    .expect("assemble");
+}
+
+fn op_assembly_e2e_small(dir: &Path) {
+    let game_dir = dir.join("game_s");
+    let chunks_dir = dir.join("chunks_s");
+    let tmp_dir = dir.join("tmp_s");
+    fs::create_dir_all(&game_dir).unwrap();
+    fs::create_dir_all(&chunks_dir).unwrap();
+    fs::create_dir_all(&tmp_dir).unwrap();
+    let manifest = setup_assembly_fixture(&chunks_dir, 256 * 1024, 32);
+    let name_refs: Vec<&str> = (0..32)
+        .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
+        .collect();
+    let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
+    let refcounts: Vec<std::sync::atomic::AtomicUsize> = (0..32)
         .map(|_| std::sync::atomic::AtomicUsize::new(1000))
         .collect();
     let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
@@ -413,6 +443,25 @@ fn op_alloc_50mb() {
     drop(v);
 }
 
+/// Measure streaming-decoder RSS for a zstd frame at a given WindowLogMax cap.
+/// Reports whether the cap actually pre-allocates the full window or only
+/// allocates what the frame declares.
+fn op_zstd_decoder_rss(frame_bytes: usize, window_log_max: u32) {
+    let data: Vec<u8> = (0..frame_bytes).map(|i| (i % 251) as u8).collect();
+    let comp = zstd::encode_all(&data[..], 3).unwrap();
+    let mut dec = zstd::stream::read::Decoder::new(comp.as_slice()).unwrap();
+    dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log_max))
+        .unwrap();
+    let mut out = Vec::with_capacity(data.len());
+    std::io::copy(&mut dec, &mut out).unwrap();
+    std::hint::black_box(out.len());
+    thread::sleep(PEAK_HOLD);
+    drop(out);
+    drop(dec);
+    drop(comp);
+    drop(data);
+}
+
 fn main() {
     let filter = std::env::args().nth(1);
     let dir = temp_dir();
@@ -455,6 +504,9 @@ fn main() {
     let d = dir.clone();
     run("assembly_e2e_8x8m", &|| op_assembly_e2e(&d));
 
+    let d = dir.clone();
+    run("assembly_e2e_32x256k", &|| op_assembly_e2e_small(&d));
+
     // Diagnostic runs only with an explicit filter so a 50 MiB allocation does
     // not inflate the baseline of subsequent ops on a full run.
     if filter
@@ -462,6 +514,32 @@ fn main() {
         .is_some_and(|f| "alloc_50mb_diag".contains(f))
     {
         run("alloc_50mb_diag", &|| op_alloc_50mb());
+    }
+
+    if filter
+        .as_deref()
+        .is_some_and(|f| "zstd_decoder_rss".contains(f))
+    {
+        for &(frame_bytes, wl) in &[
+            (256 * 1024usize, 26u32),
+            (256 * 1024, 19),
+            (1024 * 1024, 26),
+            (1024 * 1024, 23),
+            (1024 * 1024, 21),
+            (8 * 1024 * 1024, 26),
+            (8 * 1024 * 1024, 24),
+            (8 * 1024 * 1024, 23),
+            (32 * 1024 * 1024, 26),
+            (32 * 1024 * 1024, 23),
+        ] {
+            let size_label = if frame_bytes >= 1024 * 1024 {
+                format!("{}MiB", frame_bytes / (1024 * 1024))
+            } else {
+                format!("{}KiB", frame_bytes / 1024)
+            };
+            let label = format!("zstd_decoder_rss_{size_label}_wl{wl}");
+            run(&label, &|| op_zstd_decoder_rss(frame_bytes, wl));
+        }
     }
 
     if filter

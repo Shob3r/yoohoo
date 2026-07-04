@@ -395,7 +395,7 @@ fn write_decompressed_chunk_at(
     out_file: &File,
     offset: u64,
     expected_size: u64,
-    mut file_hasher: Option<&mut Md5>,
+    file_hasher: Option<&mut Md5>,
     buffer: &mut [u8],
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
@@ -411,56 +411,89 @@ fn write_decompressed_chunk_at(
             chunk_decompressed_hash_md5,
         )
     } else {
-        let f = File::open(chunk_path)?;
-        let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
-        let mut decoder = zstd::Decoder::new(buf_reader)?;
-        let window_log: u32 = if cfg!(target_pointer_width = "64") {
-            26
-        } else {
-            25
-        };
-        decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
-
-        let mut write_offset = offset;
-        let mut bytes_written: u64 = 0;
-        let mut chunk_hasher = Md5::new()?;
-
-        loop {
-            let n = decoder.read(buffer)?;
-            if n == 0 {
-                break;
-            }
-            chunk_hasher.update(&buffer[..n])?;
-            if let Some(hasher) = file_hasher.as_deref_mut() {
-                hasher.update(&buffer[..n])?;
-            }
-            out_file.write_all_at(&buffer[..n], write_offset)?;
-            write_offset += n as u64;
-            bytes_written += n as u64;
+        let dynamic_log = super::assembly_opt::window_log_for_size(expected_size);
+        let mut file_hasher = file_hasher;
+        let result = inline_decompress(
+            chunk_path,
+            out_file,
+            offset,
+            expected_size,
+            &mut file_hasher,
+            buffer,
+            chunk_decompressed_hash_md5,
+            dynamic_log,
+        );
+        if super::assembly_opt::is_window_too_small(&result) {
+            return inline_decompress(
+                chunk_path,
+                out_file,
+                offset,
+                expected_size,
+                &mut file_hasher,
+                buffer,
+                chunk_decompressed_hash_md5,
+                super::assembly_opt::MAX_WINDOW_LOG,
+            );
         }
+        result
+    }
+}
 
-        if bytes_written != expected_size {
-            return Err(SophonError::SizeMismatch {
+#[allow(clippy::too_many_arguments)]
+fn inline_decompress(
+    chunk_path: &Path,
+    out_file: &File,
+    offset: u64,
+    expected_size: u64,
+    file_hasher: &mut Option<&mut Md5>,
+    buffer: &mut [u8],
+    chunk_decompressed_hash_md5: &str,
+    window_log: u32,
+) -> SophonResult<u64> {
+    let f = File::open(chunk_path)?;
+    let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
+    let mut decoder = zstd::Decoder::new(buf_reader)?;
+    decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
+
+    let mut write_offset = offset;
+    let mut bytes_written: u64 = 0;
+    let mut chunk_hasher = Md5::new()?;
+
+    loop {
+        let n = decoder.read(buffer)?;
+        if n == 0 {
+            break;
+        }
+        chunk_hasher.update(&buffer[..n])?;
+        if let Some(hasher) = file_hasher.as_deref_mut() {
+            hasher.update(&buffer[..n])?;
+        }
+        out_file.write_all_at(&buffer[..n], write_offset)?;
+        write_offset += n as u64;
+        bytes_written += n as u64;
+    }
+
+    if bytes_written != expected_size {
+        return Err(SophonError::SizeMismatch {
+            item: chunk_path.display().to_string(),
+            expected: expected_size,
+            actual: bytes_written,
+        });
+    }
+
+    const EMPTY_MD5: &str = "00000000000000000000000000000000";
+    if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
+        let actual = hex::encode(chunk_hasher.finish()?);
+        if actual != chunk_decompressed_hash_md5 {
+            return Err(SophonError::Md5Mismatch {
                 item: chunk_path.display().to_string(),
-                expected: expected_size,
-                actual: bytes_written,
+                expected: chunk_decompressed_hash_md5.to_string(),
+                actual,
             });
         }
-
-        const EMPTY_MD5: &str = "00000000000000000000000000000000";
-        if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-            let actual = hex::encode(chunk_hasher.finish()?);
-            if actual != chunk_decompressed_hash_md5 {
-                return Err(SophonError::Md5Mismatch {
-                    item: chunk_path.display().to_string(),
-                    expected: chunk_decompressed_hash_md5.to_string(),
-                    actual,
-                });
-            }
-        }
-
-        Ok(bytes_written)
     }
+
+    Ok(bytes_written)
 }
 
 /// Copy decompressed bytes from an existing file to `out_file`. Large chunks

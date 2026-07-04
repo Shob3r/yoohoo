@@ -15,6 +15,19 @@ const ASSEMBLY_BUFFER_SIZE: usize = 64 * 1024;
 
 const EMPTY_MD5: &str = "00000000000000000000000000000000";
 
+pub(crate) const MAX_WINDOW_LOG: u32 = 26;
+
+/// Compute the minimum `WindowLogMax` that fits a zstd frame of
+/// `decompressed_size`. Matches the frame's power-of-two window plus a 1-bit
+/// safety margin, clamped to libzstd's `[10, 26]` valid range.
+#[inline]
+pub(crate) fn window_log_for_size(decompressed_size: u64) -> u32 {
+    const MIN_WINDOW_LOG: u32 = 10;
+    let pow2 = decompressed_size.max(1).next_power_of_two();
+    let log = pow2.trailing_zeros() + 1;
+    log.clamp(MIN_WINDOW_LOG, MAX_WINDOW_LOG)
+}
+
 /// MD5 hasher backed by OpenSSL EVP. Hardware-accelerated on x86_64 via
 /// libcrypto, ~28% higher throughput than the md-5 crate.
 pub(crate) struct Md5 {
@@ -204,6 +217,11 @@ pub fn write_chunk_from_mmap(
 
 /// Decompress a chunk file and write the bytes to `out_file` at `offset`,
 /// computing the chunk and file MD5 values in the same pass.
+///
+/// Tries a tight `WindowLogMax` first to shrink the DStream's pre-allocated
+/// window buffer. If the frame's actual window exceeds the guess (the error
+/// surfaces on the first read, before any hashing), falls back to the full
+/// capacity cap.
 pub fn decompress_chunk_optimized(
     chunk_path: &Path,
     out_file: &File,
@@ -212,20 +230,55 @@ pub fn decompress_chunk_optimized(
     file_hasher: Option<&mut Md5>,
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
+    let dynamic_log = window_log_for_size(expected_size);
+    let mut file_hasher = file_hasher;
+    let result = decompress_chunk_with_window(
+        chunk_path,
+        out_file,
+        offset,
+        expected_size,
+        &mut file_hasher,
+        chunk_decompressed_hash_md5,
+        dynamic_log,
+    );
+    if is_window_too_small(&result) {
+        return decompress_chunk_with_window(
+            chunk_path,
+            out_file,
+            offset,
+            expected_size,
+            &mut file_hasher,
+            chunk_decompressed_hash_md5,
+            MAX_WINDOW_LOG,
+        );
+    }
+    result
+}
+
+pub(crate) fn is_window_too_small(r: &SophonResult<u64>) -> bool {
+    match r {
+        Err(SophonError::Io(e)) => {
+            let msg = e.to_string();
+            msg.contains("out of bound") || msg.contains("too much memory for decoding")
+        }
+        _ => false,
+    }
+}
+
+fn decompress_chunk_with_window(
+    chunk_path: &Path,
+    out_file: &File,
+    offset: u64,
+    expected_size: u64,
+    file_hasher: &mut Option<&mut Md5>,
+    chunk_decompressed_hash_md5: &str,
+    window_log: u32,
+) -> SophonResult<u64> {
     let f = File::open(chunk_path)?;
-    // Compressed chunks are read once and then deleted; advise sequential
-    // read-ahead and evict the pages after decompression to keep the page
-    // cache free for the larger decompressed output.
     let compressed_fd = f.as_raw_fd();
     posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
     let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
     let mut decoder = zstd::Decoder::new(buf_reader)?;
-
-    let window_log: u32 = if cfg!(target_pointer_width = "64") {
-        26
-    } else {
-        25
-    };
     decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
     let mut bytes_written: u64 = 0;
@@ -241,7 +294,7 @@ pub fn decompress_chunk_optimized(
         buf
     });
 
-    match file_hasher {
+    match file_hasher.as_deref_mut() {
         Some(hasher) => loop {
             let n = decoder.read(&mut buffer)?;
             if n == 0 {
@@ -270,7 +323,6 @@ pub fn decompress_chunk_optimized(
     buffer.clear();
     OPT_BUFFER.with(|cell| cell.replace(buffer));
 
-    // Release the compressed chunk's pages now that decompression is done.
     posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
 
     if bytes_written != expected_size {
@@ -384,5 +436,18 @@ mod tests {
         drop(out);
         assert_eq!(bytes, raw.len() as u64);
         assert_eq!(std::fs::read(&dst_path).unwrap(), raw);
+    }
+
+    #[test]
+    fn window_log_for_size_returns_minimal_fit() {
+        assert_eq!(window_log_for_size(1), 10);
+        assert_eq!(window_log_for_size(2), 10);
+        assert_eq!(window_log_for_size(4), 10);
+        assert_eq!(window_log_for_size(1024), 11);
+        assert_eq!(window_log_for_size(1 << 20), 21);
+        assert_eq!(window_log_for_size((1 << 20) + 1), 22);
+        assert_eq!(window_log_for_size(1 << 23), 24);
+        assert_eq!(window_log_for_size(1u64 << 32), MAX_WINDOW_LOG);
+        assert_eq!(window_log_for_size(0), 10);
     }
 }
