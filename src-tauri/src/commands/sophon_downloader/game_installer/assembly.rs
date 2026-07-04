@@ -463,6 +463,8 @@ fn inline_decompress(
             let mut decoder = zstd::Decoder::with_context(buf_reader, &mut ctx);
 
             let mut chunk_hasher = Md5::new()?;
+            let need_chunk_hash =
+                super::assembly_opt::chunk_hash_required(chunk_decompressed_hash_md5);
             let mut write_offset = offset;
             let mut bytes: u64 = 0;
 
@@ -471,7 +473,9 @@ fn inline_decompress(
                 if n == 0 {
                     break;
                 }
-                chunk_hasher.update(&buffer[..n])?;
+                if need_chunk_hash {
+                    chunk_hasher.update(&buffer[..n])?;
+                }
                 if let Some(hasher) = file_hasher.as_deref_mut() {
                     hasher.update(&buffer[..n])?;
                 }
@@ -545,12 +549,15 @@ fn write_from_old_file(
         let mut write_offset = new_offset;
         let mut bytes_written: u64 = 0;
         let mut chunk_hasher = Md5::new()?;
+        let need_chunk_hash = super::assembly_opt::chunk_hash_required(chunk_decompressed_hash_md5);
         let mut remaining = expected_size;
 
         while remaining > 0 {
             let to_read = remaining.min(buffer.len() as u64) as usize;
             reader.read_exact(&mut buffer[..to_read])?;
-            chunk_hasher.update(&buffer[..to_read])?;
+            if need_chunk_hash {
+                chunk_hasher.update(&buffer[..to_read])?;
+            }
             if let Some(hasher) = file_hasher.as_deref_mut() {
                 hasher.update(&buffer[..to_read])?;
             }

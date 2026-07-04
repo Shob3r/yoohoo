@@ -158,7 +158,7 @@ pub(crate) fn sync_and_evict_range(fd: std::os::unix::io::RawFd, offset: u64, le
 /// Returns true when the chunk hash must be verified against the decompressed
 /// bytes.
 #[inline]
-fn chunk_hash_required(chunk_decompressed_hash_md5: &str) -> bool {
+pub(crate) fn chunk_hash_required(chunk_decompressed_hash_md5: &str) -> bool {
     chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5
 }
 
@@ -218,6 +218,7 @@ pub fn write_chunk_from_mmap(
     let expected_size_u = expected_size as usize;
 
     let mut chunk_hasher = Md5::new()?;
+    let need_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
     let mut buf = OPT_BUFFER.with(|cell| {
         let mut buf = cell.take();
         if buf.capacity() < ASSEMBLY_BUFFER_SIZE {
@@ -239,7 +240,9 @@ pub fn write_chunk_from_mmap(
         if n == 0 {
             break;
         }
-        chunk_hasher.update(&buf[..n])?;
+        if need_chunk_hash {
+            chunk_hasher.update(&buf[..n])?;
+        }
         if let Some(hasher) = file_hasher.as_deref_mut() {
             hasher.update(&buf[..n])?;
         }
@@ -368,13 +371,16 @@ fn decompress_chunk_with_window(
 
             let mut bytes: u64 = 0;
             let mut write_offset = offset;
+            let need_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
             match file_hasher.as_deref_mut() {
                 Some(hasher) => loop {
                     let n = decoder.read(&mut buffer)?;
                     if n == 0 {
                         break;
                     }
-                    chunk_hasher.update(&buffer[..n])?;
+                    if need_chunk_hash {
+                        chunk_hasher.update(&buffer[..n])?;
+                    }
                     hasher.update(&buffer[..n])?;
                     out_file.write_all_at(&buffer[..n], write_offset)?;
                     write_offset += n as u64;
@@ -385,7 +391,7 @@ fn decompress_chunk_with_window(
                     if n == 0 {
                         break;
                     }
-                    if chunk_hash_required(chunk_decompressed_hash_md5) {
+                    if need_chunk_hash {
                         chunk_hasher.update(&buffer[..n])?;
                     }
                     out_file.write_all_at(&buffer[..n], write_offset)?;
