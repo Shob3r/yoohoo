@@ -17,7 +17,7 @@ use crate::commands::sophon_downloader::api_scrape::DownloadInfo;
 
 /// Evict pages every `EVICT_INTERVAL` bytes written to keep the page-cache
 /// footprint bounded during large downloads.
-const EVICT_INTERVAL: u64 = 4 * 1024 * 1024;
+const EVICT_INTERVAL: u64 = 2 * 1024 * 1024;
 
 /// Buffered writer over a tokio file handle, sized to
 /// `CHUNK_WRITE_BUFFER_SIZE`. Periodically evicts written pages from the
@@ -125,7 +125,9 @@ fn pread_hash_slice(
         return Ok(());
     }
     let file = std::fs::File::open(path)?;
-    HASH_BUF.with(|cell| {
+    let fd = file.as_raw_fd();
+    posix_advise(fd, 0, max_bytes, libc::POSIX_FADV_SEQUENTIAL);
+    HASH_BUF.with(|cell| -> SophonResult<()> {
         let mut buf = cell.borrow_mut();
         ensure_hash_buf(&mut buf);
         let mut offset = 0u64;
@@ -139,64 +141,78 @@ fn pread_hash_slice(
             offset += n as u64;
         }
         Ok(())
-    })
+    })?;
+    posix_advise(fd, 0, max_bytes, libc::POSIX_FADV_DONTNEED);
+    Ok(())
 }
 
 fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
-    let mut hasher = Md5::new()?;
-    if len == 0 {
+    let fd = file.as_raw_fd();
+    posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
+    let result = if len == 0 {
+        let mut hasher = Md5::new()?;
         hasher.update(b"")?;
-        return hasher.finish().map_err(SophonError::Io);
-    }
-    HASH_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        ensure_hash_buf(&mut buf);
-        let mut offset = 0u64;
-        loop {
-            let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
-            if to_read == 0 {
-                break;
-            }
-            let n = file.read_at(&mut buf[..to_read], offset)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n])?;
-            offset += n as u64;
-        }
         hasher.finish().map_err(SophonError::Io)
-    })
+    } else {
+        HASH_BUF.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            ensure_hash_buf(&mut buf);
+            let mut offset = 0u64;
+            let mut hasher = Md5::new()?;
+            loop {
+                let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
+                if to_read == 0 {
+                    break;
+                }
+                let n = file.read_at(&mut buf[..to_read], offset)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n])?;
+                offset += n as u64;
+            }
+            hasher.finish().map_err(SophonError::Io)
+        })
+    };
+    posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
+    result
 }
 
 fn pread_hash_xxh64_digest(path: &Path) -> SophonResult<u64> {
     use xxhash_rust::xxh64::Xxh64;
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
-    let mut hasher = Xxh64::new(0);
-    if len == 0 {
+    let fd = file.as_raw_fd();
+    posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
+    let result = if len == 0 {
+        let mut hasher = Xxh64::new(0);
         hasher.update(b"");
-        return Ok(hasher.digest());
-    }
-    HASH_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        ensure_hash_buf(&mut buf);
-        let mut offset = 0u64;
-        loop {
-            let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
-            if to_read == 0 {
-                break;
-            }
-            let n = file.read_at(&mut buf[..to_read], offset)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-            offset += n as u64;
-        }
         Ok(hasher.digest())
-    })
+    } else {
+        HASH_BUF.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            ensure_hash_buf(&mut buf);
+            let mut hasher = Xxh64::new(0);
+            let mut offset = 0u64;
+            loop {
+                let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
+                if to_read == 0 {
+                    break;
+                }
+                let n = file.read_at(&mut buf[..to_read], offset)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                offset += n as u64;
+            }
+            Ok(hasher.digest())
+        })
+    };
+    posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
+    result
 }
 
 async fn verify_existing_file_hash(path: &Path, expected_hash: &str) -> SophonResult<bool> {
