@@ -49,7 +49,9 @@ pub fn decrement_chunk_refcount(
     };
     let prev = chunk_refcounts[idx].fetch_sub(1, Ordering::AcqRel);
     if prev == 1 {
-        let _ = fs::remove_file(chunks_dir.join(chunk_filename(chunk_lookup.get(idx))));
+        let mut p = chunks_dir.join(chunk_lookup.get(idx));
+        p.set_extension("zstd");
+        let _ = fs::remove_file(&p);
     }
 }
 
@@ -301,7 +303,8 @@ pub fn assemble_file(
             if !validate_chunk_name(chunk.chunk_name) {
                 return Err(SophonError::PathTraversal(chunk.chunk_name.into()));
             }
-            let chunk_path = chunks_dir.join(chunk_filename(chunk.chunk_name));
+            let mut chunk_path = chunks_dir.join(chunk.chunk_name);
+            chunk_path.set_extension("zstd");
 
             let bytes_written = write_decompressed_chunk_at(
                 &chunk_path,
