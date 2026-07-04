@@ -303,19 +303,19 @@ fn verify_validation(game_dir: &Path, validation: &[ValidationEntry]) -> bool {
         }
         // Verify MD5 hash if provided for stronger integrity guarantee
         if let Some(ref expected_md5) = entry.md5 {
-            let computed = match cache::file_md5_hex(&file_path) {
-                Ok(md5) => md5,
+            let computed = match cache::file_md5_digest(&file_path) {
+                Ok(d) => d,
                 Err(err) => {
                     let path = &entry.path;
                     log::warn!("Failed to compute MD5 for {path}: {err}");
                     return false;
                 }
             };
-            if computed != *expected_md5 {
+            if !md5_hex_eq(&computed, expected_md5) {
                 log::warn!(
                     "Validation file MD5 mismatch: {path} (expected {expected_md5}, got {actual})",
                     path = entry.path,
-                    actual = computed
+                    actual = md5_to_hex(&computed)
                 );
                 return false;
             }
