@@ -51,6 +51,7 @@ use super::api::{
     fetch_build, fetch_front_door, fetch_manifest, fetch_patch_build, fetch_patch_manifest,
     is_known_vo_locale, vo_lang_matches,
 };
+use super::assembly_opt::{md5_hex_eq, md5_to_hex};
 use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
 use super::read_installed_tag;
@@ -1096,13 +1097,13 @@ async fn download_patch_chunk_inner(
     }
 
     if !expected_md5.is_empty() {
-        let actual = hex::encode(hasher.finalize());
-        if actual != expected_md5 {
+        let digest: [u8; 16] = hasher.finalize().into();
+        if !md5_hex_eq(&digest, expected_md5) {
             let _ = tokio::fs::remove_file(dest).await;
             return Err(SophonError::Md5Mismatch {
                 item: dest.display().to_string(),
                 expected: expected_md5.to_string(),
-                actual,
+                actual: md5_to_hex(&digest),
             });
         }
     }
@@ -1136,8 +1137,8 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
                 }
             }
         }
-        let actual = hex::encode(hasher.finalize());
-        actual == expected_md5
+        let digest: [u8; 16] = hasher.finalize().into();
+        md5_hex_eq(&digest, expected_md5)
     })
 }
 
