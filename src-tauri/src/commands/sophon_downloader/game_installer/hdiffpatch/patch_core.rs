@@ -1,8 +1,7 @@
-use std::cell::RefCell;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 use super::{
-    CoverHeader, HeaderInfo, K_BYTE_RLE_TYPE, K_SIGN_TAG_BIT, MAX_ARRAY_POOL_LEN,
+    BufferPool, CoverHeader, HeaderInfo, K_BYTE_RLE_TYPE, K_SIGN_TAG_BIT, MAX_ARRAY_POOL_LEN,
     MAX_ARRAY_POOL_SECOND_OFFSET, MAX_MEM_BUFFER_LEN, MAX_MEM_BUFFER_LIMIT, RleRefClip,
     SeekableRead,
 };
@@ -10,9 +9,7 @@ use crate::commands::sophon_downloader::game_installer::hdiffpatch::parser::{
     BinaryExtensions, read_long_7bit_from_slice,
 };
 
-thread_local! {
-    static SHARED_BUFFER_POOL: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
-}
+static SHARED_BUFFER_POOL: BufferPool = BufferPool::new(4);
 
 pub(crate) fn write_cover_stream_to_output(
     clips: &mut [Box<dyn Read>],
@@ -21,23 +18,14 @@ pub(crate) fn write_cover_stream_to_output(
     header_info: &HeaderInfo,
     on_progress: Option<&dyn Fn(u64)>,
 ) -> std::io::Result<()> {
-    // Reuse the 4 MiB shared buffer across patch applications via a TLS pool
-    // to avoid repeated heap churn when patching many files.
     // Safety: every index 0..MAX_ARRAY_POOL_LEN is populated by read_exact
     // or write_all before being read in the RLE decode loop.
     #[allow(clippy::uninit_vec)]
-    let mut shared_buffer = SHARED_BUFFER_POOL.with(|cell| {
-        let mut buf = cell.take().unwrap_or_else(|| {
-            let mut v = Vec::with_capacity(MAX_ARRAY_POOL_LEN);
-            unsafe { v.set_len(MAX_ARRAY_POOL_LEN) };
-            v
-        });
-        if buf.capacity() < MAX_ARRAY_POOL_LEN {
-            buf = Vec::with_capacity(MAX_ARRAY_POOL_LEN);
-            unsafe { buf.set_len(MAX_ARRAY_POOL_LEN) };
-        }
-        buf
-    });
+    let mut shared_buffer = SHARED_BUFFER_POOL.take(MAX_ARRAY_POOL_LEN);
+    if shared_buffer.capacity() < MAX_ARRAY_POOL_LEN {
+        shared_buffer = Vec::with_capacity(MAX_ARRAY_POOL_LEN);
+    }
+    unsafe { shared_buffer.set_len(MAX_ARRAY_POOL_LEN) };
     let mut cache = Cursor::new(Vec::with_capacity(MAX_MEM_BUFFER_LEN as usize));
 
     let mut new_pos_back = 0i64;
@@ -144,9 +132,7 @@ pub(crate) fn write_cover_stream_to_output(
             cb(total_written);
         }
     }
-    SHARED_BUFFER_POOL.with(|cell| {
-        *cell.borrow_mut() = Some(shared_buffer);
-    });
+    SHARED_BUFFER_POOL.return_buf(shared_buffer);
     Ok(())
 }
 

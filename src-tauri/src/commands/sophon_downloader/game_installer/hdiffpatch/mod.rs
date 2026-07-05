@@ -18,5 +18,39 @@ pub(crate) use header::{
     RleRefClip,
 };
 
+use std::sync::Mutex;
+
+pub(crate) struct BufferPool {
+    buffers: Mutex<Vec<Vec<u8>>>,
+    max_idle: usize,
+}
+
+impl BufferPool {
+    pub const fn new(max_idle: usize) -> Self {
+        Self {
+            buffers: Mutex::new(Vec::new()),
+            max_idle,
+        }
+    }
+
+    pub fn take(&self, min_capacity: usize) -> Vec<u8> {
+        let mut pool = self.buffers.lock().unwrap();
+        for i in 0..pool.len() {
+            if pool[i].capacity() >= min_capacity {
+                return pool.swap_remove(i);
+            }
+        }
+        drop(pool);
+        Vec::with_capacity(min_capacity)
+    }
+
+    pub fn return_buf(&self, buf: Vec<u8>) {
+        let mut pool = self.buffers.lock().unwrap();
+        if pool.len() < self.max_idle {
+            pool.push(buf);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

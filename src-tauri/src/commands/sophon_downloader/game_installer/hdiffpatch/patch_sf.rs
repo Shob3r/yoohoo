@@ -1,16 +1,13 @@
-use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Cursor, Read, SeekFrom, Write};
 
 use super::compression::get_clip_stream;
 use super::parser::BinaryExtensions;
-use super::{HeaderInfo, SeekableRead};
+use super::{BufferPool, HeaderInfo, SeekableRead};
 
-const MAX_STEP_SIZE: usize = 16 * 1024 * 1024; // 16MB max step size
+const MAX_STEP_SIZE: usize = 16 * 1024 * 1024;
 
-thread_local! {
-    static WORK_BUF_POOL: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
-}
+static WORK_BUF_POOL: BufferPool = BufferPool::new(4);
 
 pub(crate) struct PatchSF {
     header_info: HeaderInfo,
@@ -63,19 +60,14 @@ impl PatchSF {
         let new_data_size = self.header_info.new_data_size as u64;
         let step_mem_size = (self.header_info.step_mem_size as usize).min(MAX_STEP_SIZE);
         let total_size = step_mem_size * 2;
-        // Skip zero-init: both halves are fully written via read_exact
-        // before any byte is read (fill-before-read invariant).
+        // Safety: both halves are fully written via read_exact before any byte
+        // is read (fill-before-read invariant).
         #[allow(clippy::uninit_vec)]
-        let mut work_buf = WORK_BUF_POOL.with(|cell| {
-            let mut buf = cell.take().unwrap_or_else(Vec::new);
-            if buf.capacity() < total_size {
-                buf = Vec::with_capacity(total_size);
-                unsafe { buf.set_len(total_size) };
-            } else {
-                unsafe { buf.set_len(total_size) };
-            }
-            buf
-        });
+        let mut work_buf = WORK_BUF_POOL.take(total_size);
+        if work_buf.capacity() < total_size {
+            work_buf = Vec::with_capacity(total_size);
+        }
+        unsafe { work_buf.set_len(total_size) };
         let (step_buf, io_buf) = work_buf.split_at_mut(step_mem_size);
         let result = patch_loop(
             &mut diff,
@@ -87,9 +79,7 @@ impl PatchSF {
             io_buf,
             on_progress,
         );
-        WORK_BUF_POOL.with(|cell| {
-            *cell.borrow_mut() = Some(work_buf);
-        });
+        WORK_BUF_POOL.return_buf(work_buf);
         result
     }
 }
