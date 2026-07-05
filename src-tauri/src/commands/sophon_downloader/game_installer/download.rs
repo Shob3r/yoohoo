@@ -1,4 +1,3 @@
-use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
@@ -104,21 +103,6 @@ fn parse_content_range_start(range_str: &str) -> Option<u64> {
     start_str.parse().ok()
 }
 
-const HASH_BUF_SIZE: usize = 256 * 1024;
-
-thread_local! {
-    static HASH_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn ensure_hash_buf(buf: &mut Vec<u8>) {
-    if buf.capacity() < HASH_BUF_SIZE {
-        buf.reserve(HASH_BUF_SIZE - buf.capacity());
-    }
-    if buf.len() < HASH_BUF_SIZE {
-        unsafe { buf.set_len(HASH_BUF_SIZE) };
-    }
-}
-
 fn pread_hash_slice(
     path: &Path,
     max_bytes: u64,
@@ -128,24 +112,16 @@ fn pread_hash_slice(
         return Ok(());
     }
     let file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        return Ok(());
+    }
     let fd = file.as_raw_fd();
-    posix_advise(fd, 0, max_bytes, libc::POSIX_FADV_SEQUENTIAL);
-    HASH_BUF.with(|cell| -> SophonResult<()> {
-        let mut buf = cell.borrow_mut();
-        ensure_hash_buf(&mut buf);
-        let mut offset = 0u64;
-        while offset < max_bytes {
-            let to_read = (max_bytes - offset).min(HASH_BUF_SIZE as u64) as usize;
-            let n = file.read_at(&mut buf[..to_read], offset)?;
-            if n == 0 {
-                break;
-            }
-            f(&buf[..n])?;
-            offset += n as u64;
-        }
-        Ok(())
-    })?;
-    posix_advise(fd, 0, max_bytes, libc::POSIX_FADV_DONTNEED);
+    let actual = max_bytes.min(file_len);
+    posix_advise(fd, 0, actual, libc::POSIX_FADV_SEQUENTIAL);
+    let mmap = super::assembly_opt::mmap_read_only(&file)?;
+    f(&mmap.as_slice()[..actual as usize])?;
+    posix_advise(fd, 0, actual, libc::POSIX_FADV_DONTNEED);
     Ok(())
 }
 
@@ -153,31 +129,15 @@ fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let fd = file.as_raw_fd();
-    posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
     let result = if len == 0 {
         let mut hasher = Md5::new()?;
         hasher.update(b"")?;
         hasher.finish().map_err(SophonError::Io)
     } else {
-        HASH_BUF.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            ensure_hash_buf(&mut buf);
-            let mut offset = 0u64;
-            let mut hasher = Md5::new()?;
-            loop {
-                let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
-                if to_read == 0 {
-                    break;
-                }
-                let n = file.read_at(&mut buf[..to_read], offset)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n])?;
-                offset += n as u64;
-            }
-            hasher.finish().map_err(SophonError::Io)
-        })
+        let mmap = super::assembly_opt::mmap_read_only(&file)?;
+        let mut hasher = Md5::new()?;
+        hasher.update(mmap.as_slice())?;
+        hasher.finish().map_err(SophonError::Io)
     };
     posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
     result
@@ -188,31 +148,15 @@ fn pread_hash_xxh64_digest(path: &Path) -> SophonResult<u64> {
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let fd = file.as_raw_fd();
-    posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
     let result = if len == 0 {
         let mut hasher = Xxh64::new(0);
         hasher.update(b"");
         Ok(hasher.digest())
     } else {
-        HASH_BUF.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            ensure_hash_buf(&mut buf);
-            let mut hasher = Xxh64::new(0);
-            let mut offset = 0u64;
-            loop {
-                let to_read = (len - offset).min(HASH_BUF_SIZE as u64) as usize;
-                if to_read == 0 {
-                    break;
-                }
-                let n = file.read_at(&mut buf[..to_read], offset)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-                offset += n as u64;
-            }
-            Ok(hasher.digest())
-        })
+        let mmap = super::assembly_opt::mmap_read_only(&file)?;
+        let mut hasher = Xxh64::new(0);
+        hasher.update(mmap.as_slice());
+        Ok(hasher.digest())
     };
     posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
     result
