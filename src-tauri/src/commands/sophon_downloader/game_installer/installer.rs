@@ -998,10 +998,6 @@ async fn check_needs_download(
     game_dir: &Arc<PathBuf>,
     verify_cache: &Arc<DashMap<String, VerificationEntry>>,
 ) -> SophonResult<bool> {
-    if tokio::fs::metadata(dest).await.is_err() {
-        return Ok(true);
-    }
-
     let chunk_size = chunk.chunk_size;
     let expected_md5: Arc<str> = Arc::from(chunk.chunk_compressed_hash_md5);
     let cache = Arc::clone(verify_cache);
