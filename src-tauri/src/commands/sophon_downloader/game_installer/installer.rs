@@ -2072,6 +2072,8 @@ pub async fn install(
             .collect();
         let _ = ctx.downloaded_chunks.set(downloaded_chunks_vec);
     }
+    drop(initial_chunks);
+    super::reclaim_memory();
 
     {
         let initial_offset = ctx.resume_bytes_offset.load(Ordering::Relaxed);
