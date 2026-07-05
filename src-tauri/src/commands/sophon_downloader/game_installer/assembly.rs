@@ -224,6 +224,14 @@ pub fn assemble_file(
         let chunk = all_files.chunk(ci as usize);
         super::assembly_opt::chunk_hash_required(chunk.chunk_decompressed_hash_md5)
     });
+    let has_file_hash = !file_hash_md5.is_empty();
+    let total_chunks = (chunk_range.end - chunk_range.start) as usize;
+    const MAX_PARALLEL_WORKERS: usize = 4;
+    let num_workers = std::thread::available_parallelism()
+        .map(|n| n.get().min(MAX_PARALLEL_WORKERS))
+        .unwrap_or(1);
+    let parallelize =
+        num_workers > 1 && total_chunks >= 4 && (all_chunks_have_hashes || has_file_hash);
     let mut file_hasher = if file_hash_md5.is_empty() {
         if !is_dir {
             log::warn!(
@@ -232,7 +240,7 @@ pub fn assemble_file(
             );
         }
         None
-    } else if all_chunks_have_hashes {
+    } else if all_chunks_have_hashes || parallelize {
         None
     } else {
         Some(take_md5()?)
@@ -280,14 +288,6 @@ pub fn assemble_file(
             actual: cursor,
         });
     }
-
-    let total_chunks = (chunk_range.end - chunk_range.start) as usize;
-    const MAX_PARALLEL_WORKERS: usize = 4;
-    let num_workers = std::thread::available_parallelism()
-        .map(|n| n.get().min(MAX_PARALLEL_WORKERS))
-        .unwrap_or(1);
-    let parallelize =
-        all_chunks_have_hashes && file_hasher.is_none() && num_workers > 1 && total_chunks >= 4;
 
     if parallelize {
         let total_written_atomic = std::sync::atomic::AtomicU64::new(0);
@@ -448,16 +448,39 @@ pub fn assemble_file(
         let _ = fs::remove_file(&tmp_path);
         SophonError::Io(err)
     })?;
-    // The assembled output is now durable on disk; evict its pages from the
-    // page cache so the resident set stays small for the next file. The rename
-    // below is a metadata-only operation and does not need the data pages.
-    super::assembly_opt::posix_advise(
-        out_file.as_raw_fd(),
-        0,
-        file_size,
-        libc::POSIX_FADV_DONTNEED,
-    );
-    drop(out_file);
+
+    // When the parallel path assembled a file with only a file-level hash,
+    // verify it by reading the assembled tmp file from the page cache. The
+    // helper evicts the file's pages when it finishes, so the explicit
+    // DONTNEED below is skipped in this branch.
+    let parallel_hashed_file = parallelize && has_file_hash && !all_chunks_have_hashes;
+    if parallel_hashed_file {
+        match super::cache::file_md5_digest(&tmp_path) {
+            Ok(digest) => {
+                if !md5_hex_eq(&digest, file_hash_md5) {
+                    let _ = fs::remove_file(&tmp_path);
+                    return Err(SophonError::Md5Mismatch {
+                        item: file_name.to_string(),
+                        expected: file_hash_md5.to_string(),
+                        actual: md5_to_hex(&digest),
+                    });
+                }
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(SophonError::Io(err));
+            }
+        }
+        drop(out_file);
+    } else {
+        super::assembly_opt::posix_advise(
+            out_file.as_raw_fd(),
+            0,
+            file_size,
+            libc::POSIX_FADV_DONTNEED,
+        );
+        drop(out_file);
+    }
 
     if total_written != file_size {
         let _ = fs::remove_file(&tmp_path);
@@ -1166,6 +1189,125 @@ mod tests {
 
         let result = fs::read(&target).unwrap();
         assert_eq!(result, correct_data);
+    }
+
+    #[test]
+    fn assemble_file_parallel_file_hash_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().join("game");
+        let chunks_dir = dir.path().join("chunks");
+        let temp_dir = dir.path().join("tmp");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::create_dir_all(&chunks_dir).unwrap();
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let chunks: Vec<Vec<u8>> = (0..8)
+            .map(|i| (0..4096).map(|j| ((i * 17 + j) % 251) as u8).collect())
+            .collect();
+        let names: Vec<String> = (0..8).map(|i| format!("ck{i}")).collect();
+        for (i, data) in chunks.iter().enumerate() {
+            make_chunk_file(&chunks_dir, &names[i], data);
+        }
+        let mut full = Vec::new();
+        for c in &chunks {
+            full.extend_from_slice(c);
+        }
+        let file_md5 = compute_md5_hex(&full);
+
+        let chunk_specs: Vec<SophonManifestAssetChunk> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, data)| make_chunk(&names[i], (i * data.len()) as u64, data.len() as u64))
+            .collect();
+        let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let chunk_names_arc = make_chunk_names(&name_refs);
+        let chunk_refcounts: Vec<AtomicUsize> =
+            (0..chunks.len()).map(|_| AtomicUsize::new(1)).collect();
+
+        let file = SophonManifestAssetProperty {
+            asset_name: "parallel_hash.bin".to_string(),
+            asset_chunks: chunk_specs,
+            asset_type: 0,
+            asset_size: full.len() as u64,
+            asset_hash_md5: file_md5,
+        };
+
+        let verify_cache = DashMap::new();
+        assemble_test_file(
+            file,
+            &game_dir,
+            &chunks_dir,
+            &temp_dir,
+            &chunk_names_arc,
+            &chunk_refcounts,
+            &verify_cache,
+        )
+        .unwrap();
+
+        let result = fs::read(game_dir.join("parallel_hash.bin")).unwrap();
+        assert_eq!(result, full);
+    }
+
+    #[test]
+    fn assemble_file_parallel_file_hash_mismatch_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().join("game");
+        let chunks_dir = dir.path().join("chunks");
+        let temp_dir = dir.path().join("tmp");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::create_dir_all(&chunks_dir).unwrap();
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let chunks: Vec<Vec<u8>> = (0..8)
+            .map(|i| (0..4096).map(|j| ((i * 17 + j) % 251) as u8).collect())
+            .collect();
+        let names: Vec<String> = (0..8).map(|i| format!("ck{i}")).collect();
+        for (i, data) in chunks.iter().enumerate() {
+            make_chunk_file(&chunks_dir, &names[i], data);
+        }
+        let mut full = Vec::new();
+        for c in &chunks {
+            full.extend_from_slice(c);
+        }
+
+        let chunk_specs: Vec<SophonManifestAssetChunk> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, data)| make_chunk(&names[i], (i * data.len()) as u64, data.len() as u64))
+            .collect();
+        let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let chunk_names_arc = make_chunk_names(&name_refs);
+        let chunk_refcounts: Vec<AtomicUsize> =
+            (0..chunks.len()).map(|_| AtomicUsize::new(1)).collect();
+
+        let corrupt_md5 =
+            String::from_utf8((0..32).map(|i| if i == 0 { b'f' } else { b'0' }).collect()).unwrap();
+
+        let file = SophonManifestAssetProperty {
+            asset_name: "corrupt.bin".to_string(),
+            asset_chunks: chunk_specs,
+            asset_type: 0,
+            asset_size: full.len() as u64,
+            asset_hash_md5: corrupt_md5,
+        };
+
+        let verify_cache = DashMap::new();
+        let result = assemble_test_file(
+            file,
+            &game_dir,
+            &chunks_dir,
+            &temp_dir,
+            &chunk_names_arc,
+            &chunk_refcounts,
+            &verify_cache,
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SophonError::Md5Mismatch { .. }
+        ));
+        assert!(!game_dir.join("corrupt.bin").exists());
     }
 
     #[test]
