@@ -1108,13 +1108,14 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
         let _ = hasher.update(b"");
         true
     } else {
-        let mmap = match super::assembly_opt::mmap_read_only(&file) {
-            Ok(m) => m,
-            Err(_) => {
-                super::assembly_opt::return_md5(hasher);
-                return false;
-            }
-        };
+        let mmap =
+            match unsafe { super::assembly_opt::mmap_read_only_unchecked(&file, len as usize) } {
+                Ok(m) => m,
+                Err(_) => {
+                    super::assembly_opt::return_md5(hasher);
+                    return false;
+                }
+            };
         let ok = hasher.update(mmap.as_slice()).is_ok();
         posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         ok
