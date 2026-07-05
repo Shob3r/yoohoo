@@ -10,6 +10,7 @@ use crate::commands::sophon_downloader::game_installer::hdiffpatch::parser::{
 };
 
 static SHARED_BUFFER_POOL: BufferPool = BufferPool::new(4);
+static CACHE_BUFFER_POOL: BufferPool = BufferPool::new(4);
 
 pub(crate) fn write_cover_stream_to_output(
     clips: &mut [Box<dyn Read>],
@@ -26,7 +27,7 @@ pub(crate) fn write_cover_stream_to_output(
         shared_buffer = Vec::with_capacity(MAX_ARRAY_POOL_LEN);
     }
     unsafe { shared_buffer.set_len(MAX_ARRAY_POOL_LEN) };
-    let mut cache = Cursor::new(Vec::with_capacity(MAX_MEM_BUFFER_LEN as usize));
+    let mut cache = Cursor::new(CACHE_BUFFER_POOL.take(MAX_MEM_BUFFER_LEN as usize));
 
     let mut new_pos_back = 0i64;
     let mut total_written: u64 = 0;
@@ -133,6 +134,7 @@ pub(crate) fn write_cover_stream_to_output(
         }
     }
     SHARED_BUFFER_POOL.return_buf(shared_buffer);
+    CACHE_BUFFER_POOL.return_buf(cache.into_inner());
     Ok(())
 }
 
