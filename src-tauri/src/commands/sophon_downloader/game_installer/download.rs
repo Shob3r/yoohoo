@@ -9,7 +9,7 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 
 use super::CHUNK_WRITE_BUFFER_SIZE;
 use super::assembly_opt::{
-    Md5, md5_hex_eq, md5_to_hex, posix_advise, return_md5, take_md5, xxh64_hex_eq,
+    md5_hex_eq, md5_to_hex, posix_advise, return_md5, take_md5, xxh64_hex_eq,
 };
 use super::compact_manifest::ChunkRef;
 use super::error::{SophonError, SophonResult};
@@ -121,17 +121,17 @@ fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let fd = file.as_raw_fd();
+    let mut hasher = take_md5()?;
     let result = if len == 0 {
-        let mut hasher = Md5::new()?;
         hasher.update(b"")?;
         hasher.finish().map_err(SophonError::Io)
     } else {
         let mmap = super::assembly_opt::mmap_read_only(&file)?;
-        let mut hasher = Md5::new()?;
         hasher.update(mmap.as_slice())?;
         hasher.finish().map_err(SophonError::Io)
     };
     posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
+    return_md5(hasher);
     result
 }
 
