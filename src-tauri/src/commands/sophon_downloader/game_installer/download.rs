@@ -14,17 +14,9 @@ use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
 use crate::commands::sophon_downloader::api_scrape::DownloadInfo;
 
-/// Evict pages every `EVICT_INTERVAL` bytes written to keep the page-cache
-/// footprint bounded during large downloads.
-const EVICT_INTERVAL: u64 = 1024 * 1024;
-
-/// Buffered writer over a tokio file handle, sized to
-/// `CHUNK_WRITE_BUFFER_SIZE`. Periodically evicts written pages from the
-/// page cache to bound resident memory during large downloads.
 pub(crate) struct EvictingWriter {
     inner: BufWriter<tokio::fs::File>,
     written: u64,
-    last_evict: u64,
 }
 
 impl EvictingWriter {
@@ -32,7 +24,6 @@ impl EvictingWriter {
         Self {
             inner: BufWriter::with_capacity(CHUNK_WRITE_BUFFER_SIZE, file),
             written: 0,
-            last_evict: 0,
         }
     }
 
@@ -40,20 +31,12 @@ impl EvictingWriter {
         Self {
             inner: BufWriter::with_capacity(CHUNK_WRITE_BUFFER_SIZE, file),
             written: offset,
-            last_evict: offset,
         }
     }
 
     pub(crate) async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
         self.inner.write_all(buf).await?;
         self.written += buf.len() as u64;
-        let since = self.written - self.last_evict;
-        if since >= EVICT_INTERVAL {
-            self.flush().await?;
-            let fd = self.inner.get_ref().as_raw_fd();
-            posix_advise(fd, self.last_evict, since, libc::POSIX_FADV_DONTNEED);
-            self.last_evict = self.written;
-        }
         Ok(())
     }
 
