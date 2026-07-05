@@ -12,6 +12,16 @@ pub fn run() {
     apply_nvidia_wayland_workaround();
     apply_webkit_memory_improvements();
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(32)
+        .thread_stack_size(512 * 1024)
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    tauri::async_runtime::set(runtime.handle().clone());
+    std::mem::forget(runtime);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {

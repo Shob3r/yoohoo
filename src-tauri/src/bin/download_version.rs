@@ -77,6 +77,7 @@ fn main() {
     let runtime = Builder::new_multi_thread()
         .worker_threads(4)
         .max_blocking_threads(32)
+        .thread_stack_size(512 * 1024)
         .enable_all()
         .build()
         .expect("build tokio runtime");
