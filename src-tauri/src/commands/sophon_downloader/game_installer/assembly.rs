@@ -303,7 +303,8 @@ pub fn assemble_file(
     if parallelize {
         let total_written_atomic = AtomicU64::new(0);
         let first_error = Mutex::new(None);
-        let processed_chunks: Mutex<Vec<&str>> = Mutex::new(Vec::with_capacity(total_chunks));
+        let downloaded_chunks: Vec<AtomicBool> =
+            (0..total_chunks).map(|_| AtomicBool::new(false)).collect();
         let raw_fd = out_file.as_raw_fd();
 
         let chunk_done: Vec<AtomicBool> =
@@ -384,7 +385,7 @@ pub fn assemble_file(
                 }
                 let tw = &total_written_atomic;
                 let err = &first_error;
-                let proc = &processed_chunks;
+                let dl_chunks = &downloaded_chunks;
                 let target = &target_path;
                 let old = old_file.as_ref();
                 let out = &out_file;
@@ -439,7 +440,8 @@ pub fn assemble_file(
                             Ok(bytes) => {
                                 tw.fetch_add(bytes, Ordering::Relaxed);
                                 if chunk.chunk_old_offset < 0 {
-                                    proc.lock().unwrap().push(chunk.chunk_name);
+                                    let idx = (ci - chunk_range.start) as usize;
+                                    dl_chunks[idx].store(true, Ordering::Relaxed);
                                 }
                                 if !skip_evict {
                                     super::assembly_opt::sync_and_evict_range(
@@ -465,7 +467,12 @@ pub fn assemble_file(
             }
         });
 
-        guard.chunks = processed_chunks.into_inner().unwrap();
+        for (i, flag) in downloaded_chunks.iter().enumerate() {
+            if flag.load(Ordering::Relaxed) {
+                let ci = chunk_range.start + i as u32;
+                guard.chunks.push(all_files.chunk(ci as usize).chunk_name);
+            }
+        }
         total_written = total_written_atomic.into_inner();
 
         if let Some(e) = first_error.into_inner().unwrap() {
