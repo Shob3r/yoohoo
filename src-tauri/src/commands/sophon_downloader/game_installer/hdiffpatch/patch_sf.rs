@@ -9,6 +9,7 @@ const MAX_STEP_SIZE: usize = 16 * 1024 * 1024;
 const IO_BUF_SIZE: usize = 256 * 1024;
 
 static WORK_BUF_POOL: BufferPool = BufferPool::new(2);
+static STEP_BUF_POOL: BufferPool = BufferPool::new(2);
 
 pub(crate) struct PatchSF {
     header_info: HeaderInfo,
@@ -64,7 +65,7 @@ impl PatchSF {
             io_buf = Vec::with_capacity(IO_BUF_SIZE);
         }
         unsafe { io_buf.set_len(IO_BUF_SIZE) };
-        let mut step_buf: Vec<u8> = Vec::new();
+        let mut step_buf = STEP_BUF_POOL.take(0);
         let result = patch_loop(
             &mut diff,
             input_stream,
@@ -76,6 +77,7 @@ impl PatchSF {
             on_progress,
         );
         WORK_BUF_POOL.return_buf(io_buf);
+        STEP_BUF_POOL.return_buf(step_buf);
         result
     }
 }
