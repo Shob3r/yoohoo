@@ -38,7 +38,7 @@ pub(crate) fn write_cover_stream_to_output(
         }
         buf
     });
-    let mut cache = Cursor::new(Vec::<u8>::new());
+    let mut cache = Cursor::new(Vec::with_capacity(MAX_MEM_BUFFER_LEN as usize));
 
     let mut new_pos_back = 0i64;
     let mut total_written: u64 = 0;
@@ -432,7 +432,12 @@ impl<'a> CoverHeaderIterator<'a> {
             });
         }
         let reader = if cover_size < MAX_MEM_BUFFER_LEN {
-            let mut buffer = vec![0u8; cover_size as usize];
+            #[allow(clippy::uninit_vec)]
+            let mut buffer = {
+                let mut v = Vec::with_capacity(cover_size as usize);
+                unsafe { v.set_len(cover_size as usize) };
+                v
+            };
             cover_reader.read_exact(&mut buffer).map_err(|err| {
                 std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
