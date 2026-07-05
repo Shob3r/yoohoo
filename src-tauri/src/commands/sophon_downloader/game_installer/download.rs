@@ -60,8 +60,37 @@ impl EvictingWriter {
 }
 
 fn get_available_space(path: &Path) -> Option<u64> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::os::unix::ffi::OsStrExt;
-    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    use std::rc::Rc;
+
+    thread_local! {
+        static CSTRING_CACHE: RefCell<HashMap<Rc<Path>, Rc<std::ffi::CString>>> = RefCell::new(HashMap::new());
+    }
+
+    let key: Rc<Path> = Rc::from(path.to_path_buf());
+    let cpath_opt = CSTRING_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if let Some(existing) = cache.get(&key).cloned() {
+            Some(existing)
+        } else {
+            let bytes = path.as_os_str().as_bytes();
+            match std::ffi::CString::new(bytes) {
+                Ok(s) => {
+                    let new = Rc::new(s);
+                    cache.insert(key.clone(), new.clone());
+                    if cache.len() > 16 {
+                        cache.clear();
+                    }
+                    Some(new)
+                }
+                Err(_) => None,
+            }
+        }
+    });
+    let cpath = cpath_opt?;
+
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     let ret = unsafe { libc::statvfs(cpath.as_ptr(), &mut stat) };
     if ret != 0 {
@@ -71,11 +100,14 @@ fn get_available_space(path: &Path) -> Option<u64> {
 }
 
 pub fn check_available_space(dest: &Path, needed: u64) -> Result<(), SophonError> {
-    if let Some(available) = get_available_space(dest)
+    let Some(parent) = dest.parent() else {
+        return Ok(());
+    };
+    if let Some(available) = get_available_space(parent)
         && available < needed
     {
         return Err(SophonError::NoSpaceAvailable {
-            path: dest.display().to_string(),
+            path: parent.display().to_string(),
             needed,
             available,
         });
