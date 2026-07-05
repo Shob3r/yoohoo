@@ -4,8 +4,6 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use std::os::unix::io::AsRawFd;
-
 use dashmap::DashMap;
 
 pub use dashmap::DashMap as VerificationCache;
@@ -205,30 +203,16 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let mmap = super::assembly_opt::mmap_read_only(&file)?;
     let data = mmap.as_slice();
 
-    let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::md5())
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    let mut hasher =
+        super::assembly_opt::take_md5().map_err(|e| io::Error::other(e.to_string()))?;
     hasher
         .update(data)
         .map_err(|e| io::Error::other(e.to_string()))?;
-
-    let hash = hasher
+    let digest = hasher
         .finish()
         .map_err(|e| io::Error::other(e.to_string()))?;
-    let mut out = [0u8; 16];
-    let n = hash.len().min(16);
-    out[..n].copy_from_slice(&hash[..n]);
-
-    #[cfg(unix)]
-    unsafe {
-        libc::posix_fadvise(
-            file.as_raw_fd(),
-            0,
-            len as libc::off_t,
-            libc::POSIX_FADV_DONTNEED,
-        );
-    }
-
-    Ok(out)
+    super::assembly_opt::return_md5(hasher);
+    Ok(digest)
 }
 
 #[cfg(test)]
