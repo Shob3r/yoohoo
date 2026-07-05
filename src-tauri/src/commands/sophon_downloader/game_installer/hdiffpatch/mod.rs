@@ -35,10 +35,17 @@ impl BufferPool {
 
     pub fn take(&self, min_capacity: usize) -> Vec<u8> {
         let mut pool = self.buffers.lock().unwrap();
+        let mut best_idx = None;
+        let mut best_cap = usize::MAX;
         for i in 0..pool.len() {
-            if pool[i].capacity() >= min_capacity {
-                return pool.swap_remove(i);
+            let cap = pool[i].capacity();
+            if cap >= min_capacity && cap < best_cap {
+                best_idx = Some(i);
+                best_cap = cap;
             }
+        }
+        if let Some(i) = best_idx {
+            return pool.swap_remove(i);
         }
         drop(pool);
         Vec::with_capacity(min_capacity)

@@ -6,6 +6,7 @@ use super::parser::BinaryExtensions;
 use super::{BufferPool, HeaderInfo, SeekableRead};
 
 const MAX_STEP_SIZE: usize = 16 * 1024 * 1024;
+const IO_BUF_SIZE: usize = 256 * 1024;
 
 static WORK_BUF_POOL: BufferPool = BufferPool::new(4);
 
@@ -59,7 +60,7 @@ impl PatchSF {
         let cover_count = self.header_info.chunk_info.cover_count as u64;
         let new_data_size = self.header_info.new_data_size as u64;
         let step_mem_size = (self.header_info.step_mem_size as usize).min(MAX_STEP_SIZE);
-        let total_size = step_mem_size * 2;
+        let total_size = step_mem_size + IO_BUF_SIZE;
         // Safety: both halves are fully written via read_exact before any byte
         // is read (fill-before-read invariant).
         #[allow(clippy::uninit_vec)]
