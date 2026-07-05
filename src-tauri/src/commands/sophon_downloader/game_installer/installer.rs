@@ -1140,9 +1140,11 @@ async fn process_download_item(
     if !validate_chunk_name(chunk.chunk_name) {
         return Err(SophonError::PathTraversal(chunk.chunk_name.into()));
     }
-    let dest = ctx
-        .chunks_dir
-        .join(assembly::chunk_filename(chunk.chunk_name));
+    let dest = {
+        let mut p = ctx.chunks_dir.join(chunk.chunk_name);
+        p.set_extension("zstd");
+        p
+    };
 
     let needs_download = if item.is_pre_downloaded {
         let result = check_needs_download(&dest, chunk, &ctx.game_dir, &ctx.verify_cache).await?;
@@ -2323,7 +2325,8 @@ pub async fn verify_integrity(
                 continue;
             }
             seen_chunks.insert(chunk.chunk_name.clone());
-            let chunk_path = chunks_dir.join(assembly::chunk_filename(&chunk.chunk_name));
+            let mut chunk_path = chunks_dir.join(&chunk.chunk_name);
+            chunk_path.set_extension("zstd");
             let needs_download = !chunk_path.exists()
                 || !cache::check_file_md5_cached(
                     &chunk_path,
@@ -2376,7 +2379,8 @@ pub async fn verify_integrity(
                 if !validate_chunk_name(&name) {
                     return Err(SophonError::PathTraversal(name.into()));
                 }
-                let chunk_path = chunks_dir.join(assembly::chunk_filename(&name));
+                let mut chunk_path = chunks_dir.join(&name);
+                chunk_path.set_extension("zstd");
                 let chunk_ref = ChunkRef {
                     chunk_name: &name,
                     chunk_decompressed_hash_md5: "",
