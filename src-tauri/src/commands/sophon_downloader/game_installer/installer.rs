@@ -1003,7 +1003,7 @@ async fn check_needs_download(
     }
 
     let chunk_size = chunk.chunk_size;
-    let expected_md5 = chunk.chunk_compressed_hash_md5.to_string();
+    let expected_md5: Arc<str> = Arc::from(chunk.chunk_compressed_hash_md5);
     let cache = Arc::clone(verify_cache);
     let dest: Arc<Path> = Arc::from(dest);
     let gd = Arc::clone(game_dir);
