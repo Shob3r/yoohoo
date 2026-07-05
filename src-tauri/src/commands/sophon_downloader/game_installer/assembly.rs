@@ -746,7 +746,7 @@ pub struct AssemblyTaskParams {
     pub tmp_dir_idx: usize,
     pub all_files: Arc<CompactManifest>,
     pub all_tmp_dirs: Arc<Vec<std::path::PathBuf>>,
-    pub game_dir: std::path::PathBuf,
+    pub game_dir: Arc<std::path::PathBuf>,
     pub chunks_dir: Arc<std::path::PathBuf>,
     pub chunk_refcounts: Arc<Vec<AtomicUsize>>,
     pub chunk_names: Arc<ChunkNameLookup>,
@@ -1497,7 +1497,7 @@ mod tests {
             tmp_dir_idx: 0,
             all_files: Arc::new(CompactManifest::from(vec![])),
             all_tmp_dirs: Arc::new(vec![dir.path().to_path_buf()]),
-            game_dir: dir.path().to_path_buf(),
+            game_dir: dir.path().to_path_buf().into(),
             chunks_dir: Arc::new(dir.path().to_path_buf()),
             chunk_refcounts: Arc::new(Vec::new()),
             chunk_names: Arc::new(ChunkNameLookup::from_arena(StringArena::from(
@@ -1642,7 +1642,7 @@ mod tests {
             tmp_dir_idx: 99,
             all_files: Arc::new(CompactManifest::from(vec![file])),
             all_tmp_dirs: Arc::new(vec![]),
-            game_dir: dir.path().to_path_buf(),
+            game_dir: dir.path().to_path_buf().into(),
             chunks_dir: Arc::new(dir.path().to_path_buf()),
             chunk_refcounts: Arc::new(Vec::new()),
             chunk_names: Arc::new(ChunkNameLookup::from_arena(StringArena::from(
