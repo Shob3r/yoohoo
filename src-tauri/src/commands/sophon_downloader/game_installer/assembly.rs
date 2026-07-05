@@ -292,6 +292,14 @@ pub fn assemble_file(
     let parallel_hashed_file = parallelize && has_file_hash && !all_chunks_have_hashes;
     let hasher_result: Mutex<Option<SophonResult<[u8; 16]>>> = Mutex::new(None);
 
+    let has_old_chunks = (chunk_range.start..chunk_range.end)
+        .any(|ci| all_files.chunk(ci as usize).chunk_old_offset >= 0);
+    let old_file: Option<File> = if has_old_chunks {
+        Some(File::open(&target_path).map_err(SophonError::Io)?)
+    } else {
+        None
+    };
+
     if parallelize {
         let total_written_atomic = AtomicU64::new(0);
         let first_error = Mutex::new(None);
@@ -378,6 +386,7 @@ pub fn assemble_file(
                 let err = &first_error;
                 let proc = &processed_chunks;
                 let target = &target_path;
+                let old = old_file.as_ref();
                 let out = &out_file;
                 let files = all_files;
                 let cdir = chunks_dir;
@@ -398,7 +407,9 @@ pub fn assemble_file(
                         }
                         let chunk = files.chunk(ci as usize);
                         let result = if chunk.chunk_old_offset >= 0 {
+                            let old_file = old.expect("has_old_chunks guarantees old file");
                             write_from_old_file(
+                                old_file,
                                 target,
                                 out,
                                 chunk.chunk_on_file_offset,
@@ -469,7 +480,11 @@ pub fn assemble_file(
                     chunk.chunk_old_offset >= 0,
                     "chunk_old_offset must be non-negative"
                 );
+                let old_file = old_file
+                    .as_ref()
+                    .expect("has_old_chunks guarantees old file");
                 let bytes_written = write_from_old_file(
+                    old_file,
                     &target_path,
                     &out_file,
                     chunk.chunk_on_file_offset,
@@ -629,7 +644,8 @@ fn write_decompressed_chunk_at(
 /// needed on the destination file.
 #[allow(clippy::too_many_arguments)]
 fn write_from_old_file(
-    old_file_path: &Path,
+    old_file: &std::fs::File,
+    old_file_path: &std::path::Path,
     out_file: &File,
     new_offset: u64,
     old_offset: u64,
@@ -642,6 +658,7 @@ fn write_from_old_file(
 
     if expected_size >= MMA_THRESHOLD {
         super::assembly_opt::write_chunk_from_mmap(
+            old_file,
             old_file_path,
             out_file,
             new_offset,
@@ -651,8 +668,7 @@ fn write_from_old_file(
             chunk_decompressed_hash_md5,
         )
     } else {
-        let f = File::open(old_file_path).map_err(SophonError::Io)?;
-        let fd = f.as_raw_fd();
+        let fd = old_file.as_raw_fd();
         super::assembly_opt::posix_advise(
             fd,
             old_offset,
@@ -673,7 +689,7 @@ fn write_from_old_file(
 
         while remaining > 0 {
             let to_read = remaining.min(buffer.len() as u64) as usize;
-            let n = f
+            let n = old_file
                 .read_at(&mut buffer[..to_read], read_offset)
                 .map_err(SophonError::Io)?;
             if n == 0 {
@@ -1733,7 +1749,9 @@ mod tests {
 
         // Read 4 bytes from offset 4.
         let mut transfer_buf = vec![0u8; 1024];
+        let old_file = File::open(&old_file_path).unwrap();
         let bytes_written = write_from_old_file(
+            &old_file,
             &old_file_path,
             &output_file,
             0,    // new_offset
@@ -1776,7 +1794,9 @@ mod tests {
         output_file.set_len(data.len() as u64).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
+        let old_file = File::open(&old_file_path).unwrap();
         let result = write_from_old_file(
+            &old_file,
             &old_file_path,
             &output_file,
             0,
@@ -1811,7 +1831,9 @@ mod tests {
         output_file.set_len(data.len() as u64).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
+        let old_file = File::open(&old_file_path).unwrap();
         let result = write_from_old_file(
+            &old_file,
             &old_file_path,
             &output_file,
             0,
@@ -1849,7 +1871,9 @@ mod tests {
         output_file.set_len(10).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
+        let old_file = File::open(&old_file_path).unwrap();
         let result = write_from_old_file(
+            &old_file,
             &old_file_path,
             &output_file,
             0,
@@ -1880,18 +1904,8 @@ mod tests {
         output_file.set_len(100).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
-        let result = write_from_old_file(
-            &old_file_path,
-            &output_file,
-            0,
-            0,
-            100,
-            None,
-            &mut transfer_buf,
-            "",
-        );
-
-        assert!(result.is_err(), "should fail when old file doesn't exist");
+        let old_result = File::open(&old_file_path);
+        assert!(old_result.is_err(), "old file should not exist");
     }
 
     /// Verify chunk reuse from the old file.

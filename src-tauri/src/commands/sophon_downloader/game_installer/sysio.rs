@@ -46,6 +46,30 @@ pub fn copy_file_range(
     Ok(copied)
 }
 
+/// Copy a region from an open source file into `dst_file` at `dst_off` using
+/// `copy_file_range`. Applies `POSIX_FADV_DONTNEED` on the source region
+/// once copied so the source pages do not stay resident.
+pub fn copy_file_from(
+    src: &File,
+    src_off: u64,
+    dst: &File,
+    dst_off: u64,
+    len: u64,
+) -> SophonResult<u64> {
+    let src_fd = src.as_raw_fd();
+    let dst_fd = dst.as_raw_fd();
+    let copied = copy_file_range(src_fd, src_off, dst_fd, dst_off, len)?;
+    let _ = unsafe {
+        libc::posix_fadvise(
+            src_fd,
+            src_off as libc::off_t,
+            len as libc::off_t,
+            libc::POSIX_FADV_DONTNEED,
+        )
+    };
+    Ok(copied)
+}
+
 /// Copy a region of `src_path` into `dst_file` at `dst_off` using
 /// `copy_file_range`. Applies `POSIX_FADV_DONTNEED` on the source region
 /// once copied so the source pages do not stay resident.
@@ -57,19 +81,7 @@ pub fn copy_file_region_to(
     len: u64,
 ) -> SophonResult<u64> {
     let src = File::open(src_path).map_err(SophonError::Io)?;
-    let src_fd = src.as_raw_fd();
-    let dst_fd = dst_file.as_raw_fd();
-    let copied = copy_file_range(src_fd, src_off, dst_fd, dst_off, len)?;
-    // Drop source pages from the cache now that the kernel has copied the data.
-    let _ = unsafe {
-        libc::posix_fadvise(
-            src_fd,
-            src_off as libc::off_t,
-            len as libc::off_t,
-            libc::POSIX_FADV_DONTNEED,
-        )
-    };
-    Ok(copied)
+    copy_file_from(&src, src_off, dst_file, dst_off, len)
 }
 
 #[cfg(test)]

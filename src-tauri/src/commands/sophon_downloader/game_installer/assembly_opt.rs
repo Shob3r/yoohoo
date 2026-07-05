@@ -318,7 +318,9 @@ pub(crate) fn chunk_hash_required(chunk_decompressed_hash_md5: &str) -> bool {
 /// kernel `copy_file_range` syscall when no per-chunk or per-file hashing is
 /// required, avoiding any in-user-space copy of the bytes. Otherwise streams
 /// the region through a thread-local buffer to compute MD5 while writing.
+#[allow(clippy::too_many_arguments)]
 pub fn write_chunk_from_mmap(
+    old_file: &File,
     old_file_path: &Path,
     out_file: &File,
     new_offset: u64,
@@ -328,16 +330,9 @@ pub fn write_chunk_from_mmap(
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
     let needs_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
-    // When neither the file nor the chunk require hashing, defer to a pure
-    // kernel-side copy: zero bytes touch user space.
     if file_hasher.is_none() && !needs_chunk_hash {
-        let copied = sysio::copy_file_region_to(
-            old_file_path,
-            old_offset,
-            out_file,
-            new_offset,
-            expected_size,
-        )?;
+        let copied =
+            sysio::copy_file_from(old_file, old_offset, out_file, new_offset, expected_size)?;
         if copied != expected_size {
             return Err(SophonError::SizeMismatch {
                 item: old_file_path.display().to_string(),
@@ -348,12 +343,9 @@ pub fn write_chunk_from_mmap(
         return Ok(copied);
     }
 
-    let file = File::open(old_file_path).map_err(SophonError::Io)?;
-    let file_len = file.metadata().map_err(SophonError::Io)?.len();
-    // Streaming read of a single region: enable read-ahead, then evict the
-    // pages once consumed so the old file does not crowd the page cache.
+    let file_len = old_file.metadata().map_err(SophonError::Io)?.len();
     posix_advise(
-        file.as_raw_fd(),
+        old_file.as_raw_fd(),
         old_offset,
         expected_size,
         libc::POSIX_FADV_SEQUENTIAL,
@@ -379,7 +371,6 @@ pub fn write_chunk_from_mmap(
         if buf.capacity() < ASSEMBLY_BUFFER_SIZE {
             buf = Vec::with_capacity(ASSEMBLY_BUFFER_SIZE);
         }
-        // Safety: buffer is fully overwritten by read_at before write_all_at.
         unsafe { buf.set_len(ASSEMBLY_BUFFER_SIZE) };
         buf
     });
@@ -389,7 +380,7 @@ pub fn write_chunk_from_mmap(
     while remaining > 0 {
         let to_read = remaining.min(buf.len());
         let read_at = old_offset + (expected_size_u - remaining) as u64;
-        let n = file
+        let n = old_file
             .read_at(&mut buf[..to_read], read_at)
             .map_err(SophonError::Io)?;
         if n == 0 {
@@ -407,7 +398,7 @@ pub fn write_chunk_from_mmap(
     }
 
     posix_advise(
-        file.as_raw_fd(),
+        old_file.as_raw_fd(),
         old_offset,
         expected_size,
         libc::POSIX_FADV_DONTNEED,
@@ -625,7 +616,8 @@ mod tests {
 
         let dst_path = dir.path().join("out.bin");
         let out = write_at_new(&dst_path);
-        let bytes = write_chunk_from_mmap(&src, &out, 0, 0, 11, None, "").unwrap();
+        let src_file = File::open(&src).unwrap();
+        let bytes = write_chunk_from_mmap(&src_file, &src, &out, 0, 0, 11, None, "").unwrap();
         drop(out);
         assert_eq!(bytes, 11);
         assert_eq!(std::fs::read(&dst_path).unwrap(), b"hello world");
@@ -640,7 +632,9 @@ mod tests {
 
         let dst_path = dir.path().join("out.bin");
         let out = write_at_new(&dst_path);
-        let bytes = write_chunk_from_mmap(&src, &out, 0, 0, data.len() as u64, None, "").unwrap();
+        let src_file = File::open(&src).unwrap();
+        let bytes = write_chunk_from_mmap(&src_file, &src, &out, 0, 0, data.len() as u64, None, "")
+            .unwrap();
         drop(out);
         assert_eq!(bytes, data.len() as u64);
         assert_eq!(std::fs::read(&dst_path).unwrap().len(), data.len());
@@ -660,8 +654,18 @@ mod tests {
 
         let dst_path = dir.path().join("out.bin");
         let out = write_at_new(&dst_path);
-        let bytes =
-            write_chunk_from_mmap(&src, &out, 0, 0, data.len() as u64, None, &chunk_md5).unwrap();
+        let src_file = File::open(&src).unwrap();
+        let bytes = write_chunk_from_mmap(
+            &src_file,
+            &src,
+            &out,
+            0,
+            0,
+            data.len() as u64,
+            None,
+            &chunk_md5,
+        )
+        .unwrap();
         drop(out);
         assert_eq!(bytes, data.len() as u64);
         assert_eq!(std::fs::read(&dst_path).unwrap(), data);
@@ -677,7 +681,9 @@ mod tests {
 
         let dst_path = dir.path().join("out.bin");
         let out = write_at_new(&dst_path);
-        let res = write_chunk_from_mmap(&src, &out, 0, 0, data.len() as u64, None, wrong);
+        let src_file = File::open(&src).unwrap();
+        let res =
+            write_chunk_from_mmap(&src_file, &src, &out, 0, 0, data.len() as u64, None, wrong);
         assert!(res.is_err());
     }
 
