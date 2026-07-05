@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Cursor, Read, SeekFrom, Write};
 
@@ -6,6 +7,10 @@ use super::parser::BinaryExtensions;
 use super::{HeaderInfo, SeekableRead};
 
 const MAX_STEP_SIZE: usize = 16 * 1024 * 1024; // 16MB max step size
+
+thread_local! {
+    static WORK_BUF_POOL: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+}
 
 pub(crate) struct PatchSF {
     header_info: HeaderInfo,
@@ -61,13 +66,18 @@ impl PatchSF {
         // Skip zero-init: both halves are fully written via read_exact
         // before any byte is read (fill-before-read invariant).
         #[allow(clippy::uninit_vec)]
-        let mut work_buf = Vec::with_capacity(total_size);
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            work_buf.set_len(total_size);
-        }
+        let mut work_buf = WORK_BUF_POOL.with(|cell| {
+            let mut buf = cell.take().unwrap_or_else(Vec::new);
+            if buf.capacity() < total_size {
+                buf = Vec::with_capacity(total_size);
+                unsafe { buf.set_len(total_size) };
+            } else {
+                unsafe { buf.set_len(total_size) };
+            }
+            buf
+        });
         let (step_buf, io_buf) = work_buf.split_at_mut(step_mem_size);
-        patch_loop(
+        let result = patch_loop(
             &mut diff,
             input_stream,
             output_stream,
@@ -76,7 +86,11 @@ impl PatchSF {
             step_buf,
             io_buf,
             on_progress,
-        )
+        );
+        WORK_BUF_POOL.with(|cell| {
+            *cell.borrow_mut() = Some(work_buf);
+        });
+        result
     }
 }
 

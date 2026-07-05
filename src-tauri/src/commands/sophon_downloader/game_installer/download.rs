@@ -61,6 +61,13 @@ impl EvictingWriter {
         self.inner.flush().await
     }
 
+    pub(crate) async fn flush_and_evict_all(&mut self) -> std::io::Result<()> {
+        self.flush().await?;
+        let fd = self.inner.get_ref().as_raw_fd();
+        posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub(crate) fn written(&self) -> u64 {
         self.written
@@ -455,20 +462,8 @@ async fn download_full_file_with_response(
         );
     }
 
+    file.flush_and_evict_all().await.ok();
     drop(file);
-
-    if total_len > 0 {
-        let dest_clone = dest.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            if let Ok(f) = std::fs::File::open(&dest_clone) {
-                use std::os::unix::io::AsRawFd;
-                posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
-            }
-        })
-        .await
-        .ok();
-    }
-
     Ok(())
 }
 
@@ -640,19 +635,7 @@ async fn download_with_resume(
         );
     }
 
+    file.flush_and_evict_all().await.ok();
     drop(file);
-
-    if total_len > 0 {
-        let dest_clone = dest.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            if let Ok(f) = std::fs::File::open(&dest_clone) {
-                use std::os::unix::io::AsRawFd;
-                posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
-            }
-        })
-        .await
-        .ok();
-    }
-
     Ok(())
 }

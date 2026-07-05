@@ -43,7 +43,12 @@ pub(crate) fn get_clip_stream(
                     "buffered stream exceeds maximum size",
                 ));
             }
-            let mut buf = vec![0u8; length as usize];
+            #[allow(clippy::uninit_vec)]
+            let mut buf = {
+                let mut v = Vec::with_capacity(length as usize);
+                unsafe { v.set_len(length as usize) };
+                v
+            };
             file.read_exact(&mut buf)?;
             return Ok((Box::new(Cursor::new(buf)), file_bytes));
         }
@@ -79,11 +84,12 @@ pub(crate) fn get_clip_stream(
                         .map_err(|_| std::io::Error::other("zstd DCtx reset"))?;
                     ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(tight_log))
                         .map_err(|_| std::io::Error::other("zstd DCtx WindowLogMax"))?;
-                    let buf_reader = std::io::BufReader::with_capacity(64 * 1024, limited);
                     let mut out = Vec::with_capacity(length as usize);
                     {
-                        let mut decoder =
-                            zstd::stream::read::Decoder::with_context(buf_reader, &mut ctx);
+                        let mut decoder = zstd::stream::read::Decoder::with_context(
+                            std::io::BufReader::with_capacity(64 * 1024, limited),
+                            &mut ctx,
+                        );
                         match decoder.read_to_end(&mut out) {
                             Ok(_) => out,
                             Err(ref e) if is_window_too_small_err(e) => Vec::new(),
@@ -104,11 +110,12 @@ pub(crate) fn get_clip_stream(
                         file: retry_file,
                         remaining: comp_length,
                     };
-                    let retry_reader = std::io::BufReader::with_capacity(64 * 1024, retry_limited);
                     let mut out = Vec::with_capacity(length as usize);
                     {
-                        let mut retry =
-                            zstd::stream::read::Decoder::with_context(retry_reader, &mut ctx);
+                        let mut retry = zstd::stream::read::Decoder::with_context(
+                            std::io::BufReader::with_capacity(64 * 1024, retry_limited),
+                            &mut ctx,
+                        );
                         retry.read_to_end(&mut out)?;
                     }
                     out

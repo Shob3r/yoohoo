@@ -1085,19 +1085,8 @@ async fn download_patch_chunk_inner(
         }
     }
 
+    file.flush_and_evict_all().await.ok();
     drop(file);
-
-    if total_len > 0 {
-        let dest_clone = dest.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            if let Ok(f) = std::fs::File::open(&dest_clone) {
-                posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
-            }
-        })
-        .await
-        .ok();
-    }
-
     Ok(())
 }
 
