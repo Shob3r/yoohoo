@@ -8,7 +8,9 @@ use tauri_plugin_log::log;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 use super::CHUNK_WRITE_BUFFER_SIZE;
-use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, posix_advise, xxh64_hex_eq};
+use super::assembly_opt::{
+    Md5, md5_hex_eq, md5_to_hex, posix_advise, return_md5, take_md5, xxh64_hex_eq,
+};
 use super::compact_manifest::ChunkRef;
 use super::error::{SophonError, SophonResult};
 use super::handle::DownloadHandle;
@@ -322,7 +324,7 @@ async fn download_full_file_with_response(
     let file = tokio::fs::File::create(dest).await?;
     let mut file = EvictingWriter::new(file);
     let mut stream = resp.bytes_stream();
-    let mut hasher = Md5::new()?;
+    let mut hasher = take_md5()?;
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> =
         if chunk.chunk_compressed_hash_md5.len() == 16 {
             Some(xxhash_rust::xxh64::Xxh64::new(0))
@@ -447,6 +449,7 @@ async fn download_full_file_with_response(
 
     file.flush_and_evict_all().await.ok();
     drop(file);
+    return_md5(hasher);
     Ok(())
 }
 
@@ -481,7 +484,7 @@ async fn download_with_resume(
     check_available_space(dest, remaining)?;
 
     // Seed the hasher with existing file content using pread
-    let mut hasher = Md5::new()?;
+    let mut hasher = take_md5()?;
     let needs_xxh64 = chunk.chunk_compressed_hash_md5.len() == 16;
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> = if needs_xxh64 {
         Some(xxhash_rust::xxh64::Xxh64::new(0))
@@ -620,5 +623,6 @@ async fn download_with_resume(
 
     file.flush_and_evict_all().await.ok();
     drop(file);
+    return_md5(hasher);
     Ok(())
 }
