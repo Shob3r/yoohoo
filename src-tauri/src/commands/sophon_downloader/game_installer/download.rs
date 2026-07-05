@@ -16,7 +16,7 @@ use crate::commands::sophon_downloader::api_scrape::DownloadInfo;
 
 /// Evict pages every `EVICT_INTERVAL` bytes written to keep the page-cache
 /// footprint bounded during large downloads.
-const EVICT_INTERVAL: u64 = 2 * 1024 * 1024;
+const EVICT_INTERVAL: u64 = 1024 * 1024;
 
 /// Buffered writer over a tokio file handle, sized to
 /// `CHUNK_WRITE_BUFFER_SIZE`. Periodically evicts written pages from the
