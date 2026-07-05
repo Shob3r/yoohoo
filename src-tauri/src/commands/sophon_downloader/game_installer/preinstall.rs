@@ -1115,12 +1115,11 @@ async fn download_patch_chunk_inner(
 }
 
 pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(mut file) = fs::File::open(path) else {
         return false;
     };
     let fd = file.as_raw_fd();
     posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-    let mut reader = std::io::BufReader::with_capacity(super::FILE_WRITE_BUFFER_SIZE, file);
     let mut hasher = match super::assembly_opt::Md5::new() {
         Ok(h) => h,
         Err(_) => return false,
@@ -1131,7 +1130,7 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
         }
         unsafe { buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
         loop {
-            match reader.read(buf) {
+            match file.read(buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     if hasher.update(&buf[..n]).is_err() {
@@ -1157,7 +1156,7 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
 }
 
 pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(mut file) = fs::File::open(path) else {
         log::warn!(
             "Failed to open file for XXH64 verification: {path_display}",
             path_display = path.display()
@@ -1166,7 +1165,6 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
     };
     let fd = file.as_raw_fd();
     posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-    let mut reader = std::io::BufReader::with_capacity(super::FILE_WRITE_BUFFER_SIZE, file);
     let mut hasher = xxhash_rust::xxh64::Xxh64::new(0);
     let result = borrow_verify_buffer(|buf| {
         if buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
@@ -1174,7 +1172,7 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
         }
         unsafe { buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
         loop {
-            match reader.read(buf) {
+            match file.read(buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     hasher.update(&buf[..n]);
