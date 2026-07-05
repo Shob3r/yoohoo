@@ -339,7 +339,7 @@ pub fn assemble_file(
                         }
                     };
                     let data = mmap.as_slice();
-                    let mut hasher = match super::assembly_opt::Md5::new() {
+                    let mut hasher = match super::assembly_opt::take_md5() {
                         Ok(h) => h,
                         Err(e) => {
                             *hasher_result.lock().unwrap() = Some(Err(e));
@@ -366,6 +366,7 @@ pub fn assemble_file(
                     match hasher.finish() {
                         Ok(digest) => {
                             *hasher_result.lock().unwrap() = Some(Ok(digest));
+                            super::assembly_opt::return_md5(hasher);
                         }
                         Err(e) => {
                             *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
