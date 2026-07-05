@@ -1740,7 +1740,7 @@ pub async fn install(
 
     let mut resume_bytes_offset: u64 = 0;
     let mut pre_assembled: u64 = 0;
-    let completed_chunk_names: Arc<DashSet<String>>;
+    let completed_chunk_indices: Arc<DashSet<u32>>;
     let completed_indices: Option<HashSet<usize>> = if options.is_resume {
         let total = all_files.num_files() as u64;
         (callbacks.updater)(SophonProgress::CalculatingDownloads {
@@ -1752,7 +1752,7 @@ pub async fn install(
         let checked_files = Arc::new(AtomicU64::new(0));
         let resume_bytes_offset_arc = Arc::new(AtomicU64::new(0));
         let pre_assembled_arc = Arc::new(AtomicU64::new(0));
-        let completed_chunk_names_arc: Arc<DashSet<String>> = Arc::new(DashSet::new());
+        let completed_chunk_indices_arc: Arc<DashSet<u32>> = Arc::new(DashSet::new());
         let indices_arc: Arc<DashSet<usize>> = Arc::new(DashSet::new());
         let files_to_delete: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -1764,7 +1764,7 @@ pub async fn install(
             let checked_files = Arc::clone(&checked_files);
             let resume_bytes_offset_arc = Arc::clone(&resume_bytes_offset_arc);
             let pre_assembled_arc = Arc::clone(&pre_assembled_arc);
-            let completed_chunk_names_arc = Arc::clone(&completed_chunk_names_arc);
+            let completed_chunk_indices_arc = Arc::clone(&completed_chunk_indices_arc);
             let indices_arc = Arc::clone(&indices_arc);
             let files_to_delete = Arc::clone(&files_to_delete);
             let updater = Arc::clone(&callbacks.updater);
@@ -1822,8 +1822,7 @@ pub async fn install(
                             .fold(0u64, |acc, x| acc.saturating_add(x));
                         resume_bytes_offset_arc.fetch_add(file_chunk_size, Ordering::Relaxed);
                         for i in chunk_range.start..chunk_range.end {
-                            completed_chunk_names_arc
-                                .insert(all_files.chunk(i as usize).chunk_name.to_string());
+                            completed_chunk_indices_arc.insert(i);
                         }
                         pre_assembled_arc.fetch_add(1, Ordering::Relaxed);
                     } else {
@@ -1853,7 +1852,7 @@ pub async fn install(
 
         resume_bytes_offset = resume_bytes_offset_arc.load(Ordering::Relaxed);
         pre_assembled = pre_assembled_arc.load(Ordering::Relaxed);
-        completed_chunk_names = completed_chunk_names_arc;
+        completed_chunk_indices = completed_chunk_indices_arc;
 
         (callbacks.updater)(SophonProgress::CalculatingDownloads {
             checked_files: total,
@@ -1861,15 +1860,21 @@ pub async fn install(
         });
         Some(indices_arc.iter().map(|r| *r.key()).collect())
     } else {
-        completed_chunk_names = Arc::new(DashSet::new());
+        completed_chunk_indices = Arc::new(DashSet::new());
         None
     };
 
-    for (chunk_name, &size) in &prev_downloaded_chunks {
-        if completed_chunk_names.contains(chunk_name.as_str()) {
-            continue;
+    {
+        let completed_names: HashSet<&str> = completed_chunk_indices
+            .iter()
+            .map(|r| all_files.chunk(*r.key() as usize).chunk_name)
+            .collect();
+        for (chunk_name, &size) in &prev_downloaded_chunks {
+            if completed_names.contains(chunk_name.as_str()) {
+                continue;
+            }
+            resume_bytes_offset += size;
         }
-        resume_bytes_offset += size;
     }
 
     let initial_chunks = if options.is_resume {
