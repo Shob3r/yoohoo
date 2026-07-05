@@ -200,7 +200,7 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
         ]);
     }
 
-    let mmap = super::assembly_opt::mmap_read_only(&file)?;
+    let mmap = unsafe { super::assembly_opt::mmap_read_only_unchecked(&file, len as usize) }?;
     let data = mmap.as_slice();
 
     let mut hasher =

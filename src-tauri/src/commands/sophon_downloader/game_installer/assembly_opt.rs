@@ -281,7 +281,11 @@ fn decompress_chunk_oneshot(
     let expected_usize = expected_size as usize;
 
     let f = File::open(chunk_path)?;
-    let mmap = mmap_read_only(&f)?;
+    let compressed_size = f.metadata()?.len() as usize;
+    if compressed_size == 0 {
+        return Err(SophonError::Io(io::Error::other("empty chunk")));
+    }
+    let mmap = unsafe { mmap_read_only_unchecked(&f, compressed_size) }?;
     let compressed = mmap.as_slice();
 
     let mut out_mmap = mmap_read_write(out_file, offset, expected_usize)?;
