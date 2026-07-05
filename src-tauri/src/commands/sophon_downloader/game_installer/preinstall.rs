@@ -1016,7 +1016,7 @@ async fn download_patch_chunk_inner(
     let mut stream = resp.bytes_stream();
     let file = tokio::fs::File::create(dest).await?;
     let mut file = super::download::EvictingWriter::new(file);
-    let mut hasher = super::assembly_opt::Md5::new()?;
+    let mut hasher = super::assembly_opt::take_md5()?;
     let mut total_len = 0u64;
 
     loop {
@@ -1087,6 +1087,7 @@ async fn download_patch_chunk_inner(
 
     file.flush_and_evict_all().await.ok();
     drop(file);
+    super::assembly_opt::return_md5(hasher);
     Ok(())
 }
 
