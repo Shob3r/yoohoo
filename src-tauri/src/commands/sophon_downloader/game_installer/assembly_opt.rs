@@ -206,26 +206,35 @@ pub(crate) fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
     if len == 0 {
         return Err(io::Error::other("empty file"));
     }
-    unsafe {
-        let ptr = libc::mmap(
+    unsafe { mmap_read_only_unchecked(file, len) }
+}
+
+pub(crate) unsafe fn mmap_read_only_unchecked(file: &File, len: usize) -> io::Result<MmapGuard> {
+    if len == 0 {
+        return Err(io::Error::other("empty file"));
+    }
+    let ptr = unsafe {
+        libc::mmap(
             std::ptr::null_mut(),
             len,
             libc::PROT_READ,
             libc::MAP_PRIVATE,
             file.as_raw_fd(),
             0,
-        );
-        if ptr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-        libc::madvise(ptr, len, libc::MADV_SEQUENTIAL);
-        Ok(MmapGuard {
-            ptr,
-            len,
-            map_base: ptr,
-            map_len: len,
-        })
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
     }
+    unsafe {
+        libc::madvise(ptr, len, libc::MADV_SEQUENTIAL);
+    }
+    Ok(MmapGuard {
+        ptr,
+        len,
+        map_base: ptr,
+        map_len: len,
+    })
 }
 
 pub(crate) fn mmap_read_write(file: &File, offset: u64, len: usize) -> io::Result<MmapGuard> {

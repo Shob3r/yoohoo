@@ -158,7 +158,7 @@ fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
         hasher.update(b"")?;
         hasher.finish().map_err(SophonError::Io)
     } else {
-        let mmap = super::assembly_opt::mmap_read_only(&file)?;
+        let mmap = unsafe { super::assembly_opt::mmap_read_only_unchecked(&file, len as usize) }?;
         hasher.update(mmap.as_slice())?;
         hasher.finish().map_err(SophonError::Io)
     };
