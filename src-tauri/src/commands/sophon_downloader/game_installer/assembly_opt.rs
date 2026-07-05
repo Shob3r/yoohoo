@@ -169,18 +169,24 @@ pub(crate) fn return_dctx(ctx: zstd::zstd_safe::DCtx<'static>) {
 pub(crate) struct MmapGuard {
     ptr: *mut libc::c_void,
     len: usize,
+    map_base: *mut libc::c_void,
+    map_len: usize,
 }
 
 impl MmapGuard {
     pub(crate) fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
     }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
+    }
 }
 
 impl Drop for MmapGuard {
     fn drop(&mut self) {
-        if self.ptr != libc::MAP_FAILED && !self.ptr.is_null() {
-            unsafe { libc::munmap(self.ptr, self.len) };
+        if self.map_base != libc::MAP_FAILED && !self.map_base.is_null() {
+            unsafe { libc::munmap(self.map_base, self.map_len) };
         }
     }
 }
@@ -203,7 +209,42 @@ pub(crate) fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
             return Err(io::Error::last_os_error());
         }
         libc::madvise(ptr, len, libc::MADV_SEQUENTIAL);
-        Ok(MmapGuard { ptr, len })
+        Ok(MmapGuard {
+            ptr,
+            len,
+            map_base: ptr,
+            map_len: len,
+        })
+    }
+}
+
+pub(crate) fn mmap_read_write(file: &File, offset: u64, len: usize) -> io::Result<MmapGuard> {
+    if len == 0 {
+        return Err(io::Error::other("zero-length mmap"));
+    }
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) } as usize;
+    let page_mask = !(page_size - 1);
+    let map_offset = offset & page_mask as u64;
+    let ptr_offset = (offset - map_offset) as usize;
+    let map_len = len + ptr_offset;
+    unsafe {
+        let base = libc::mmap(
+            std::ptr::null_mut(),
+            map_len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            map_offset as libc::off_t,
+        );
+        if base == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(MmapGuard {
+            ptr: base.add(ptr_offset),
+            len,
+            map_base: base,
+            map_len,
+        })
     }
 }
 
@@ -224,14 +265,8 @@ fn decompress_chunk_oneshot(
     let mmap = mmap_read_only(&f)?;
     let compressed = mmap.as_slice();
 
-    let mut output = ONESHOT_BUF.with(|cell| {
-        let mut buf = cell.take();
-        if buf.capacity() < expected_usize {
-            buf = Vec::with_capacity(expected_usize);
-        }
-        unsafe { buf.set_len(expected_usize) };
-        buf
-    });
+    let mut out_mmap = mmap_read_write(out_file, offset, expected_usize)?;
+    let output = out_mmap.as_mut_slice();
 
     let result = (|| {
         let mut ctx = take_dctx();
@@ -239,7 +274,7 @@ fn decompress_chunk_oneshot(
             .map_err(|_| SophonError::Io(io::Error::other("zstd DCtx reset")))?;
 
         let written = ctx
-            .decompress(&mut output, compressed)
+            .decompress(output, compressed)
             .map_err(|e| SophonError::Io(io::Error::other(e.to_string())))?;
         return_dctx(ctx);
 
@@ -254,7 +289,7 @@ fn decompress_chunk_oneshot(
         let need_chunk_hash = chunk_hash_required(chunk_decompressed_hash_md5);
         if need_chunk_hash {
             let mut chunk_hasher = take_md5()?;
-            chunk_hasher.update(&output)?;
+            chunk_hasher.update(&output[..written])?;
             let digest = chunk_hasher.finish()?;
             return_md5(chunk_hasher);
             if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
@@ -267,15 +302,13 @@ fn decompress_chunk_oneshot(
         }
 
         if let Some(hasher) = file_hasher.as_deref_mut() {
-            hasher.update(&output)?;
+            hasher.update(&output[..written])?;
         }
 
-        out_file.write_all_at(&output, offset)?;
         Ok(expected_size)
     })();
 
-    output.clear();
-    ONESHOT_BUF.with(|cell| cell.replace(output));
+    drop(out_mmap);
     result
 }
 
@@ -457,9 +490,10 @@ pub fn decompress_chunk_optimized(
             &mut file_hasher,
             chunk_decompressed_hash_md5,
         );
-        if !is_window_too_small(&result) {
+        if result.is_ok() {
             return result;
         }
+        // Fall through to streaming decompression on any error.
     }
 
     let dynamic_log = window_log_for_size(expected_size);
@@ -605,7 +639,13 @@ mod tests {
     use super::*;
 
     fn write_at_new(path: &Path) -> File {
-        File::create(path).unwrap()
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .unwrap()
     }
 
     #[test]
@@ -699,6 +739,7 @@ mod tests {
 
         let dst_path = dir.path().join("out.bin");
         let out = write_at_new(&dst_path);
+        out.set_len(raw.len() as u64).unwrap();
         let bytes =
             decompress_chunk_optimized(&chunk_path, &out, 0, raw.len() as u64, None, "").unwrap();
         drop(out);
