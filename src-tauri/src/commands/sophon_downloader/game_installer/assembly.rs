@@ -289,6 +289,8 @@ pub fn assemble_file(
         });
     }
 
+    let parallel_hashed_file = parallelize && has_file_hash && !all_chunks_have_hashes;
+
     if parallelize {
         let total_written_atomic = std::sync::atomic::AtomicU64::new(0);
         let first_error = std::sync::Mutex::new(None);
@@ -313,6 +315,7 @@ pub fn assemble_file(
                 let out = &out_file;
                 let files = all_files;
                 let cdir = chunks_dir;
+                let skip_evict = parallel_hashed_file;
                 s.spawn(move || {
                     let mut transfer_buf = TRANSFER_BUF.with(|cell| {
                         let mut buf = cell.take();
@@ -360,11 +363,13 @@ pub fn assemble_file(
                                 if chunk.chunk_old_offset < 0 {
                                     proc.lock().unwrap().push(chunk.chunk_name);
                                 }
-                                super::assembly_opt::sync_and_evict_range(
-                                    raw_fd,
-                                    chunk.chunk_on_file_offset,
-                                    chunk.chunk_size_decompressed,
-                                );
+                                if !skip_evict {
+                                    super::assembly_opt::sync_and_evict_range(
+                                        raw_fd,
+                                        chunk.chunk_on_file_offset,
+                                        chunk.chunk_size_decompressed,
+                                    );
+                                }
                             }
                             Err(e) => {
                                 let mut guard = err.lock().unwrap();
@@ -447,11 +452,6 @@ pub fn assemble_file(
         SophonError::Io(err)
     })?;
 
-    // When the parallel path assembled a file with only a file-level hash,
-    // verify it by reading the assembled tmp file from the page cache. The
-    // helper evicts the file's pages when it finishes, so the explicit
-    // DONTNEED below is skipped in this branch.
-    let parallel_hashed_file = parallelize && has_file_hash && !all_chunks_have_hashes;
     if parallel_hashed_file {
         match super::cache::file_md5_digest(&tmp_path) {
             Ok(digest) => {
