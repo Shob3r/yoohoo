@@ -350,7 +350,6 @@ pub fn assemble_file(
                                     chunk.chunk_on_file_offset,
                                     chunk.chunk_size_decompressed,
                                     None,
-                                    &mut transfer_buf,
                                     chunk.chunk_decompressed_hash_md5,
                                 )
                             }
@@ -424,7 +423,6 @@ pub fn assemble_file(
                     chunk.chunk_on_file_offset,
                     chunk.chunk_size_decompressed,
                     file_hasher.as_mut(),
-                    &mut transfer_buffer,
                     chunk.chunk_decompressed_hash_md5,
                 )
                 .inspect_err(|_| {
@@ -537,7 +535,6 @@ fn write_decompressed_chunk_at(
     offset: u64,
     expected_size: u64,
     file_hasher: Option<&mut Md5>,
-    _buffer: &mut [u8],
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
     super::assembly_opt::decompress_chunk_optimized(
