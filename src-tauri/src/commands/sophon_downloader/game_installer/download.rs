@@ -168,19 +168,22 @@ fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
 }
 
 fn pread_hash_xxh64_digest(path: &Path) -> SophonResult<u64> {
-    use xxhash_rust::xxh64::Xxh64;
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let fd = file.as_raw_fd();
     let result = if len == 0 {
-        let mut hasher = Xxh64::new(0);
+        let mut hasher = super::assembly_opt::take_xxh64();
         hasher.update(b"");
-        Ok(hasher.digest())
+        let digest = hasher.digest();
+        super::assembly_opt::return_xxh64(hasher);
+        Ok(digest)
     } else {
-        let mmap = super::assembly_opt::mmap_read_only(&file)?;
-        let mut hasher = Xxh64::new(0);
+        let mmap = unsafe { super::assembly_opt::mmap_read_only_unchecked(&file, len as usize) }?;
+        let mut hasher = super::assembly_opt::take_xxh64();
         hasher.update(mmap.as_slice());
-        Ok(hasher.digest())
+        let digest = hasher.digest();
+        super::assembly_opt::return_xxh64(hasher);
+        Ok(digest)
     };
     posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
     result
