@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 use super::header::{DiffChunkInfo, DiffSingleChunkInfo, HeaderInfo};
@@ -9,14 +9,26 @@ pub(crate) struct HDiff {
     pub(crate) source_path: String,
     pub(crate) diff_path: String,
     pub(crate) dest_path: String,
+    pub(crate) diff_offset: u64,
 }
 
 impl HDiff {
+    #[cfg(test)]
     pub fn new(source_path: String, diff_path: String, dest_path: String) -> Self {
+        Self::with_offset(source_path, diff_path, dest_path, 0)
+    }
+
+    pub fn with_offset(
+        source_path: String,
+        diff_path: String,
+        dest_path: String,
+        diff_offset: u64,
+    ) -> Self {
         HDiff {
             source_path,
             diff_path,
             dest_path,
+            diff_offset,
         }
     }
 
@@ -51,6 +63,9 @@ impl HDiff {
         }
 
         let mut diff_file = File::open(&self.diff_path)?;
+        if self.diff_offset > 0 {
+            diff_file.seek(SeekFrom::Start(self.diff_offset))?;
+        }
         let mut header_info = HeaderInfo::default();
         let header_info_line = diff_file.read_string_to_null(512)?;
 

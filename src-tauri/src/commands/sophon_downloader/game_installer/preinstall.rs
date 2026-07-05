@@ -1736,40 +1736,9 @@ fn apply_copy_over(game_dir: &Path, chunks_dir: &Path, asset: &PatchAssetInfo) -
         chunk_file.read_exact(&mut magic_buf)?;
     }
     if magic_buf == HDIFF_MAGIC.as_ref() {
-        let safe_name = asset.patch_name.replace(['/', '\\', '\0'], "_");
-        let diff_temp = game_dir.join(format!("patching/{safe_name}.diff"));
-        {
-            if let Some(parent) = diff_temp.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let diff_file = fs::File::create(&diff_temp)?;
-            diff_file.set_len(asset.patch_chunk_length)?;
-            std::os::unix::fs::FileExt::write_all_at(&diff_file, HDIFF_MAGIC.as_ref(), 0)?;
-            let remaining = asset.patch_chunk_length - HDIFF_MAGIC.len() as u64;
-            let copied = super::sysio::copy_file_range(
-                chunk_fd,
-                asset.patch_offset + HDIFF_MAGIC.len() as u64,
-                diff_file.as_raw_fd(),
-                HDIFF_MAGIC.len() as u64,
-                remaining,
-            )?;
-            if copied != remaining {
-                let _ = fs::remove_file(&diff_temp);
-                return Err(SophonError::SizeMismatch {
-                    item: asset.target_file_path.clone(),
-                    expected: remaining,
-                    actual: copied,
-                });
-            }
-            posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
-        }
         let patch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            apply_hdiff_patch_from_files(game_dir, &diff_temp, asset)
+            apply_hdiff_patch_from_files(game_dir, &chunk_path, asset.patch_offset, asset)
         }));
-        if let Ok(f) = fs::File::open(&diff_temp) {
-            posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
-        }
-        let _ = fs::remove_file(&diff_temp);
         posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         match patch_result {
             Ok(result) => return result,
@@ -1949,40 +1918,10 @@ fn apply_hdiff_patch(
         ));
     }
 
-    let safe_patch_name = asset.patch_name.replace(['/', '\\', '\0'], "_");
     validate_patch_name(&asset.patch_name)?;
     let chunk_path = chunks_dir.join(&asset.patch_name);
     if !chunk_path.exists() {
         return Err(SophonError::PatchChunkNotFound(asset.patch_name.clone()));
-    }
-
-    let diff_temp = game_dir.join(format!("patching/{safe_patch_name}.diff"));
-    let _ = fs::remove_file(&diff_temp);
-    {
-        let chunk_file = fs::File::open(&chunk_path)?;
-        let chunk_fd = chunk_file.as_raw_fd();
-        posix_advise(chunk_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-
-        if let Some(parent) = diff_temp.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let diff_file = fs::File::create(&diff_temp)?;
-        diff_file.set_len(asset.patch_chunk_length)?;
-        let copied = super::sysio::copy_file_range(
-            chunk_fd,
-            asset.patch_offset,
-            diff_file.as_raw_fd(),
-            0,
-            asset.patch_chunk_length,
-        )?;
-        if copied != asset.patch_chunk_length {
-            let _ = fs::remove_file(&diff_temp);
-            return Err(SophonError::SizeMismatch {
-                item: asset.target_file_path.clone(),
-                expected: asset.patch_chunk_length,
-                actual: copied,
-            });
-        }
     }
 
     let target_path = validate_asset_path(game_dir, &asset.target_file_path)?;
@@ -1997,18 +1936,21 @@ fn apply_hdiff_patch(
 
     let effective_original = diff_ref_guard.0.as_deref().unwrap_or(&original_path);
     let op = effective_original.to_string_lossy().into_owned();
-    let dp = diff_temp.to_string_lossy().into_owned();
+    let dp = chunk_path.to_string_lossy().into_owned();
     let tp = temp_output.to_string_lossy().into_owned();
+    let diff_offset = asset.patch_offset;
 
     let patch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let mut hdiff = super::hdiffpatch::HDiff::new(op, dp, tp);
+        let mut hdiff = super::hdiffpatch::HDiff::with_offset(op, dp, tp, diff_offset);
         hdiff.apply(None)
     }));
 
-    if let Ok(f) = fs::File::open(&diff_temp) {
-        posix_advise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+    {
+        let chunk_fd = fs::File::open(&chunk_path).map(|f| f.as_raw_fd()).ok();
+        if let Some(fd) = chunk_fd {
+            posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+        }
     }
-    let _ = fs::remove_file(&diff_temp);
 
     match patch_result {
         Ok(true) => {
@@ -2061,6 +2003,7 @@ fn apply_hdiff_patch(
 fn apply_hdiff_patch_from_files(
     game_dir: &Path,
     diff_path: &Path,
+    diff_offset: u64,
     asset: &PatchAssetInfo,
 ) -> SophonResult<()> {
     let target_path = validate_asset_path(game_dir, &asset.target_file_path)?;
@@ -2097,7 +2040,7 @@ fn apply_hdiff_patch_from_files(
     let tp = temp_output.to_string_lossy().to_string();
 
     let patch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let mut hdiff = super::hdiffpatch::HDiff::new(op, dp, tp);
+        let mut hdiff = super::hdiffpatch::HDiff::with_offset(op, dp, tp, diff_offset);
         hdiff.apply(None)
     }));
 
@@ -3226,11 +3169,11 @@ mod tests {
         // Should fail because the HDiff data is invalid.
         assert!(result.is_err());
 
-        // diff_temp was cleaned up.
+        // No diff_temp file is created when patching directly from the chunk file.
         let diff_temp = dir.path().join("patching/patch_hdiff_fail.diff");
         assert!(
             !diff_temp.exists(),
-            "diff_temp file should have been cleaned up after apply_hdiff_patch_from_files fails"
+            "no diff_temp file should be created when patching from chunk file directly"
         );
     }
 
@@ -3443,7 +3386,7 @@ mod tests {
 
         // Invalid diff data will fail, but the blank diff_ref hash verification
         // should pass (not fail with hash mismatch) before reaching the hdiff step.
-        let result = apply_hdiff_patch_from_files(dir.path(), &diff_path, &asset);
+        let result = apply_hdiff_patch_from_files(dir.path(), &diff_path, 0, &asset);
 
         // Did not fail on the blank diff_ref hash verification step.
         if let Err(SophonError::HDiffPatchFailed { error, .. }) = &result {
