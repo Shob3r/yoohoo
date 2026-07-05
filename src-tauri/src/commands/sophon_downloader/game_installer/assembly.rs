@@ -848,35 +848,26 @@ pub fn run_assembly_task(
     let file_size = all_files.file_size(file_idx);
     let file_hash_md5 = all_files.file_hash_md5(file_idx);
     let target_path = game_dir.join(file_name);
-    let needs_assembly = if target_path.exists() {
-        let metadata = match target_path.metadata() {
-            Ok(m) => m,
-            Err(_) => {
-                return Err(SophonError::Io(std::io::Error::other(
-                    "failed to get file metadata",
-                )));
+    let needs_assembly = match target_path.metadata() {
+        Ok(metadata) if metadata.len() == file_size => {
+            if let Some(entry) = verify_cache.get(target_path.to_string_lossy().as_ref())
+                && entry.size == file_size
+                && entry.md5 == file_hash_md5
+            {
+                for ci in chunk_range.start..chunk_range.end {
+                    decrement_chunk_refcount(
+                        all_files.chunk(ci as usize).chunk_name,
+                        &chunk_names,
+                        &chunk_refcounts,
+                        &chunks_dir,
+                    );
+                }
+                false
+            } else {
+                true
             }
-        };
-        if metadata.len() != file_size {
-            true
-        } else if let Some(entry) = verify_cache.get(target_path.to_string_lossy().as_ref())
-            && entry.size == file_size
-            && entry.md5 == file_hash_md5
-        {
-            for ci in chunk_range.start..chunk_range.end {
-                decrement_chunk_refcount(
-                    all_files.chunk(ci as usize).chunk_name,
-                    &chunk_names,
-                    &chunk_refcounts,
-                    &chunks_dir,
-                );
-            }
-            false
-        } else {
-            true
         }
-    } else {
-        true
+        _ => true,
     };
 
     let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
