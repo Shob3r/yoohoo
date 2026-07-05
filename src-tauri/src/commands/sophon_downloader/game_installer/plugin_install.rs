@@ -95,7 +95,7 @@ async fn download_zip(
 
     let mut file = tokio::fs::File::create(dest).await?;
     let mut stream = resp.bytes_stream();
-    let mut hasher = super::assembly_opt::Md5::new()?;
+    let mut hasher = super::assembly_opt::take_md5()?;
     let mut downloaded: u64 = 0;
 
     let name = dest
@@ -141,6 +141,7 @@ async fn download_zip(
         });
     }
 
+    super::assembly_opt::return_md5(hasher);
     Ok(())
 }
 
