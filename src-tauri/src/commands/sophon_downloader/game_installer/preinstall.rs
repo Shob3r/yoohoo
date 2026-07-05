@@ -1144,8 +1144,8 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
         Ok(m) => m.len(),
         Err(_) => return false,
     };
+    let mut hasher = super::assembly_opt::take_xxh64();
     let result = if len == 0 {
-        let mut hasher = xxhash_rust::xxh64::Xxh64::new(0);
         hasher.update(b"");
         super::assembly_opt::xxh64_hex_eq(hasher.digest(), expected_xxh64)
     } else {
@@ -1153,11 +1153,11 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
             Ok(m) => m,
             Err(_) => return false,
         };
-        let mut hasher = xxhash_rust::xxh64::Xxh64::new(0);
         hasher.update(mmap.as_slice());
         super::assembly_opt::xxh64_hex_eq(hasher.digest(), expected_xxh64)
     };
     posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+    super::assembly_opt::return_xxh64(hasher);
     result
 }
 

@@ -327,7 +327,7 @@ async fn download_full_file_with_response(
     let mut hasher = take_md5()?;
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> =
         if chunk.chunk_compressed_hash_md5.len() == 16 {
-            Some(xxhash_rust::xxh64::Xxh64::new(0))
+            Some(super::assembly_opt::take_xxh64())
         } else {
             None
         };
@@ -450,6 +450,9 @@ async fn download_full_file_with_response(
     file.flush_and_evict_all().await.ok();
     drop(file);
     return_md5(hasher);
+    if let Some(h) = xxh64_hasher {
+        super::assembly_opt::return_xxh64(h);
+    }
     Ok(())
 }
 
@@ -487,7 +490,7 @@ async fn download_with_resume(
     let mut hasher = take_md5()?;
     let needs_xxh64 = chunk.chunk_compressed_hash_md5.len() == 16;
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> = if needs_xxh64 {
-        Some(xxhash_rust::xxh64::Xxh64::new(0))
+        Some(super::assembly_opt::take_xxh64())
     } else {
         None
     };
@@ -624,5 +627,8 @@ async fn download_with_resume(
     file.flush_and_evict_all().await.ok();
     drop(file);
     return_md5(hasher);
+    if let Some(h) = xxh64_hasher {
+        super::assembly_opt::return_xxh64(h);
+    }
     Ok(())
 }

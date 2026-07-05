@@ -66,6 +66,7 @@ impl Md5 {
 
 thread_local! {
     static MD5_POOL: RefCell<Option<Md5>> = const { RefCell::new(None) };
+    static XXH64_POOL: RefCell<Option<xxhash_rust::xxh64::Xxh64>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn take_md5() -> SophonResult<Md5> {
@@ -74,6 +75,16 @@ pub(crate) fn take_md5() -> SophonResult<Md5> {
 
 pub(crate) fn return_md5(md5: Md5) {
     MD5_POOL.with(|cell| cell.borrow_mut().replace(md5));
+}
+
+pub(crate) fn take_xxh64() -> xxhash_rust::xxh64::Xxh64 {
+    XXH64_POOL
+        .with(|cell| cell.borrow_mut().take())
+        .unwrap_or_else(|| xxhash_rust::xxh64::Xxh64::new(0))
+}
+
+pub(crate) fn return_xxh64(hasher: xxhash_rust::xxh64::Xxh64) {
+    XXH64_POOL.with(|cell| cell.borrow_mut().replace(hasher));
 }
 
 /// Compare an MD5 digest against an expected lowercase hex string without
