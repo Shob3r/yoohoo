@@ -290,15 +290,81 @@ pub fn assemble_file(
     }
 
     let parallel_hashed_file = parallelize && has_file_hash && !all_chunks_have_hashes;
+    let hasher_result: Mutex<Option<SophonResult<[u8; 16]>>> = Mutex::new(None);
 
     if parallelize {
-        let total_written_atomic = std::sync::atomic::AtomicU64::new(0);
-        let first_error = std::sync::Mutex::new(None);
-        let processed_chunks: std::sync::Mutex<Vec<&str>> =
-            std::sync::Mutex::new(Vec::with_capacity(total_chunks));
+        let total_written_atomic = AtomicU64::new(0);
+        let first_error = Mutex::new(None);
+        let processed_chunks: Mutex<Vec<&str>> = Mutex::new(Vec::with_capacity(total_chunks));
         let raw_fd = out_file.as_raw_fd();
 
+        let chunk_done: Vec<AtomicBool> =
+            (0..total_chunks).map(|_| AtomicBool::new(false)).collect();
+        let chunk_infos: Vec<(u64, u64)> = (chunk_range.start..chunk_range.end)
+            .map(|ci| {
+                let chunk = all_files.chunk(ci as usize);
+                (chunk.chunk_on_file_offset, chunk.chunk_size_decompressed)
+            })
+            .collect();
+
         std::thread::scope(|s| {
+            if parallel_hashed_file {
+                let tmp_path = &tmp_path;
+                let chunk_done = &chunk_done;
+                let chunk_infos = &chunk_infos;
+                let err = &first_error;
+                let hasher_result = &hasher_result;
+                s.spawn(move || {
+                    let file = match File::open(tmp_path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                            return;
+                        }
+                    };
+                    let mmap = match super::assembly_opt::mmap_read_only(&file) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                            return;
+                        }
+                    };
+                    let data = mmap.as_slice();
+                    let mut hasher = match super::assembly_opt::Md5::new() {
+                        Ok(h) => h,
+                        Err(e) => {
+                            *hasher_result.lock().unwrap() = Some(Err(e));
+                            return;
+                        }
+                    };
+                    for (i, &(offset, size)) in chunk_infos.iter().enumerate() {
+                        loop {
+                            if err.lock().unwrap().is_some() {
+                                return;
+                            }
+                            if chunk_done[i].load(Ordering::Acquire) {
+                                break;
+                            }
+                            std::hint::spin_loop();
+                        }
+                        let start = offset as usize;
+                        let end = start + size as usize;
+                        if let Err(e) = hasher.update(&data[start..end]) {
+                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                            return;
+                        }
+                    }
+                    match hasher.finish() {
+                        Ok(digest) => {
+                            *hasher_result.lock().unwrap() = Some(Ok(digest));
+                        }
+                        Err(e) => {
+                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                        }
+                    }
+                });
+            }
+
             for worker in 0..num_workers {
                 let indices: Vec<u32> = (chunk_range.start..chunk_range.end)
                     .enumerate()
@@ -316,6 +382,7 @@ pub fn assemble_file(
                 let files = all_files;
                 let cdir = chunks_dir;
                 let skip_evict = parallel_hashed_file;
+                let chunk_done = &chunk_done;
                 s.spawn(move || {
                     let mut transfer_buf = TRANSFER_BUF.with(|cell| {
                         let mut buf = cell.take();
@@ -359,7 +426,7 @@ pub fn assemble_file(
                         };
                         match result {
                             Ok(bytes) => {
-                                tw.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+                                tw.fetch_add(bytes, Ordering::Relaxed);
                                 if chunk.chunk_old_offset < 0 {
                                     proc.lock().unwrap().push(chunk.chunk_name);
                                 }
@@ -370,6 +437,8 @@ pub fn assemble_file(
                                         chunk.chunk_size_decompressed,
                                     );
                                 }
+                                let idx = (ci - chunk_range.start) as usize;
+                                chunk_done[idx].store(true, Ordering::Release);
                             }
                             Err(e) => {
                                 let mut guard = err.lock().unwrap();
@@ -453,22 +522,29 @@ pub fn assemble_file(
     })?;
 
     if parallel_hashed_file {
-        match super::cache::file_md5_digest(&tmp_path) {
-            Ok(digest) => {
-                if !md5_hex_eq(&digest, file_hash_md5) {
-                    let _ = fs::remove_file(&tmp_path);
-                    return Err(SophonError::Md5Mismatch {
-                        item: file_name.to_string(),
-                        expected: file_hash_md5.to_string(),
-                        actual: md5_to_hex(&digest),
-                    });
-                }
-            }
-            Err(err) => {
+        let result = hasher_result.into_inner().unwrap();
+        match result {
+            Some(Ok(ref digest)) if !md5_hex_eq(digest, file_hash_md5) => {
                 let _ = fs::remove_file(&tmp_path);
-                return Err(SophonError::Io(err));
+                return Err(SophonError::Md5Mismatch {
+                    item: file_name.to_string(),
+                    expected: file_hash_md5.to_string(),
+                    actual: md5_to_hex(digest),
+                });
             }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(e);
+            }
+            None => {}
         }
+        super::assembly_opt::posix_advise(
+            out_file.as_raw_fd(),
+            0,
+            file_size,
+            libc::POSIX_FADV_DONTNEED,
+        );
         drop(out_file);
     } else {
         super::assembly_opt::posix_advise(
