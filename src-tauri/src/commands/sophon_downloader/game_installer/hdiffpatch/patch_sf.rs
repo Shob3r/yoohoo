@@ -59,28 +59,23 @@ impl PatchSF {
         }
         let cover_count = self.header_info.chunk_info.cover_count as u64;
         let new_data_size = self.header_info.new_data_size as u64;
-        let step_mem_size = (self.header_info.step_mem_size as usize).min(MAX_STEP_SIZE);
-        let total_size = step_mem_size + IO_BUF_SIZE;
-        // Safety: both halves are fully written via read_exact before any byte
-        // is read (fill-before-read invariant).
-        #[allow(clippy::uninit_vec)]
-        let mut work_buf = WORK_BUF_POOL.take(total_size);
-        if work_buf.capacity() < total_size {
-            work_buf = Vec::with_capacity(total_size);
+        let mut io_buf = WORK_BUF_POOL.take(IO_BUF_SIZE);
+        if io_buf.capacity() < IO_BUF_SIZE {
+            io_buf = Vec::with_capacity(IO_BUF_SIZE);
         }
-        unsafe { work_buf.set_len(total_size) };
-        let (step_buf, io_buf) = work_buf.split_at_mut(step_mem_size);
+        unsafe { io_buf.set_len(IO_BUF_SIZE) };
+        let mut step_buf: Vec<u8> = Vec::new();
         let result = patch_loop(
             &mut diff,
             input_stream,
             output_stream,
             cover_count,
             new_data_size,
-            step_buf,
-            io_buf,
+            &mut step_buf,
+            &mut io_buf,
             on_progress,
         );
-        WORK_BUF_POOL.return_buf(work_buf);
+        WORK_BUF_POOL.return_buf(io_buf);
         result
     }
 }
@@ -92,7 +87,7 @@ fn patch_loop(
     out: &mut dyn Write,
     mut cover_count: u64,
     new_data_size: u64,
-    step_buf: &mut [u8],
+    step_buf: &mut Vec<u8>,
     io_buf: &mut [u8],
     on_progress: Option<&dyn Fn(u64)>,
 ) -> std::io::Result<()> {
@@ -117,11 +112,10 @@ fn patch_loop(
                 "patch step size exceeds maximum allowed",
             ));
         }
-        if step_end > step_buf.len() {
-            return Err(std::io::Error::other(
-                "patch step size exceeds allocated buffer capacity",
-            ));
+        if step_buf.capacity() < step_end {
+            step_buf.reserve_exact(step_end - step_buf.capacity());
         }
+        unsafe { step_buf.set_len(step_end) };
         diff.read_exact(&mut step_buf[..step_end])?;
 
         let (covers_slice, rle_slice) = step_buf[..step_end].split_at(buf_cover_size);
@@ -729,55 +723,6 @@ mod tests {
         let result = patcher.patch(&mut input, &mut output, patch_path.to_str().unwrap(), None);
         // Should fail because diff data is too short to read both varints
         assert!(result.is_err(), "should fail with insufficient diff data");
-    }
-
-    /// When step_end exceeds the allocated step_buf capacity (but is still
-    /// below MAX_STEP_SIZE), the buffer capacity check should fire.
-    #[test]
-    fn patch_sf_step_end_exceeds_buffer_capacity() {
-        let dir = tempfile::tempdir().unwrap();
-        let patch_path = dir.path().join("patch.hdiff");
-
-        // buf_cover_size = 200, buf_rle_size = 0
-        // step_end = 200 < MAX_STEP_SIZE (16MB)
-        // But step_mem_size = 100, so step_buf.len() = 100
-        // 200 > 100 -> should trigger "exceeds allocated buffer capacity"
-        // 200 varint: 200 = 128 + 72 = (1 << 7) | 72
-        // Encoding: 0x81 (0x80 | 1, continuation), 0x48 (72, no continuation)
-        let diff_data: Vec<u8> = vec![
-            0x81, 0x48, // buf_cover_size = 200
-            0x00, // buf_rle_size = 0
-        ];
-        std::fs::write(&patch_path, &diff_data).unwrap();
-
-        let header = HeaderInfo {
-            single_chunk_info: DiffSingleChunkInfo {
-                diff_data_pos: 0,
-                uncompressed_size: diff_data.len() as i64,
-                compressed_size: 0,
-            },
-            comp_mode: CompressionMode::Nocomp,
-            chunk_info: DiffChunkInfo {
-                cover_count: 1,
-                ..Default::default()
-            },
-            new_data_size: 0,
-            step_mem_size: 100, // small buffer; step_end=200 > 100
-            ..Default::default()
-        };
-        let patcher = PatchSF::new(header);
-        let mut input = Cursor::new(Vec::new());
-        let mut output = Cursor::new(Vec::new());
-        let result = patcher.patch(&mut input, &mut output, patch_path.to_str().unwrap(), None);
-        assert!(
-            result.is_err(),
-            "should fail when step_end > step_buf capacity"
-        );
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("exceeds allocated"),
-            "error should mention buffer capacity, got: {msg}"
-        );
     }
 
     /// When step_end exceeds both MAX_STEP_SIZE and step_buf capacity, the
