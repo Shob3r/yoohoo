@@ -1910,7 +1910,7 @@ mod tests {
             .unwrap();
         output_file.set_len(100).unwrap();
 
-        let mut transfer_buf = vec![0u8; 1024];
+        let _transfer_buf: Vec<u8> = vec![0u8; 1024];
         let old_result = File::open(&old_file_path);
         assert!(old_result.is_err(), "old file should not exist");
     }
