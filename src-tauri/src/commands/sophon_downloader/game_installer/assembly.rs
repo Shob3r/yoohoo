@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom};
+
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd as _;
 use std::path::Path;
@@ -576,8 +576,13 @@ fn write_from_old_file(
         )
     } else {
         let f = File::open(old_file_path).map_err(SophonError::Io)?;
-        let mut reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
-        reader.seek(SeekFrom::Start(old_offset))?;
+        let fd = f.as_raw_fd();
+        super::assembly_opt::posix_advise(
+            fd,
+            old_offset,
+            expected_size,
+            libc::POSIX_FADV_SEQUENTIAL,
+        );
 
         let mut write_offset = new_offset;
         let mut bytes_written: u64 = 0;
@@ -588,21 +593,30 @@ fn write_from_old_file(
             None
         };
         let mut remaining = expected_size;
+        let mut read_offset = old_offset;
 
         while remaining > 0 {
             let to_read = remaining.min(buffer.len() as u64) as usize;
-            reader.read_exact(&mut buffer[..to_read])?;
+            let n = f
+                .read_at(&mut buffer[..to_read], read_offset)
+                .map_err(SophonError::Io)?;
+            if n == 0 {
+                break;
+            }
             if let Some(ref mut ch) = chunk_hasher {
-                ch.update(&buffer[..to_read])?;
+                ch.update(&buffer[..n])?;
             }
             if let Some(hasher) = file_hasher.as_deref_mut() {
-                hasher.update(&buffer[..to_read])?;
+                hasher.update(&buffer[..n])?;
             }
-            out_file.write_all_at(&buffer[..to_read], write_offset)?;
-            write_offset += to_read as u64;
-            bytes_written += to_read as u64;
-            remaining = remaining.saturating_sub(to_read as u64);
+            out_file.write_all_at(&buffer[..n], write_offset)?;
+            write_offset += n as u64;
+            read_offset += n as u64;
+            bytes_written += n as u64;
+            remaining = remaining.saturating_sub(n as u64);
         }
+
+        super::assembly_opt::posix_advise(fd, old_offset, expected_size, libc::POSIX_FADV_DONTNEED);
 
         if bytes_written != expected_size {
             return Err(SophonError::SizeMismatch {
