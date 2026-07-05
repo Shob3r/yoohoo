@@ -6,19 +6,6 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-thread_local! {
-    /// Reusable per-thread verification buffer. Avoids allocating 256 KiB per call.
-    static VERIFY_BUFFER: std::cell::RefCell<Vec<u8>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn borrow_verify_buffer<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut Vec<u8>) -> R,
-{
-    VERIFY_BUFFER.with(|cell| f(&mut cell.borrow_mut()))
-}
-
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -1115,48 +1102,46 @@ async fn download_patch_chunk_inner(
 }
 
 pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
-    let Ok(mut file) = fs::File::open(path) else {
+    let Ok(file) = fs::File::open(path) else {
         return false;
     };
     let fd = file.as_raw_fd();
-    posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
+    let len = match file.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return false,
+    };
+    if len == 0 {
+        let mut hasher = match super::assembly_opt::Md5::new() {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let _ = hasher.update(b"");
+        return match hasher.finish() {
+            Ok(digest) => md5_hex_eq(&digest, expected_md5),
+            Err(_) => false,
+        };
+    }
+    let mmap = match super::assembly_opt::mmap_read_only(&file) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
     let mut hasher = match super::assembly_opt::Md5::new() {
         Ok(h) => h,
         Err(_) => return false,
     };
-    let result = borrow_verify_buffer(|buf| {
-        if buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
-            *buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
-        }
-        unsafe { buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
-        loop {
-            match file.read(buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if hasher.update(&buf[..n]).is_err() {
-                        return false;
-                    }
-                }
-                Err(err) => {
-                    log::warn!(
-                        "Failed to read file for MD5 verification: {path_display}: {err}",
-                        path_display = path.display(),
-                    );
-                    return false;
-                }
-            }
-        }
-        match hasher.finish() {
+    let result = match hasher.update(mmap.as_slice()) {
+        Ok(_) => match hasher.finish() {
             Ok(digest) => md5_hex_eq(&digest, expected_md5),
             Err(_) => false,
-        }
-    });
+        },
+        Err(_) => false,
+    };
     posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
     result
 }
 
 pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
-    let Ok(mut file) = fs::File::open(path) else {
+    let Ok(file) = fs::File::open(path) else {
         log::warn!(
             "Failed to open file for XXH64 verification: {path_display}",
             path_display = path.display()
@@ -1164,31 +1149,23 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
         return false;
     };
     let fd = file.as_raw_fd();
-    posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-    let mut hasher = xxhash_rust::xxh64::Xxh64::new(0);
-    let result = borrow_verify_buffer(|buf| {
-        if buf.capacity() < super::FILE_WRITE_BUFFER_SIZE {
-            *buf = Vec::with_capacity(super::FILE_WRITE_BUFFER_SIZE);
-        }
-        unsafe { buf.set_len(super::FILE_WRITE_BUFFER_SIZE) };
-        loop {
-            match file.read(buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    hasher.update(&buf[..n]);
-                }
-                Err(err) => {
-                    log::warn!(
-                        "Failed to read file for XXH64 verification: {path_display}: {err}",
-                        path_display = path.display(),
-                    );
-                    return false;
-                }
-            }
-        }
-        let digest = hasher.digest();
-        super::assembly_opt::xxh64_hex_eq(digest, expected_xxh64)
-    });
+    let len = match file.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return false,
+    };
+    let result = if len == 0 {
+        let mut hasher = xxhash_rust::xxh64::Xxh64::new(0);
+        hasher.update(b"");
+        super::assembly_opt::xxh64_hex_eq(hasher.digest(), expected_xxh64)
+    } else {
+        let mmap = match super::assembly_opt::mmap_read_only(&file) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        let mut hasher = xxhash_rust::xxh64::Xxh64::new(0);
+        hasher.update(mmap.as_slice());
+        super::assembly_opt::xxh64_hex_eq(hasher.digest(), expected_xxh64)
+    };
     posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
     result
 }
