@@ -1099,33 +1099,34 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
         Ok(m) => m.len(),
         Err(_) => return false,
     };
-    if len == 0 {
-        let mut hasher = match super::assembly_opt::Md5::new() {
-            Ok(h) => h,
-            Err(_) => return false,
-        };
-        let _ = hasher.update(b"");
-        return match hasher.finish() {
-            Ok(digest) => md5_hex_eq(&digest, expected_md5),
-            Err(_) => false,
-        };
-    }
-    let mmap = match super::assembly_opt::mmap_read_only(&file) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    let mut hasher = match super::assembly_opt::Md5::new() {
+    let mut hasher = match super::assembly_opt::take_md5() {
         Ok(h) => h,
         Err(_) => return false,
     };
-    let result = match hasher.update(mmap.as_slice()) {
-        Ok(_) => match hasher.finish() {
+    let hashed = if len == 0 {
+        let _ = hasher.update(b"");
+        true
+    } else {
+        let mmap = match super::assembly_opt::mmap_read_only(&file) {
+            Ok(m) => m,
+            Err(_) => {
+                super::assembly_opt::return_md5(hasher);
+                return false;
+            }
+        };
+        let ok = hasher.update(mmap.as_slice()).is_ok();
+        posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+        ok
+    };
+    let result = if hashed {
+        match hasher.finish() {
             Ok(digest) => md5_hex_eq(&digest, expected_md5),
             Err(_) => false,
-        },
-        Err(_) => false,
+        }
+    } else {
+        false
     };
-    posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+    super::assembly_opt::return_md5(hasher);
     result
 }
 
