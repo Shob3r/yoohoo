@@ -995,7 +995,7 @@ fn spawn_assembly_coordinator(
 async fn check_needs_download(
     dest: &Path,
     chunk: ChunkRef<'_>,
-    game_dir: &Path,
+    game_dir: &Arc<PathBuf>,
     verify_cache: &Arc<DashMap<String, VerificationEntry>>,
 ) -> SophonResult<bool> {
     if tokio::fs::metadata(dest).await.is_err() {
@@ -1006,7 +1006,7 @@ async fn check_needs_download(
     let expected_md5 = chunk.chunk_compressed_hash_md5.to_string();
     let cache = Arc::clone(verify_cache);
     let dest = dest.to_path_buf();
-    let gd = game_dir.to_path_buf();
+    let gd = Arc::clone(game_dir);
 
     let valid = tokio::task::spawn_blocking(move || {
         cache::check_file_md5_cached(&dest, chunk_size, &expected_md5, &gd, &cache).unwrap_or(false)
@@ -1593,7 +1593,9 @@ pub async fn install(
     game_code: &str,
     vo_langs: &[String],
 ) -> SophonResult<()> {
-    let chunks_dir = Arc::new(game_dir.join("chunks"));
+    let game_dir_arc: Arc<PathBuf> = Arc::new(game_dir.to_path_buf());
+    let chunks_dir = Arc::new(game_dir_arc.join("chunks"));
+    let game_dir = game_dir_arc.as_path();
     prepare_directories(game_dir, &chunks_dir).await?;
 
     // Create directories before `build_installer_data` filters them out,
@@ -1762,7 +1764,7 @@ pub async fn install(
             let all_files = Arc::clone(&all_files);
             let permit = Arc::clone(&semaphore);
             let verify_cache = Arc::clone(&verify_cache);
-            let game_dir = game_dir.to_path_buf();
+            let game_dir = Arc::clone(&game_dir_arc);
             let checked_files = Arc::clone(&checked_files);
             let resume_bytes_offset_arc = Arc::clone(&resume_bytes_offset_arc);
             let pre_assembled_arc = Arc::clone(&pre_assembled_arc);
@@ -1977,7 +1979,7 @@ pub async fn install(
         installer_clients,
         installer_downloads,
         chunks_dir: Arc::clone(&chunks_dir),
-        game_dir: Arc::new(game_dir.to_path_buf()),
+        game_dir: Arc::clone(&game_dir_arc),
         all_tmp_dirs: Arc::clone(&all_tmp_dirs),
         all_files: Arc::clone(&all_files),
         downloaded_bytes: Arc::new(AtomicU64::new(0)),
@@ -2981,9 +2983,14 @@ mod tests {
         let chunk = make_chunk("c1", 100);
         let cache = Arc::new(DashMap::new());
 
-        let needs = check_needs_download(&dest, (&chunk).into(), dir.path(), &cache)
-            .await
-            .unwrap();
+        let needs = check_needs_download(
+            &dest,
+            (&chunk).into(),
+            &Arc::new(dir.path().to_path_buf()),
+            &cache,
+        )
+        .await
+        .unwrap();
         assert!(needs);
     }
 
@@ -3026,9 +3033,14 @@ mod tests {
         let mut chunk = make_chunk("c1", data.len() as u64);
         chunk.chunk_compressed_hash_md5 = md5_hex;
 
-        let needs = check_needs_download(&file_path, (&chunk).into(), dir.path(), &cache)
-            .await
-            .unwrap();
+        let needs = check_needs_download(
+            &file_path,
+            (&chunk).into(),
+            &Arc::new(dir.path().to_path_buf()),
+            &cache,
+        )
+        .await
+        .unwrap();
         assert!(!needs);
     }
 
