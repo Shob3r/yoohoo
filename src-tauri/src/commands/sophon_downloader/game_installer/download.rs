@@ -52,7 +52,7 @@ impl EvictingWriter {
         if since >= EVICT_INTERVAL {
             self.flush().await?;
             let fd = self.inner.get_ref().as_raw_fd();
-            posix_advise(fd, 0, self.written, libc::POSIX_FADV_DONTNEED);
+            posix_advise(fd, self.last_evict, since, libc::POSIX_FADV_DONTNEED);
             self.last_evict = self.written;
         }
         Ok(())
@@ -111,8 +111,11 @@ thread_local! {
 }
 
 fn ensure_hash_buf(buf: &mut Vec<u8>) {
+    if buf.capacity() < HASH_BUF_SIZE {
+        buf.reserve(HASH_BUF_SIZE - buf.capacity());
+    }
     if buf.len() < HASH_BUF_SIZE {
-        buf.resize(HASH_BUF_SIZE, 0);
+        unsafe { buf.set_len(HASH_BUF_SIZE) };
     }
 }
 

@@ -225,8 +225,12 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
 
     let result = CACHE_HASH_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
+        if buf.capacity() < CACHE_HASH_BUF_SIZE {
+            let need = CACHE_HASH_BUF_SIZE - buf.capacity();
+            buf.reserve(need);
+        }
         if buf.len() < CACHE_HASH_BUF_SIZE {
-            buf.resize(CACHE_HASH_BUF_SIZE, 0);
+            unsafe { buf.set_len(CACHE_HASH_BUF_SIZE) };
         }
         let mut offset = 0u64;
         loop {
