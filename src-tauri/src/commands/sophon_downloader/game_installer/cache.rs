@@ -4,7 +4,6 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 
 use dashmap::DashMap;
@@ -193,16 +192,6 @@ pub fn check_file_md5_with_cache_key(
     Ok(matches)
 }
 
-/// Read buffer for hash verification on cached files. Lazily allocated to
-/// avoid a large TLS footprint across all worker threads. Benchmarked at
-/// 633 MiB/s on a 50 MiB file with 256 KiB; drops to 589 MiB/s at 128 KiB
-/// (the extra pread syscalls cost more than the saved TLS bytes).
-const CACHE_HASH_BUF_SIZE: usize = 256 * 1024;
-
-thread_local! {
-    static CACHE_HASH_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
 pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let file = File::open(path)?;
     let len = file.metadata()?.len();
@@ -213,49 +202,14 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
         ]);
     }
 
-    #[cfg(unix)]
-    let fd = file.as_raw_fd();
-    #[cfg(unix)]
-    unsafe {
-        libc::posix_fadvise(fd, 0, len as libc::off_t, libc::POSIX_FADV_SEQUENTIAL);
-    }
+    let mmap = super::assembly_opt::mmap_read_only(&file)?;
+    let data = mmap.as_slice();
 
     let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::md5())
         .map_err(|e| io::Error::other(e.to_string()))?;
-
-    let result = CACHE_HASH_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        if buf.capacity() < CACHE_HASH_BUF_SIZE {
-            let need = CACHE_HASH_BUF_SIZE - buf.capacity();
-            buf.reserve(need);
-        }
-        if buf.len() < CACHE_HASH_BUF_SIZE {
-            unsafe { buf.set_len(CACHE_HASH_BUF_SIZE) };
-        }
-        let mut offset = 0u64;
-        loop {
-            let to_read = (len - offset).min(buf.len() as u64) as usize;
-            if to_read == 0 {
-                break;
-            }
-            let n = file.read_at(&mut buf[..to_read], offset)?;
-            if n == 0 {
-                break;
-            }
-            hasher
-                .update(&buf[..n])
-                .map_err(|e| io::Error::other(e.to_string()))?;
-            offset += n as u64;
-        }
-        Ok::<_, io::Error>(())
-    });
-
-    #[cfg(unix)]
-    unsafe {
-        libc::posix_fadvise(fd, 0, len as libc::off_t, libc::POSIX_FADV_DONTNEED);
-    }
-
-    result?;
+    hasher
+        .update(data)
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let hash = hasher
         .finish()
@@ -263,6 +217,17 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let mut out = [0u8; 16];
     let n = hash.len().min(16);
     out[..n].copy_from_slice(&hash[..n]);
+
+    #[cfg(unix)]
+    unsafe {
+        libc::posix_fadvise(
+            file.as_raw_fd(),
+            0,
+            len as libc::off_t,
+            libc::POSIX_FADV_DONTNEED,
+        );
+    }
+
     Ok(out)
 }
 

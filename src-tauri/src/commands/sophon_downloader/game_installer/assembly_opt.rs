@@ -166,13 +166,13 @@ pub(crate) fn return_dctx(ctx: zstd::zstd_safe::DCtx<'static>) {
     ZSTD_DCTX.with(|cell| cell.borrow_mut().replace(ctx));
 }
 
-struct MmapGuard {
+pub(crate) struct MmapGuard {
     ptr: *mut libc::c_void,
     len: usize,
 }
 
 impl MmapGuard {
-    fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
     }
 }
@@ -185,7 +185,7 @@ impl Drop for MmapGuard {
     }
 }
 
-fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
+pub(crate) fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
     let len = file.metadata()?.len() as usize;
     if len == 0 {
         return Err(io::Error::other("empty file"));
