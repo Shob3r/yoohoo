@@ -255,7 +255,8 @@ pub async fn download_chunk(
         return Err(SophonError::PathTraversal(chunk.chunk_name.into()));
     }
 
-    let url = chunk_download.url_for(chunk.chunk_name);
+    let mut url = String::new();
+    chunk_download.url_for_into(chunk.chunk_name, &mut url);
     do_download_chunk(client, &url, chunk, dest, existing_size, handle).await
 }
 

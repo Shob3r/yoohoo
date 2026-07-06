@@ -200,6 +200,19 @@ impl DownloadInfo {
         }
     }
 
+    pub fn url_for_into(&self, item_name: &str, buf: &mut String) {
+        buf.clear();
+        let prefix = self.url_prefix.trim_end_matches('/');
+        let suffix = self.url_suffix.trim_matches('/');
+        buf.push_str(prefix);
+        buf.push('/');
+        if !suffix.is_empty() {
+            buf.push_str(suffix);
+            buf.push('/');
+        }
+        buf.push_str(item_name);
+    }
+
     pub fn is_compressed(&self) -> bool {
         matches!(self.compression, Compression::Zstd)
     }
