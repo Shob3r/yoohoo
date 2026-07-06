@@ -459,16 +459,21 @@ async fn build_diff_installers(
 
                 let old_manifest = old_result.manifest;
                 let gd = game_dir.to_path_buf();
-                let (old_manifest, corrupted_names) = tokio::task::spawn_blocking(move || {
-                    let mut bad: Vec<String> = Vec::new();
-                    for f in old_manifest.assets.iter().filter(|f| !f.is_directory()) {
+                let (old_manifest, corrupted_indices) = tokio::task::spawn_blocking(move || {
+                    let mut bad: Vec<usize> = Vec::new();
+                    for (i, f) in old_manifest
+                        .assets
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, f)| !f.is_directory())
+                    {
                         let path = gd.join(&f.asset_name);
                         let corrupted = match std::fs::metadata(&path) {
                             Ok(meta) => meta.len() != f.asset_size,
                             Err(_) => true,
                         };
                         if corrupted {
-                            bad.push(f.asset_name.clone());
+                            bad.push(i);
                         }
                     }
                     (old_manifest, bad)
@@ -479,16 +484,18 @@ async fn build_diff_installers(
                 let (mut old_chunk_offsets, name_to_id, hash_to_id) =
                     intern_old_chunk_offsets(&old_manifest);
 
-                if !corrupted_names.is_empty() {
+                if !corrupted_indices.is_empty() {
                     log::warn!(
                         "Excluding {count} corrupted old files from chunk reuse (wrong size on disk)",
-                        count = corrupted_names.len()
+                        count = corrupted_indices.len()
                     );
+                    let corrupted_names_set: HashSet<&str> = corrupted_indices
+                        .iter()
+                        .map(|&i| old_manifest.assets[i].asset_name.as_str())
+                        .collect();
                     let mut corrupted_name_ids = HashSet::new();
-                    let corrupted_names_set: HashSet<&str> =
-                        corrupted_names.iter().map(|s| s.as_str()).collect();
-                    for name in &corrupted_names {
-                        if let Some(id) = name_to_id.get(name.as_str()) {
+                    for name in &corrupted_names_set {
+                        if let Some(id) = name_to_id.get(name) {
                             corrupted_name_ids.insert(*id);
                         }
                     }
