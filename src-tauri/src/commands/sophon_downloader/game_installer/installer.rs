@@ -994,19 +994,27 @@ fn spawn_assembly_coordinator(
 
 async fn check_needs_download(
     dest: &Path,
-    chunk: ChunkRef<'_>,
-    game_dir: &Arc<PathBuf>,
-    verify_cache: &Arc<DashMap<String, VerificationEntry>>,
+    all_files: Arc<CompactManifest>,
+    file_idx: usize,
+    chunk_idx: usize,
+    game_dir: Arc<PathBuf>,
+    verify_cache: Arc<DashMap<String, VerificationEntry>>,
 ) -> SophonResult<(bool, Option<u64>)> {
-    let chunk_size = chunk.chunk_size;
-    let expected_md5: Arc<str> = Arc::from(chunk.chunk_compressed_hash_md5);
-    let cache = Arc::clone(verify_cache);
-    let dest: Arc<Path> = Arc::from(dest);
-    let gd = Arc::clone(game_dir);
+    let chunk_size = all_files.file_chunk(file_idx, chunk_idx).chunk_size;
+    let dest = dest.to_path_buf();
 
     let result = tokio::task::spawn_blocking(move || {
-        cache::check_file_md5_cached_with_size(&dest, chunk_size, &expected_md5, &gd, &cache)
-            .unwrap_or((false, None))
+        let expected_md5 = all_files
+            .file_chunk(file_idx, chunk_idx)
+            .chunk_compressed_hash_md5;
+        cache::check_file_md5_cached_with_size(
+            &dest,
+            chunk_size,
+            expected_md5,
+            &game_dir,
+            &verify_cache,
+        )
+        .unwrap_or((false, None))
     })
     .await?;
 
@@ -1152,7 +1160,15 @@ async fn process_download_item(
     };
 
     let needs_download = if item.is_pre_downloaded {
-        let result = check_needs_download(&dest, chunk, &ctx.game_dir, &ctx.verify_cache).await?;
+        let result = check_needs_download(
+            &dest,
+            Arc::clone(&ctx.all_files),
+            item.file_idx,
+            item.chunk_idx,
+            Arc::clone(&ctx.game_dir),
+            Arc::clone(&ctx.verify_cache),
+        )
+        .await?;
         _chunk_timer.record_phase(super::profiling::ChunkPhase::Verify);
         result
     } else {
@@ -2992,11 +3008,19 @@ mod tests {
         let chunk = make_chunk("c1", 100);
         let cache = Arc::new(DashMap::new());
 
+        let all_files = Arc::new(CompactManifest::from(vec![make_file(
+            "f1",
+            "",
+            vec![chunk],
+        )]));
+
         let needs = check_needs_download(
             &dest,
-            (&chunk).into(),
-            &Arc::new(dir.path().to_path_buf()),
-            &cache,
+            all_files,
+            0,
+            0,
+            Arc::new(dir.path().to_path_buf()),
+            cache,
         )
         .await
         .unwrap();
@@ -3042,11 +3066,19 @@ mod tests {
         let mut chunk = make_chunk("c1", data.len() as u64);
         chunk.chunk_compressed_hash_md5 = md5_hex;
 
+        let all_files = Arc::new(CompactManifest::from(vec![make_file(
+            "f1",
+            "",
+            vec![chunk],
+        )]));
+
         let needs = check_needs_download(
             &file_path,
-            (&chunk).into(),
-            &Arc::new(dir.path().to_path_buf()),
-            &cache,
+            all_files,
+            0,
+            0,
+            Arc::new(dir.path().to_path_buf()),
+            cache,
         )
         .await
         .unwrap();
