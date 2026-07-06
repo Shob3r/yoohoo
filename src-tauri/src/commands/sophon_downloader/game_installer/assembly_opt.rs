@@ -183,6 +183,13 @@ impl MmapGuard {
     pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
     }
+
+    pub(crate) fn flush_and_evict(&mut self) {
+        unsafe {
+            libc::msync(self.map_base, self.map_len, libc::MS_ASYNC);
+            libc::madvise(self.map_base, self.map_len, libc::MADV_DONTNEED);
+        }
+    }
 }
 
 impl Drop for MmapGuard {
@@ -323,6 +330,7 @@ fn decompress_chunk_oneshot(
         Ok(expected_size)
     })();
 
+    out_mmap.flush_and_evict();
     drop(out_mmap);
     result
 }
@@ -452,10 +460,12 @@ pub fn write_chunk_from_mmap(
         libc::POSIX_FADV_DONTNEED,
     );
 
+    let bytes_written = (expected_size_u - remaining) as u64;
+    sync_and_evict_range(out_file.as_raw_fd(), new_offset, bytes_written);
+
     buf.clear();
     OPT_BUFFER.with(|cell| cell.replace(buf));
 
-    let bytes_written = (expected_size_u - remaining) as u64;
     if bytes_written != expected_size {
         return Err(SophonError::SizeMismatch {
             item: old_file_path.display().to_string(),
@@ -625,6 +635,7 @@ fn decompress_chunk_with_window(
     };
 
     posix_advise(compressed_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+    sync_and_evict_range(out_file.as_raw_fd(), offset, bytes_written);
 
     if bytes_written != expected_size {
         return Err(SophonError::SizeMismatch {

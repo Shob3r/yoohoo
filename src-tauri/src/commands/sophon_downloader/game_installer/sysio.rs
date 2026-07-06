@@ -67,6 +67,22 @@ pub fn copy_file_from(
             libc::POSIX_FADV_DONTNEED,
         )
     };
+    let _ = unsafe {
+        libc::sync_file_range(
+            dst_fd,
+            dst_off as libc::off64_t,
+            copied as libc::off64_t,
+            libc::SYNC_FILE_RANGE_WRITE,
+        )
+    };
+    let _ = unsafe {
+        libc::posix_fadvise(
+            dst_fd,
+            dst_off as libc::off_t,
+            copied as libc::off_t,
+            libc::POSIX_FADV_DONTNEED,
+        )
+    };
     Ok(copied)
 }
 
