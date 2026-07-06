@@ -115,7 +115,7 @@ pub struct PreinstallState {
     pub patch_assets: Vec<PatchAssetInfo>,
     pub deleted_files: Vec<String>,
     pub downloaded_chunks: HashSet<String>,
-    pub diff_downloads: HashMap<String, DownloadInfo>,
+    pub diff_downloads: HashMap<String, Arc<DownloadInfo>>,
     pub main_chunk_download: DownloadInfo,
     pub main_manifest_ids: Vec<(String, String)>,
 }
@@ -168,7 +168,7 @@ pub struct PreinstallPlan {
     pub patch_assets: Vec<PatchAssetInfo>,
     pub deleted_files: Vec<String>,
     pub unique_chunks: Vec<PatchChunkInfo>,
-    pub diff_downloads: HashMap<String, DownloadInfo>,
+    pub diff_downloads: HashMap<String, Arc<DownloadInfo>>,
     pub main_chunk_download: DownloadInfo,
     pub tag: String,
     pub main_manifest_ids: Vec<(String, String)>,
@@ -270,7 +270,7 @@ pub async fn build_preinstall_plan(
     let mut seen_chunk_names: HashSet<String> = HashSet::new();
     let mut seen_patch_targets: HashSet<String> = HashSet::new();
     let mut unique_chunks: Vec<PatchChunkInfo> = Vec::new();
-    let mut diff_downloads: HashMap<String, DownloadInfo> = HashMap::new();
+    let mut diff_downloads: HashMap<String, Arc<DownloadInfo>> = HashMap::new();
 
     let fetch_futures: Vec<_> = qualifying_patch
         .iter()
@@ -294,7 +294,10 @@ pub async fn build_preinstall_plan(
         let patch_manifest = result.patch_manifest;
         let matching_field = result.matching_field;
 
-        diff_downloads.insert(matching_field.clone(), result.diff_download.clone());
+        diff_downloads.insert(
+            matching_field.clone(),
+            Arc::new(result.diff_download.clone()),
+        );
 
         for asset_prop in &patch_manifest.patch_assets {
             let patch_info = asset_prop
@@ -485,7 +488,7 @@ type ProgressUpdater = Arc<dyn Fn(SophonProgress) + Send + Sync>;
 async fn process_preinstall_chunk(
     chunk_info: PatchChunkInfo,
     client: Client,
-    diff_download: DownloadInfo,
+    diff_download: Arc<DownloadInfo>,
     chunks_dir: PathBuf,
     handle: DownloadHandle,
     updater: ProgressUpdater,
@@ -2317,7 +2320,7 @@ mod tests {
             }],
             deleted_files: vec!["old_file.pak".to_string()],
             downloaded_chunks: HashSet::from(["chunk_0".to_string()]),
-            diff_downloads: HashMap::from([("game".to_string(), make_download_info())]),
+            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
             main_chunk_download: DownloadInfo {
                 encryption: 0,
                 password: String::new(),
@@ -2821,7 +2824,7 @@ mod tests {
             ],
             deleted_files: vec![],
             downloaded_chunks: HashSet::new(),
-            diff_downloads: HashMap::from([("game".to_string(), make_download_info())]),
+            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
             main_chunk_download: make_download_info(),
             main_manifest_ids: vec![],
         };
@@ -2860,7 +2863,7 @@ mod tests {
             }],
             deleted_files: vec![],
             downloaded_chunks: HashSet::new(),
-            diff_downloads: HashMap::from([("game".to_string(), make_download_info())]),
+            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
             main_chunk_download: make_download_info(),
             main_manifest_ids: vec![],
         };
@@ -3397,7 +3400,7 @@ mod tests {
             patch_assets: vec![],
             deleted_files: vec![],
             downloaded_chunks: HashSet::new(),
-            diff_downloads: HashMap::from([("game".to_string(), make_download_info())]),
+            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
             main_chunk_download: make_download_info(),
             main_manifest_ids: vec![],
         };
