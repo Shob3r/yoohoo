@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
@@ -231,15 +231,16 @@ pub fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let mut hasher =
         super::assembly_opt::take_md5().map_err(|e| io::Error::other(e.to_string()))?;
     let mut reader = io::BufReader::with_capacity(256 * 1024, file);
-    let mut buf = vec![0u8; 256 * 1024];
     loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
             break;
         }
         hasher
-            .update(&buf[..n])
+            .update(buf)
             .map_err(|e| io::Error::other(e.to_string()))?;
+        let n = buf.len();
+        reader.consume(n);
     }
     super::assembly_opt::posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
 

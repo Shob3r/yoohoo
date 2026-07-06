@@ -1,7 +1,7 @@
 use libc;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::{BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
+use std::io::{BufRead as _, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1114,23 +1114,24 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
     } else {
         posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
         let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
-        let mut buf = vec![0u8; 256 * 1024];
         let mut ok = true;
         loop {
-            let n = match reader.read(&mut buf) {
-                Ok(n) => n,
+            let buf = match reader.fill_buf() {
+                Ok(b) => b,
                 Err(_) => {
                     ok = false;
                     break;
                 }
             };
-            if n == 0 {
+            if buf.is_empty() {
                 break;
             }
-            if hasher.update(&buf[..n]).is_err() {
+            if hasher.update(buf).is_err() {
                 ok = false;
                 break;
             }
+            let n = buf.len();
+            reader.consume(n);
         }
         posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         ok
@@ -1167,20 +1168,21 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
     } else {
         posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
         let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
-        let mut buf = vec![0u8; 256 * 1024];
         let mut ok = true;
         loop {
-            let n = match reader.read(&mut buf) {
-                Ok(n) => n,
+            let buf = match reader.fill_buf() {
+                Ok(b) => b,
                 Err(_) => {
                     ok = false;
                     break;
                 }
             };
-            if n == 0 {
+            if buf.is_empty() {
                 break;
             }
-            hasher.update(&buf[..n]);
+            hasher.update(buf);
+            let n = buf.len();
+            reader.consume(n);
         }
         posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         if ok {

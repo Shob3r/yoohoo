@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::BufRead;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
@@ -138,21 +138,20 @@ fn pread_hash_slice(
     }
     let file = std::fs::File::open(path)?;
     let fd = file.as_raw_fd();
-    let actual = max_bytes;
-    posix_advise(fd, 0, actual, libc::POSIX_FADV_SEQUENTIAL);
+    posix_advise(fd, 0, max_bytes, libc::POSIX_FADV_SEQUENTIAL);
     let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
-    let mut buf = vec![0u8; 256 * 1024];
-    let mut remaining = actual;
+    let mut remaining = max_bytes;
     while remaining > 0 {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
             break;
         }
-        let take = std::cmp::min(n as u64, remaining) as usize;
+        let take = std::cmp::min(buf.len(), remaining as usize);
         f(&buf[..take])?;
+        reader.consume(take);
         remaining -= take as u64;
     }
-    posix_advise(fd, 0, actual, libc::POSIX_FADV_DONTNEED);
+    posix_advise(fd, 0, max_bytes, libc::POSIX_FADV_DONTNEED);
     Ok(())
 }
 
@@ -167,13 +166,14 @@ fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
     } else {
         posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
         let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
-        let mut buf = vec![0u8; 256 * 1024];
         loop {
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
+            let buf = reader.fill_buf()?;
+            if buf.is_empty() {
                 break;
             }
-            hasher.update(&buf[..n])?;
+            hasher.update(buf)?;
+            let n = buf.len();
+            reader.consume(n);
         }
         hasher.finish().map_err(SophonError::Io)
     };
@@ -195,14 +195,15 @@ fn pread_hash_xxh64_digest(path: &Path) -> SophonResult<u64> {
     } else {
         posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
         let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
-        let mut buf = vec![0u8; 256 * 1024];
         let mut hasher = super::assembly_opt::take_xxh64();
         loop {
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
+            let buf = reader.fill_buf()?;
+            if buf.is_empty() {
                 break;
             }
-            hasher.update(&buf[..n]);
+            hasher.update(buf);
+            let n = buf.len();
+            reader.consume(n);
         }
         let digest = hasher.digest();
         super::assembly_opt::return_xxh64(hasher);
