@@ -470,6 +470,143 @@ fn op_alloc_50mb() {
     drop(v);
 }
 
+/// mmap a 128 MiB file and MD5 it in one pass. Compares against the pread path.
+fn op_mmap_md5_128m(dir: &Path) {
+    let big = dir.join("mmap_md5.bin");
+    fill_file(&big, 128, 0xCD);
+    evict_page_cache(&big);
+    let f = fs::File::open(&big).expect("open");
+    let len = f.metadata().unwrap().len() as usize;
+    let mmap = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            f.as_raw_fd(),
+            0,
+        )
+    };
+    if mmap == libc::MAP_FAILED {
+        panic!("mmap failed");
+    }
+    let mut h = Md5::new();
+    h.update(unsafe { std::slice::from_raw_parts(mmap as *const u8, len) });
+    let _ = hex::encode(h.finalize());
+    unsafe {
+        libc::munmap(mmap, len);
+    }
+}
+
+/// XXH64 of 128 MiB via pread. Compares throughput and RSS against MD5.
+fn op_xxh64_128m(dir: &Path) {
+    let big = dir.join("xxh64.bin");
+    fill_file(&big, 128, 0xCD);
+    evict_page_cache(&big);
+    let f = fs::File::open(&big).expect("open");
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut h = xxhash_rust::xxh64::Xxh64::new(0);
+    let mut off = 0u64;
+    let total: u64 = 128 * 1024 * 1024;
+    while off < total {
+        let n = f.read_at(&mut buf, off).expect("read");
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+        off += n as u64;
+    }
+    let _ = h.digest();
+}
+
+/// One-shot zstd decompression of an 8 MiB frame into a heap buffer. Measures
+/// the peak RSS of the single-pass path vs streaming.
+fn op_zstd_oneshot_8m(dir: &Path) {
+    let raw = vec![0x42u8; 8 * 1024 * 1024];
+    let comp = zstd::encode_all(&raw[..], 3).unwrap();
+    let comp_path = dir.join("oneshot.zst");
+    fs::write(&comp_path, &comp).unwrap();
+    drop(raw);
+    drop(comp);
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    let cf = fs::File::open(&comp_path).expect("open");
+    let comp_size = cf.metadata().unwrap().len() as usize;
+    let mmap = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            comp_size,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            cf.as_raw_fd(),
+            0,
+        )
+    };
+    if mmap == libc::MAP_FAILED {
+        panic!("mmap failed");
+    }
+    let comp_slice = unsafe { std::slice::from_raw_parts(mmap as *const u8, comp_size) };
+    let mut out = vec![0u8; 8 * 1024 * 1024];
+    let mut dec = zstd::Decoder::new(comp_slice).expect("decoder");
+    let written = std::io::Read::read_to_end(&mut dec, &mut out).expect("decompress");
+    std::hint::black_box(written);
+    unsafe {
+        libc::munmap(mmap, comp_size);
+    }
+}
+
+/// Build a CompactManifest from a large synthetic manifest. Measures the arena
+/// and column vec allocations.
+fn op_compact_manifest_build_with_assets(assets: Vec<SophonManifestAssetProperty>) {
+    let manifest = SophonManifestProto { assets };
+    let compact = CompactManifest::from(manifest.assets);
+    std::hint::black_box(compact.num_files());
+    std::hint::black_box(compact.num_chunks());
+    thread::sleep(PEAK_HOLD);
+}
+
+/// Fill a verification cache to the cap. Measures the DashMap's resident
+/// memory.
+fn op_verify_cache_fill(num_entries: usize) {
+    let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
+    for i in 0..num_entries {
+        let key = format!("asset_{i}.pak");
+        cache.insert(
+            key,
+            VerificationEntry {
+                size: 1024,
+                md5: format!("{i:032x}"),
+                mtime_secs: 0,
+            },
+        );
+    }
+    std::hint::black_box(cache.len());
+    thread::sleep(PEAK_HOLD);
+}
+
+/// Build a ChunkNameLookup from a large arena. Measures the sort + index vec.
+fn op_chunk_name_lookup(num_chunks: usize) {
+    let names: Vec<String> = (0..num_chunks).map(|i| format!("chunk_{i:08}")).collect();
+    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let arena = StringArena::from(name_refs.as_slice());
+    let lookup = ChunkNameLookup::from_arena(arena);
+    std::hint::black_box(lookup.get(0));
+    thread::sleep(PEAK_HOLD);
+}
+
+/// Build the download_items_index HashMap used during download state setup.
+/// Mirrors the per-chunk `&str -> usize` map that locates duplicate chunks.
+fn op_download_items_index(num_chunks: usize) {
+    let names: Vec<String> = (0..num_chunks).map(|i| format!("chunk_{i:08}")).collect();
+    let mut map: HashMap<&str, usize> = HashMap::with_capacity(num_chunks);
+    for (i, n) in names.iter().enumerate() {
+        map.insert(n.as_str(), i);
+    }
+    std::hint::black_box(map.len());
+    thread::sleep(PEAK_HOLD);
+}
+
 /// Measure streaming-decoder RSS for a zstd frame at a given WindowLogMax cap.
 /// Reports whether the cap actually pre-allocates the full window or only
 /// allocates what the frame declares.
@@ -538,6 +675,49 @@ fn main() {
 
     let d = dir.clone();
     run("assembly_e2e_32x256k", &|| op_assembly_e2e_small(&d));
+
+    let d = dir.clone();
+    run("mmap_md5_128m", &|| op_mmap_md5_128m(&d));
+
+    let d = dir.clone();
+    run("xxh64_128m", &|| op_xxh64_128m(&d));
+
+    let d = dir.clone();
+    run("zstd_oneshot_8m", &|| op_zstd_oneshot_8m(&d));
+
+    if filter
+        .as_deref()
+        .is_none_or(|f| "compact_manifest_build_5000x50".contains(f))
+    {
+        measure_with_setup(
+            "compact_manifest_build_5000x50",
+            || build_synthetic_manifest(5000, 50).assets,
+            op_compact_manifest_build_with_assets,
+        );
+    }
+
+    if filter
+        .as_deref()
+        .is_none_or(|f| "verify_cache_fill_5000".contains(f))
+    {
+        run("verify_cache_fill_5000", &|| op_verify_cache_fill(5000));
+    }
+
+    if filter
+        .as_deref()
+        .is_none_or(|f| "chunk_name_lookup_10000".contains(f))
+    {
+        run("chunk_name_lookup_10000", &|| op_chunk_name_lookup(10000));
+    }
+
+    if filter
+        .as_deref()
+        .is_none_or(|f| "download_items_index_10000".contains(f))
+    {
+        run("download_items_index_10000", &|| {
+            op_download_items_index(10000)
+        });
+    }
 
     // Diagnostic runs only with an explicit filter so a 50 MiB allocation does
     // not inflate the baseline of subsequent ops on a full run.
