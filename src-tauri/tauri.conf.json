@@ -46,7 +46,6 @@
       "icons/icon.svg"
     ],
     "resources": {
-      "conf/settings.json": "settings.json",
       "icons/icon.png": "appIcon.png"
     },
     "active": true,
