@@ -67,8 +67,8 @@ pub const VERSION_FILE_NAME: &str = ".sophon_version";
 /// MD5 verification cache filename.
 pub const VERIFICATION_CACHE_FILE: &str = ".sophon_verify_cache";
 
-/// File write buffer during assembly.
-pub const FILE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
+/// File write buffer during assembly (zstd streaming input + output).
+pub const FILE_WRITE_BUFFER_SIZE: usize = 256 * 1024;
 /// File write buffer during chunk downloads.
 pub const CHUNK_WRITE_BUFFER_SIZE: usize = 64 * 1024;
 

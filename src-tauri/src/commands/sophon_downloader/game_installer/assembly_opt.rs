@@ -11,7 +11,7 @@ use super::FILE_WRITE_BUFFER_SIZE;
 use super::error::{SophonError, SophonResult};
 use super::sysio;
 
-const ASSEMBLY_BUFFER_SIZE: usize = 64 * 1024;
+const ASSEMBLY_BUFFER_SIZE: usize = 256 * 1024;
 
 const ONESHOT_MAX_SIZE: usize = 16 * 1024 * 1024;
 
@@ -31,36 +31,28 @@ pub(crate) fn window_log_for_size(decompressed_size: u64) -> u32 {
     log.clamp(MIN_WINDOW_LOG, MAX_WINDOW_LOG)
 }
 
-/// MD5 hasher backed by OpenSSL EVP. Hardware-accelerated on x86_64 via
-/// libcrypto, ~28% higher throughput than the md-5 crate.
+/// MD5 hasher backed by hand-written x86_64 assembly (fast-md5 crate).
+/// No FFI overhead — the compression function inlines into the update loop.
 pub(crate) struct Md5 {
-    inner: openssl::hash::Hasher,
+    inner: fast_md5::Md5,
 }
 
 impl Md5 {
     pub fn new() -> SophonResult<Self> {
         Ok(Self {
-            inner: openssl::hash::Hasher::new(openssl::hash::MessageDigest::md5())
-                .map_err(|e| SophonError::Io(io::Error::other(e.to_string())))?,
+            inner: fast_md5::Md5::new(),
         })
     }
 
     #[inline]
     pub fn update(&mut self, data: &[u8]) -> io::Result<()> {
-        self.inner
-            .update(data)
-            .map_err(|e| io::Error::other(e.to_string()))
+        self.inner.update(data);
+        Ok(())
     }
 
     pub fn finish(&mut self) -> io::Result<[u8; 16]> {
-        let digest = self
-            .inner
-            .finish()
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        let mut out = [0u8; 16];
-        let n = digest.len().min(16);
-        out[..n].copy_from_slice(&digest[..n]);
-        Ok(out)
+        let state = std::mem::replace(&mut self.inner, fast_md5::Md5::new());
+        Ok(state.finalize())
     }
 }
 

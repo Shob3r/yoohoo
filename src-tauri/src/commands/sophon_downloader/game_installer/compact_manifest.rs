@@ -180,6 +180,11 @@ impl CompactManifest {
         self.chunk(range.start as usize + chunk_idx_in_file)
     }
 
+    #[inline]
+    pub fn chunk_name_arena_idx(&self, chunk_idx: usize) -> u32 {
+        self.chunk_name_idx[chunk_idx]
+    }
+
     /// Arena byte size for memory logging.
     pub fn arena_bytes(&self) -> usize {
         self.arena.byte_len() + self.arena.len() * std::mem::size_of::<(u32, u32)>()

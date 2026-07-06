@@ -9,6 +9,7 @@ dependencies = [
  "bytes",
  "criterion",
  "dashmap",
+ "fast-md5",
  "flate2",
  "fs_extra",
  "futures",
@@ -1531,6 +1532,12 @@ dependencies = [
  "event-listener",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "fast-md5"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d5eae88ed9322ba43db8f1ce3214050d9dea7730f44b2de0769604526b8d584"
 
 [[package]]
 name = "fastrand"
