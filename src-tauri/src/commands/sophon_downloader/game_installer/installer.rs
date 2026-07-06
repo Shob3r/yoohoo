@@ -699,15 +699,7 @@ async fn build_download_state(
                 continue;
             }
 
-            let range = ctx.all_files.file_chunk_range(all_files_index);
-            let has_downloadable = (range.start..range.end)
-                .any(|i| ctx.all_files.chunk(i as usize).chunk_old_offset < 0);
-
-            if !has_downloadable {
-                let _ = assemble_tx.send((all_files_index, tmp_dir_idx)).await;
-                all_files_index += 1;
-                continue;
-            }
+            let pending_before = pending_counts.len();
 
             register_chunks_for_file(
                 &ctx.all_files,
@@ -721,6 +713,10 @@ async fn build_download_state(
                 tmp_dir_idx,
                 pre_downloaded,
             );
+
+            if pending_counts.len() == pending_before {
+                let _ = assemble_tx.send((all_files_index, tmp_dir_idx)).await;
+            }
             all_files_index += 1;
         }
     }
