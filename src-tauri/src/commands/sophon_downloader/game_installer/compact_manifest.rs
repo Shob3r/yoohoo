@@ -102,7 +102,7 @@ pub struct CompactManifest {
     arena: StringArena,
     file_name_idx: Vec<u32>,
     file_hash_idx: Vec<u32>,
-    file_type: Vec<u32>,
+    file_type: Vec<u8>,
     file_size: Vec<u64>,
     file_chunk_start: Vec<u32>,
     chunk_name_idx: Vec<u32>,
@@ -136,7 +136,7 @@ impl CompactManifest {
     #[inline]
     #[allow(dead_code)]
     pub fn file_type(&self, file_idx: usize) -> u32 {
-        self.file_type[file_idx]
+        self.file_type[file_idx] as u32
     }
 
     #[inline]
@@ -189,7 +189,7 @@ impl CompactManifest {
     pub fn column_bytes(&self) -> usize {
         let n_files = self.file_name_idx.len();
         let n_chunks = self.chunk_name_idx.len();
-        n_files * (4 + 4 + 4 + 8 + 4)
+        n_files * (4 + 4 + 1 + 8 + 4)
             + n_chunks * (4 + 4 + 4 + 8 + 4 + 4 + 8)
             + n_files * std::mem::size_of::<u32>() * 2
             + 7 * std::mem::size_of::<Vec<u8>>()
@@ -239,7 +239,7 @@ impl From<Vec<SophonManifestAssetProperty>> for CompactManifest {
         for file in &properties {
             file_name_idx.push(arena.intern(&file.asset_name));
             file_hash_idx.push(arena.intern(&file.asset_hash_md5));
-            file_type.push(file.asset_type);
+            file_type.push(file.asset_type as u8);
             file_size.push(file.asset_size);
             file_chunk_start.push(chunk_name_idx.len() as u32);
             for chunk in &file.asset_chunks {
