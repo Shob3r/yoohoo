@@ -1112,15 +1112,26 @@ pub(super) fn verify_chunk_md5(path: &Path, expected_md5: &str) -> bool {
         let _ = hasher.update(b"");
         true
     } else {
-        let mmap =
-            match unsafe { super::assembly_opt::mmap_read_only_unchecked(&file, len as usize) } {
-                Ok(m) => m,
+        posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
+        let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut ok = true;
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(n) => n,
                 Err(_) => {
-                    super::assembly_opt::return_md5(hasher);
-                    return false;
+                    ok = false;
+                    break;
                 }
             };
-        let ok = hasher.update(mmap.as_slice()).is_ok();
+            if n == 0 {
+                break;
+            }
+            if hasher.update(&buf[..n]).is_err() {
+                ok = false;
+                break;
+            }
+        }
         posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
         ok
     };
@@ -1154,14 +1165,30 @@ pub(super) fn verify_chunk_xxh64(path: &Path, expected_xxh64: &str) -> bool {
         hasher.update(b"");
         super::assembly_opt::xxh64_hex_eq(hasher.digest(), expected_xxh64)
     } else {
-        let mmap = match super::assembly_opt::mmap_read_only(&file) {
-            Ok(m) => m,
-            Err(_) => return false,
-        };
-        hasher.update(mmap.as_slice());
-        super::assembly_opt::xxh64_hex_eq(hasher.digest(), expected_xxh64)
+        posix_advise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
+        let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut ok = true;
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+        if ok {
+            super::assembly_opt::xxh64_hex_eq(hasher.digest(), expected_xxh64)
+        } else {
+            false
+        }
     };
-    posix_advise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
     super::assembly_opt::return_xxh64(hasher);
     result
 }

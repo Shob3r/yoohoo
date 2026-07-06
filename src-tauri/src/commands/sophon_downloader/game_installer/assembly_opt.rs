@@ -200,14 +200,6 @@ impl Drop for MmapGuard {
     }
 }
 
-pub(crate) fn mmap_read_only(file: &File) -> io::Result<MmapGuard> {
-    let len = file.metadata()?.len() as usize;
-    if len == 0 {
-        return Err(io::Error::other("empty file"));
-    }
-    unsafe { mmap_read_only_unchecked(file, len) }
-}
-
 pub(crate) unsafe fn mmap_read_only_unchecked(file: &File, len: usize) -> io::Result<MmapGuard> {
     if len == 0 {
         return Err(io::Error::other("empty file"));
