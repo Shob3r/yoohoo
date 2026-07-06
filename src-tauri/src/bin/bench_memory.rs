@@ -498,6 +498,14 @@ fn op_mmap_md5_128m(dir: &Path) {
     }
 }
 
+/// Streaming MD5 of 128 MiB via file_md5_digest (BufReader + fadvise).
+fn op_stream_md5_128m(dir: &Path) {
+    let big = dir.join("stream_md5.bin");
+    fill_file(&big, 128, 0xCD);
+    evict_page_cache(&big);
+    let _ = elysiae_lib::commands::sophon_downloader::game_installer::cache::file_md5_digest(&big);
+}
+
 /// XXH64 of 128 MiB via pread. Compares throughput and RSS against MD5.
 fn op_xxh64_128m(dir: &Path) {
     let big = dir.join("xxh64.bin");
@@ -703,6 +711,9 @@ fn main() {
 
     let d = dir.clone();
     run("mmap_md5_128m", &|| op_mmap_md5_128m(&d));
+
+    let d = dir.clone();
+    run("stream_md5_128m", &|| op_stream_md5_128m(&d));
 
     let d = dir.clone();
     run("xxh64_128m", &|| op_xxh64_128m(&d));

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -214,7 +215,7 @@ pub fn check_file_md5_with_cache_key_and_size(
     Ok((matches, Some(actual_size)))
 }
 
-pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
+pub fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let file = File::open(path)?;
     let len = file.metadata()?.len();
     if len == 0 {
@@ -224,14 +225,24 @@ pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
         ]);
     }
 
-    let mmap = unsafe { super::assembly_opt::mmap_read_only_unchecked(&file, len as usize) }?;
-    let data = mmap.as_slice();
+    let fd = file.as_raw_fd();
+    super::assembly_opt::posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
 
     let mut hasher =
         super::assembly_opt::take_md5().map_err(|e| io::Error::other(e.to_string()))?;
-    hasher
-        .update(data)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    let mut reader = io::BufReader::with_capacity(256 * 1024, file);
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher
+            .update(&buf[..n])
+            .map_err(|e| io::Error::other(e.to_string()))?;
+    }
+    super::assembly_opt::posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
+
     let digest = hasher
         .finish()
         .map_err(|e| io::Error::other(e.to_string()))?;
