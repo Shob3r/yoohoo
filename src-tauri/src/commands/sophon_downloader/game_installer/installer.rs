@@ -601,7 +601,7 @@ fn register_chunks_for_file<'a>(
     tmp_dir_idx: usize,
     chunk_entries: &mut Vec<Vec<FileEntry>>,
     download_items: &mut Vec<DownloadItem>,
-    download_items_index: &mut HashMap<&'a str, usize>,
+    download_items_index: &mut HashMap<&'a str, u32>,
     chunk_refcounts: &mut Vec<AtomicU32>,
     installer_idx: usize,
     pre_downloaded: &HashMap<u32, u64>,
@@ -627,11 +627,11 @@ fn register_chunks_for_file<'a>(
 
         let item_idx = if let Some(&idx) = download_items_index.get(name) {
             if is_pre {
-                download_items[idx].is_pre_downloaded = true;
+                download_items[idx as usize].is_pre_downloaded = true;
             }
             idx
         } else {
-            let idx = download_items.len();
+            let idx = download_items.len() as u32;
             download_items.push(DownloadItem {
                 file_idx: file_idx as u32,
                 chunk_idx: (global_chunk_idx - range.start as usize) as u32,
@@ -642,15 +642,19 @@ fn register_chunks_for_file<'a>(
             idx
         };
 
-        if item_idx >= chunk_entries.len() {
-            chunk_entries.resize_with(item_idx + 1, Vec::new);
+        if item_idx as usize >= chunk_entries.len() {
+            chunk_entries.resize_with(item_idx as usize + 1, Vec::new);
         }
-        chunk_entries[item_idx].push((file_idx as u32, tmp_dir_idx as u32, Arc::clone(&pending)));
+        chunk_entries[item_idx as usize].push((
+            file_idx as u32,
+            tmp_dir_idx as u32,
+            Arc::clone(&pending),
+        ));
 
-        if item_idx >= chunk_refcounts.len() {
-            chunk_refcounts.resize_with(item_idx + 1, || AtomicU32::new(0));
+        if item_idx as usize >= chunk_refcounts.len() {
+            chunk_refcounts.resize_with(item_idx as usize + 1, || AtomicU32::new(0));
         }
-        chunk_refcounts[item_idx].fetch_add(1, Ordering::Relaxed);
+        chunk_refcounts[item_idx as usize].fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -670,7 +674,7 @@ async fn build_download_state(
 )> {
     let total_chunks: usize = ctx.all_files.num_chunks();
     let mut download_items: Vec<DownloadItem> = Vec::with_capacity(total_chunks);
-    let mut download_items_index: HashMap<&str, usize> = HashMap::with_capacity(total_chunks);
+    let mut download_items_index: HashMap<&str, u32> = HashMap::with_capacity(total_chunks);
     let mut chunk_entries: Vec<Vec<FileEntry>> = Vec::with_capacity(total_chunks);
     let mut chunk_refcounts: Vec<AtomicU32> = Vec::with_capacity(total_chunks);
 
