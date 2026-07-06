@@ -136,14 +136,10 @@ fn pread_hash_slice(
         return Ok(());
     }
     let file = std::fs::File::open(path)?;
-    let file_len = file.metadata()?.len();
-    if file_len == 0 {
-        return Ok(());
-    }
     let fd = file.as_raw_fd();
-    let actual = max_bytes.min(file_len);
+    let actual = max_bytes;
     posix_advise(fd, 0, actual, libc::POSIX_FADV_SEQUENTIAL);
-    let mmap = super::assembly_opt::mmap_read_only(&file)?;
+    let mmap = unsafe { super::assembly_opt::mmap_read_only_unchecked(&file, actual as usize) }?;
     f(&mmap.as_slice()[..actual as usize])?;
     posix_advise(fd, 0, actual, libc::POSIX_FADV_DONTNEED);
     Ok(())
