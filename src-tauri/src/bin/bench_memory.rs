@@ -3,7 +3,7 @@
 //! Resident-set size is a one-shot peak metric, not an iterative timing, so it
 //! does not fit the criterion statistical model. This binary polls
 //! `/proc/self/statm` from a background thread while each operation runs and
-//! reports peak-vs-baseline RSS. Linux-only (the installer is Linux-only).
+//! reports peak-vs-baseline RSS.
 //!
 //! Run:  cargo run --release --features benchmark --bin bench_memory -- [op]
 //! where [op] is a substring of one of the operations below; runs all if none.
@@ -26,7 +26,7 @@ use elysiae_lib::commands::sophon_downloader::game_installer::{
     assembly::{assemble_file, chunk_filename},
     cache::{VerificationCache, VerificationEntry},
     compact_manifest::{CompactManifest, StringArena},
-    installer::{ChunkNameLookup, assign_chunk_offsets, intern_old_chunk_offsets},
+    installer::{ChunkNameLookup, intern_old_chunk_offsets},
     sysio,
 };
 use elysiae_lib::commands::sophon_downloader::proto_parse::{
@@ -445,27 +445,19 @@ fn build_string_key_offsets(manifest: &SophonManifestProto) -> HashMap<(String, 
         .collect()
 }
 
-fn op_diff_interned_keys(mut manifest: SophonManifestProto) {
+fn op_diff_interned_keys(manifest: SophonManifestProto) {
     let (offsets, name_to_id, hash_to_id) = intern_old_chunk_offsets(&manifest);
-    assign_chunk_offsets(&mut manifest.assets, &offsets, &name_to_id, &hash_to_id);
+    std::hint::black_box(&offsets);
+    std::hint::black_box(&name_to_id);
+    std::hint::black_box(&hash_to_id);
+    std::hint::black_box(&manifest);
     thread::sleep(PEAK_HOLD);
 }
 
-fn op_diff_string_keys(mut manifest: SophonManifestProto) {
+fn op_diff_string_keys(manifest: SophonManifestProto) {
     let offsets = build_string_key_offsets(&manifest);
-    for file in &mut manifest.assets {
-        for chunk in &mut file.asset_chunks {
-            let key = (
-                file.asset_name.clone(),
-                chunk.chunk_decompressed_hash_md5.clone(),
-            );
-            chunk.chunk_old_offset = offsets
-                .get(&key)
-                .copied()
-                .map(|off| off as i64)
-                .unwrap_or(-1);
-        }
-    }
+    std::hint::black_box(&offsets);
+    std::hint::black_box(&manifest);
     thread::sleep(PEAK_HOLD);
 }
 

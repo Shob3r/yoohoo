@@ -309,19 +309,19 @@ fn collect_deleted_files(
 }
 
 #[inline]
-fn build_old_md5_map(old_manifest: SophonManifestProto) -> HashMap<String, String> {
+fn build_old_md5_map(old_manifest: &SophonManifestProto) -> HashMap<&str, &str> {
     old_manifest
         .assets
-        .into_iter()
+        .iter()
         .filter(|f| !f.is_directory())
-        .map(|f| (f.asset_name, f.asset_hash_md5))
+        .map(|f| (f.asset_name.as_str(), f.asset_hash_md5.as_str()))
         .collect()
 }
 
 #[inline]
 fn compute_diff_files(
     new_manifest: SophonManifestProto,
-    old_md5_map: &HashMap<String, String>,
+    old_md5_map: &HashMap<&str, &str>,
 ) -> Vec<SophonManifestAssetProperty> {
     new_manifest
         .assets
@@ -330,8 +330,8 @@ fn compute_diff_files(
             if f.is_directory() {
                 return true;
             }
-            match old_md5_map.get(&f.asset_name) {
-                Some(old_md5) => old_md5 != &f.asset_hash_md5,
+            match old_md5_map.get(f.asset_name.as_str()) {
+                Some(&old_md5) => old_md5 != f.asset_hash_md5.as_str(),
                 None => true,
             }
         })
@@ -342,12 +342,12 @@ fn compute_diff_files(
 /// `(u32, u32) -> offset` table from an old manifest. Extracted so the
 /// interning logic is unit-testable without a network round-trip.
 #[allow(clippy::type_complexity)]
-pub fn intern_old_chunk_offsets(
-    manifest: &SophonManifestProto,
+pub fn intern_old_chunk_offsets<'a>(
+    manifest: &'a SophonManifestProto,
 ) -> (
     HashMap<(u32, u32), u64>,
-    ChunkNameLookup,
-    ChunkNameLookup,
+    HashMap<&'a str, u32>,
+    HashMap<&'a str, u32>,
 ) {
     let non_dir: Vec<&SophonManifestAssetProperty> = manifest
         .assets
@@ -355,27 +355,25 @@ pub fn intern_old_chunk_offsets(
         .filter(|f| !f.is_directory())
         .collect();
     let total_chunks: usize = non_dir.iter().map(|f| f.asset_chunks.len()).sum();
+    let asset_count = non_dir.len();
 
-    let mut names: Vec<&str> = non_dir.iter().map(|f| f.asset_name.as_str()).collect();
-    names.sort_unstable();
-    names.dedup();
-    
-    let mut hashes: Vec<&str> = non_dir.iter().flat_map(|f| f.asset_chunks.iter().map(|c| c.chunk_decompressed_hash_md5.as_str())).collect();
-    hashes.sort_unstable();
-    hashes.dedup();
-
-    let name_lookup = ChunkNameLookup::from_arena(super::compact_manifest::StringArena::from(names.as_slice()));
-    let hash_lookup = ChunkNameLookup::from_arena(super::compact_manifest::StringArena::from(hashes.as_slice()));
-
+    let mut name_to_id: HashMap<&'a str, u32> = HashMap::with_capacity(asset_count);
+    let mut hash_to_id: HashMap<&'a str, u32> = HashMap::with_capacity(asset_count);
     let mut offsets: HashMap<(u32, u32), u64> = HashMap::with_capacity(total_chunks);
     for f in non_dir {
-        let name_id = name_lookup.lookup(f.asset_name.as_str()).unwrap() as u32;
+        let next_name_id = name_to_id.len() as u32;
+        let name_id = *name_to_id
+            .entry(f.asset_name.as_str())
+            .or_insert(next_name_id);
         for c in &f.asset_chunks {
-            let hash_id = hash_lookup.lookup(c.chunk_decompressed_hash_md5.as_str()).unwrap() as u32;
+            let next_hash_id = hash_to_id.len() as u32;
+            let hash_id = *hash_to_id
+                .entry(c.chunk_decompressed_hash_md5.as_str())
+                .or_insert(next_hash_id);
             offsets.insert((name_id, hash_id), c.chunk_on_file_offset);
         }
     }
-    (offsets, name_lookup, hash_lookup)
+    (offsets, name_to_id, hash_to_id)
 }
 
 /// Stamp each chunk's `chunk_old_offset` with the matching old-file offset
@@ -384,15 +382,17 @@ pub fn intern_old_chunk_offsets(
 pub fn assign_chunk_offsets(
     diff_files: &mut [SophonManifestAssetProperty],
     offsets: &HashMap<(u32, u32), u64>,
-    name_lookup: &ChunkNameLookup,
-    hash_lookup: &ChunkNameLookup,
+    name_to_id: &HashMap<&str, u32>,
+    hash_to_id: &HashMap<&str, u32>,
 ) {
     for file in diff_files.iter_mut() {
-        let name_id = name_lookup.lookup(file.asset_name.as_str()).map(|x| x as u32);
+        let name_id = name_to_id.get(file.asset_name.as_str()).copied();
         for chunk in &mut file.asset_chunks {
             chunk.chunk_old_offset = match (
                 name_id,
-                hash_lookup.lookup(chunk.chunk_decompressed_hash_md5.as_str()).map(|x| x as u32),
+                hash_to_id
+                    .get(chunk.chunk_decompressed_hash_md5.as_str())
+                    .copied(),
             ) {
                 (Some(n), Some(h)) => offsets
                     .get(&(n, h))
@@ -444,13 +444,9 @@ async fn build_diff_installers(
         // Keys are interned to `(u32, u32)` ids instead of `(String, String)`
         // so the offsets map and its reverse lookups share one allocation per
         // unique field rather than one per chunk. See `build_diff_installers`.
-        #[allow(clippy::type_complexity)]
-        let (old_md5_map, old_chunk_offsets, name_lookup, hash_lookup): (
-            HashMap<String, String>,
-            HashMap<(u32, u32), u64>,
-            ChunkNameLookup,
-            ChunkNameLookup,
-        ) = match old_by_field.get(new_meta.matching_field.as_str()) {
+        let mut diff_files;
+
+        match old_by_field.get(new_meta.matching_field.as_str()) {
             Some(old_meta) => {
                 let old_result = super::api::fetch_manifest(
                     client,
@@ -461,28 +457,27 @@ async fn build_diff_installers(
 
                 deleted_files.extend(collect_deleted_files(&old_result.manifest, &new_names));
 
-                let (mut old_chunk_offsets, name_lookup, hash_lookup) =
-                    intern_old_chunk_offsets(&old_result.manifest);
-
                 let old_manifest = old_result.manifest;
                 let gd = game_dir.to_path_buf();
-                let (corrupted_names, mut old_md5_map) =
-                    tokio::task::spawn_blocking(move || {
-                        let mut bad: Vec<String> = Vec::new();
-                        for f in old_manifest.assets.iter().filter(|f| !f.is_directory()) {
-                            let path = gd.join(&f.asset_name);
-                            let corrupted = match std::fs::metadata(&path) {
-                                Ok(meta) => meta.len() != f.asset_size,
-                                Err(_) => true,
-                            };
-                            if corrupted {
-                                bad.push(f.asset_name.clone());
-                            }
+                let (old_manifest, corrupted_names) = tokio::task::spawn_blocking(move || {
+                    let mut bad: Vec<String> = Vec::new();
+                    for f in old_manifest.assets.iter().filter(|f| !f.is_directory()) {
+                        let path = gd.join(&f.asset_name);
+                        let corrupted = match std::fs::metadata(&path) {
+                            Ok(meta) => meta.len() != f.asset_size,
+                            Err(_) => true,
+                        };
+                        if corrupted {
+                            bad.push(f.asset_name.clone());
                         }
-                        let md5_map = build_old_md5_map(old_manifest);
-                        (bad, md5_map)
-                    })
-                    .await?;
+                    }
+                    (old_manifest, bad)
+                })
+                .await?;
+
+                let mut old_md5_map = build_old_md5_map(&old_manifest);
+                let (mut old_chunk_offsets, name_to_id, hash_to_id) =
+                    intern_old_chunk_offsets(&old_manifest);
 
                 if !corrupted_names.is_empty() {
                     log::warn!(
@@ -490,38 +485,30 @@ async fn build_diff_installers(
                         count = corrupted_names.len()
                     );
                     let mut corrupted_name_ids = HashSet::new();
+                    let corrupted_names_set: HashSet<&str> =
+                        corrupted_names.iter().map(|s| s.as_str()).collect();
                     for name in &corrupted_names {
-                        if let Some(id) = name_lookup.lookup(name.as_str()) {
-                            corrupted_name_ids.insert(id as u32);
+                        if let Some(id) = name_to_id.get(name.as_str()) {
+                            corrupted_name_ids.insert(*id);
                         }
                     }
-                    old_md5_map.retain(|name, _| !corrupted_names.contains(name));
+                    old_md5_map.retain(|name, _| !corrupted_names_set.contains(*name));
                     old_chunk_offsets
                         .retain(|(name_id, _), _| !corrupted_name_ids.contains(name_id));
                 }
 
-                (old_md5_map, old_chunk_offsets, name_lookup, hash_lookup)
+                diff_files = compute_diff_files(new_result.manifest, &old_md5_map);
+                assign_chunk_offsets(
+                    &mut diff_files,
+                    &old_chunk_offsets,
+                    &name_to_id,
+                    &hash_to_id,
+                );
             }
-            None => (
-                HashMap::new(),
-                HashMap::new(),
-                ChunkNameLookup::from_arena(super::compact_manifest::StringArena::default()),
-                ChunkNameLookup::from_arena(super::compact_manifest::StringArena::default()),
-            ),
+            None => {
+                diff_files = compute_diff_files(new_result.manifest, &HashMap::new());
+            }
         };
-
-        let mut diff_files = compute_diff_files(new_result.manifest, &old_md5_map);
-
-        assign_chunk_offsets(
-            &mut diff_files,
-            &old_chunk_offsets,
-            &name_lookup,
-            &hash_lookup,
-        );
-        drop(old_chunk_offsets);
-        drop(old_md5_map);
-        drop(name_lookup);
-        drop(hash_lookup);
         super::reclaim_memory();
 
         if diff_files.is_empty() {
@@ -2729,8 +2716,8 @@ mod tests {
         let new_manifest = SophonManifestProto {
             assets: vec![make_file("a.pak", "aa", vec![])],
         };
-        let mut old_md5_map = HashMap::new();
-        old_md5_map.insert("a.pak".to_string(), "aa".to_string());
+        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        old_md5_map.insert("a.pak", "aa");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
         assert!(diff.is_empty());
     }
@@ -2740,8 +2727,8 @@ mod tests {
         let new_manifest = SophonManifestProto {
             assets: vec![make_file("a.pak", "new_md5", vec![])],
         };
-        let mut old_md5_map = HashMap::new();
-        old_md5_map.insert("a.pak".to_string(), "old_md5".to_string());
+        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        old_md5_map.insert("a.pak", "old_md5");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
         assert_eq!(diff.len(), 1);
     }
@@ -2768,9 +2755,9 @@ mod tests {
                 make_dir("somedir"),
             ],
         };
-        let mut old_md5_map = HashMap::new();
-        old_md5_map.insert("changed.pak".to_string(), "old_md5".to_string());
-        old_md5_map.insert("unchanged.pak".to_string(), "same".to_string());
+        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        old_md5_map.insert("changed.pak", "old_md5");
+        old_md5_map.insert("unchanged.pak", "same");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
         assert_eq!(diff.len(), 3);
         let names: Vec<&str> = diff.iter().map(|f| f.asset_name.as_str()).collect();
@@ -2942,10 +2929,10 @@ mod tests {
                 make_dir("dir"),
             ],
         };
-        let map = build_old_md5_map(manifest);
+        let map = build_old_md5_map(&manifest);
         assert_eq!(map.len(), 2);
-        assert_eq!(map.get("a.pak"), Some(&"md5_a".to_string()));
-        assert_eq!(map.get("b.pak"), Some(&"md5_b".to_string()));
+        assert_eq!(map.get("a.pak"), Some(&"md5_a"));
+        assert_eq!(map.get("b.pak"), Some(&"md5_b"));
     }
 
     #[test]
@@ -3383,9 +3370,9 @@ mod tests {
                 make_file("b.pak", "bb", vec![]),
             ],
         };
-        let mut old_md5_map = HashMap::new();
-        old_md5_map.insert("a.pak".to_string(), "aa".to_string());
-        old_md5_map.insert("b.pak".to_string(), "bb".to_string());
+        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        old_md5_map.insert("a.pak", "aa");
+        old_md5_map.insert("b.pak", "bb");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
         assert!(diff.is_empty());
     }
