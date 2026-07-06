@@ -109,8 +109,8 @@ pub struct CompactManifest {
     chunk_decomp_hash_idx: Vec<u32>,
     chunk_comp_hash_idx: Vec<u32>,
     chunk_on_file_offset: Vec<u64>,
-    chunk_size: Vec<u64>,
-    chunk_size_decompressed: Vec<u64>,
+    chunk_size: Vec<u32>,
+    chunk_size_decompressed: Vec<u32>,
     chunk_old_offset: Vec<i64>,
 }
 
@@ -166,8 +166,8 @@ impl CompactManifest {
             chunk_name: self.arena.get(self.chunk_name_idx[chunk_idx]),
             chunk_decompressed_hash_md5: self.arena.get(self.chunk_decomp_hash_idx[chunk_idx]),
             chunk_on_file_offset: self.chunk_on_file_offset[chunk_idx],
-            chunk_size: self.chunk_size[chunk_idx],
-            chunk_size_decompressed: self.chunk_size_decompressed[chunk_idx],
+            chunk_size: self.chunk_size[chunk_idx] as u64,
+            chunk_size_decompressed: self.chunk_size_decompressed[chunk_idx] as u64,
             chunk_compressed_hash_md5: self.arena.get(self.chunk_comp_hash_idx[chunk_idx]),
             chunk_old_offset: self.chunk_old_offset[chunk_idx],
         }
@@ -190,7 +190,7 @@ impl CompactManifest {
         let n_files = self.file_name_idx.len();
         let n_chunks = self.chunk_name_idx.len();
         n_files * (4 + 4 + 4 + 8 + 4)
-            + n_chunks * (4 + 4 + 4 + 8 + 8 + 8 + 8)
+            + n_chunks * (4 + 4 + 4 + 8 + 4 + 4 + 8)
             + n_files * std::mem::size_of::<u32>() * 2
             + 7 * std::mem::size_of::<Vec<u8>>()
     }
@@ -247,8 +247,8 @@ impl From<Vec<SophonManifestAssetProperty>> for CompactManifest {
                 chunk_decomp_hash_idx.push(arena.intern(&chunk.chunk_decompressed_hash_md5));
                 chunk_comp_hash_idx.push(arena.intern(&chunk.chunk_compressed_hash_md5));
                 chunk_on_file_offset.push(chunk.chunk_on_file_offset);
-                chunk_size.push(chunk.chunk_size);
-                chunk_size_decompressed.push(chunk.chunk_size_decompressed);
+                chunk_size.push(chunk.chunk_size as u32);
+                chunk_size_decompressed.push(chunk.chunk_size_decompressed as u32);
                 chunk_old_offset.push(chunk.chunk_old_offset);
             }
         }
