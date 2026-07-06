@@ -52,7 +52,7 @@ export const updateAllGames = async () => {
 	const preloadsAllowed = await getOption<boolean>("autoPreload");
 
 	if (!updatesAllowed && !preloadsAllowed) return;
-
+	
 	for (let i = 0; i < games.length; i++) {
 		const variant = gameCodeToVariant[games[i]];
 		const res = await checkGameUpdate(variant);

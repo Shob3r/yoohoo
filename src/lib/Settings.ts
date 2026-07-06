@@ -1,60 +1,62 @@
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { type Settings, Variants } from "../types";
-import { exists, readTextFile, writeTextFile } from "./Fs";
+import { readTextFile, writeTextFile } from "./Fs";
+import { invoke } from "@tauri-apps/api/core";
 
 let store: Store | undefined;
+const SETTINGS_PATH = "settings.json";
 const CURRENT_DATA_VERSION = 1;
-const DEFAULT_SETTINGS_DATA: Settings = {
-	version: CURRENT_DATA_VERSION,
-	isFirstLaunch: true,
-	lastUsedVersion: "0.0",
-	selectedGame: "hk4e",
-	voLanguage: "en",
-	blockNotifications: false,
-	createShortcuts: true,
-	autoUpdate: true,
-	autoPreload: true,
-	installedComponents: {
-		proton: null,
-		jadeite: null,
-	},
-	cachedBackgrounds: {
-		[Variants.BH3]: [],
-		[Variants.HK4E]: [],
-		[Variants.HKRPG]: [],
-		[Variants.NAP]: [],
-	},
-};
 
 const loadStore = async (): Promise<Store> => {
-	const settingsPath: string = await join("conf", "settings.json");
-	if (!(await exists(settingsPath))) {
-		await writeTextFile(settingsPath, JSON.stringify(DEFAULT_SETTINGS_DATA));
-	}
-
-	await migrateSettings();
+	await updateSettingsData();
 
 	// load() doesn't have any settings for a relative app, so an absolute path must be used instead
-	return await load(await join(await appDataDir(), settingsPath));
+	return await load(await join(await appDataDir(), SETTINGS_PATH));
 };
 
-const migrateSettings = async () => {
-	const settingsPath: string = await join("conf", "settings.json");
-	const settingsData: Settings = JSON.parse(await readTextFile(settingsPath));
-
-	for (let i = settingsData.version; i < CURRENT_DATA_VERSION; i++) {
-		switch (i) {
-			// Currently unused; there are no migration functions needed in Elysiae yet
-		}
-		settingsData.version = i + 1;
+const updateSettingsData = async () => {
+	let settingsData: Settings;
+	try {
+		settingsData = JSON.parse(await readTextFile(SETTINGS_PATH));
+	} catch {
+		settingsData = {} as Settings;
 	}
 
-	// Merge properties and write back to the settings file
-	await writeTextFile(
-		settingsPath,
-		JSON.stringify({ settingsData, ...DEFAULT_SETTINGS_DATA }),
-	);
+	const updatedSettingsData: Settings = {
+		version: settingsData.version ?? CURRENT_DATA_VERSION,
+		isFirstLaunch: settingsData.isFirstLaunch ?? true,
+		lastUsedVersion: settingsData.lastUsedVersion ?? await invoke<string>("elysiae_version"),
+		selectedGame: settingsData.selectedGame ?? "hk4e",
+		voLanguage: settingsData.voLanguage ?? "en",
+		blockNotifications: settingsData.blockNotifications ?? false,
+		createShortcuts: settingsData.createShortcuts ?? true,
+		autoUpdate: settingsData.autoUpdate ?? true,
+		autoPreload: settingsData.autoPreload ?? true,
+		installedComponents: settingsData.installedComponents ?? {
+			proton: null,
+			jadeite: null,
+		},
+		cachedBackgrounds: settingsData.cachedBackgrounds ?? {
+			[Variants.BH3]: [],
+			[Variants.HK4E]: [],
+			[Variants.HKRPG]: [],
+			[Variants.NAP]: [],
+		},
+	};
+
+	await writeTextFile(SETTINGS_PATH, JSON.stringify(updatedSettingsData));
+	await migrateSettings(updatedSettingsData);
+};
+
+const migrateSettings = async (data: Settings) => {
+	for (let i = data.version; i < CURRENT_DATA_VERSION; i++) {
+		switch (
+			data.version
+			// unused as no migration is needed right now
+		) {
+		}
+	}
 };
 
 export const getOption = async <T = unknown>(
