@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -2215,8 +2215,8 @@ async fn apply_download_over(
                 chunk_arena.intern(manifest.chunk(ci).chunk_name);
             }
             let chunk_lookup = super::installer::ChunkNameLookup::from_arena(chunk_arena);
-            let chunk_refcounts: Vec<AtomicUsize> =
-                (0..chunk_count).map(|_| AtomicUsize::new(1)).collect();
+            let chunk_refcounts: Vec<AtomicU32> =
+                (0..chunk_count).map(|_| AtomicU32::new(1)).collect();
             let result = super::assembly::assemble_file(
                 &manifest,
                 0,

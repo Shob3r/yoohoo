@@ -254,8 +254,8 @@ fn op_assembly_e2e(dir: &Path) {
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
     let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
-    let refcounts: Vec<std::sync::atomic::AtomicUsize> = (0..8)
-        .map(|_| std::sync::atomic::AtomicUsize::new(1000))
+    let refcounts: Vec<std::sync::atomic::AtomicU32> = (0..8)
+        .map(|_| std::sync::atomic::AtomicU32::new(1000))
         .collect();
     let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
     assemble_file(
@@ -284,8 +284,8 @@ fn op_assembly_e2e_parallel(dir: &Path) {
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
     let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
-    let refcounts: Vec<std::sync::atomic::AtomicUsize> = (0..8)
-        .map(|_| std::sync::atomic::AtomicUsize::new(1000))
+    let refcounts: Vec<std::sync::atomic::AtomicU32> = (0..8)
+        .map(|_| std::sync::atomic::AtomicU32::new(1000))
         .collect();
     let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
     assemble_file(
@@ -314,8 +314,8 @@ fn op_assembly_e2e_small(dir: &Path) {
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
     let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
-    let refcounts: Vec<std::sync::atomic::AtomicUsize> = (0..32)
-        .map(|_| std::sync::atomic::AtomicUsize::new(1000))
+    let refcounts: Vec<std::sync::atomic::AtomicU32> = (0..32)
+        .map(|_| std::sync::atomic::AtomicU32::new(1000))
         .collect();
     let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
     assemble_file(

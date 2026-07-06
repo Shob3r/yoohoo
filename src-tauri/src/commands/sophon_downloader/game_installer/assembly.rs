@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd as _;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread_local;
 use std::time::{Duration, Instant};
@@ -36,7 +36,7 @@ pub fn chunk_filename(chunk_name: &str) -> String {
 pub fn decrement_chunk_refcount(
     chunk_name: &str,
     chunk_lookup: &ChunkNameLookup,
-    chunk_refcounts: &[AtomicUsize],
+    chunk_refcounts: &[AtomicU32],
     chunks_dir: &Path,
 ) {
     if !validate_chunk_name(chunk_name) {
@@ -127,7 +127,7 @@ pub fn validate_asset_name(name: &str) -> SophonResult<()> {
 struct DecrementGuard<'a> {
     chunks: Vec<&'a str>,
     chunk_lookup: &'a ChunkNameLookup,
-    chunk_refcounts: &'a [AtomicUsize],
+    chunk_refcounts: &'a [AtomicU32],
     chunks_dir: &'a Path,
 }
 
@@ -152,7 +152,7 @@ pub fn assemble_file(
     chunks_dir: &Path,
     temp_dir: &Path,
     chunk_lookup: &ChunkNameLookup,
-    chunk_refcounts: &[AtomicUsize],
+    chunk_refcounts: &[AtomicU32],
     verify_cache: &DashMap<String, VerificationEntry>,
     skip_md5_check: bool,
 ) -> SophonResult<()> {
@@ -749,7 +749,7 @@ pub struct AssemblyTaskParams {
     pub all_tmp_dirs: Arc<Vec<std::path::PathBuf>>,
     pub game_dir: Arc<std::path::PathBuf>,
     pub chunks_dir: Arc<std::path::PathBuf>,
-    pub chunk_refcounts: Arc<Vec<AtomicUsize>>,
+    pub chunk_refcounts: Arc<Vec<AtomicU32>>,
     pub chunk_names: Arc<ChunkNameLookup>,
     pub verify_cache: Arc<DashMap<String, VerificationEntry>>,
     pub assembled_files: Arc<AtomicU64>,
@@ -982,7 +982,7 @@ mod tests {
         chunks_dir: &Path,
         temp_dir: &Path,
         chunk_lookup: &ChunkNameLookup,
-        chunk_refcounts: &[AtomicUsize],
+        chunk_refcounts: &[AtomicU32],
         verify_cache: &DashMap<String, VerificationEntry>,
     ) -> SophonResult<()> {
         let manifest = CompactManifest::from(vec![file]);
@@ -1128,7 +1128,7 @@ mod tests {
         };
 
         let chunk_names = make_chunk_names(&["chunk0"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(1)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
         assemble_test_file(
@@ -1180,7 +1180,7 @@ mod tests {
         };
 
         let chunk_names = make_chunk_names(&["chunkA", "chunkB"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(1), AtomicUsize::new(1)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1), AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
         assemble_test_file(
@@ -1226,7 +1226,7 @@ mod tests {
         };
 
         let chunk_names = make_chunk_names(&["chunk_skip"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(1)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
         assemble_test_file(
@@ -1275,7 +1275,7 @@ mod tests {
         };
 
         let chunk_names = make_chunk_names(&["chunk_fix"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(1)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
         assemble_test_file(
@@ -1323,8 +1323,8 @@ mod tests {
             .collect();
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let chunk_names_arc = make_chunk_names(&name_refs);
-        let chunk_refcounts: Vec<AtomicUsize> =
-            (0..chunks.len()).map(|_| AtomicUsize::new(1)).collect();
+        let chunk_refcounts: Vec<AtomicU32> =
+            (0..chunks.len()).map(|_| AtomicU32::new(1)).collect();
 
         let file = SophonManifestAssetProperty {
             asset_name: "parallel_hash.bin".to_string(),
@@ -1379,8 +1379,8 @@ mod tests {
             .collect();
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let chunk_names_arc = make_chunk_names(&name_refs);
-        let chunk_refcounts: Vec<AtomicUsize> =
-            (0..chunks.len()).map(|_| AtomicUsize::new(1)).collect();
+        let chunk_refcounts: Vec<AtomicU32> =
+            (0..chunks.len()).map(|_| AtomicU32::new(1)).collect();
 
         let corrupt_md5 =
             String::from_utf8((0..32).map(|i| if i == 0 { b'f' } else { b'0' }).collect()).unwrap();
@@ -1422,7 +1422,7 @@ mod tests {
         fs::write(&chunk_file, b"dummy").unwrap();
 
         let chunk_names = make_chunk_names(&["vanish"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(1)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
 
         decrement_chunk_refcount("vanish", &chunk_names, &chunk_refcounts, &chunks_dir);
 
@@ -1440,7 +1440,7 @@ mod tests {
         fs::write(&chunk_file, b"dummy").unwrap();
 
         let chunk_names = make_chunk_names(&["keep"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(2)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(2)];
 
         decrement_chunk_refcount("keep", &chunk_names, &chunk_refcounts, &chunks_dir);
 
@@ -1547,7 +1547,7 @@ mod tests {
         };
 
         let chunk_names = make_chunk_names(&["ck0"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(1)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
         assemble_test_file(
@@ -1599,7 +1599,7 @@ mod tests {
         };
 
         let chunk_names = make_chunk_names(&["ck1"]);
-        let chunk_refcounts: Vec<AtomicUsize> = vec![AtomicUsize::new(1)];
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
         let result = assemble_test_file(
@@ -1944,7 +1944,7 @@ mod tests {
         };
 
         let chunk_names = make_chunk_names(&[]);
-        let chunk_refcounts: Vec<AtomicUsize> = Vec::new();
+        let chunk_refcounts: Vec<AtomicU32> = Vec::new();
         let verify_cache = DashMap::new();
 
         // Should reuse from the existing file.

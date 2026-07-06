@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// Compact sorted index over a `StringArena` for `&str -> usize` lookup
 /// via binary search. Avoids per-entry HashMap overhead.
@@ -102,7 +102,7 @@ struct InstallContext {
     total_files: u64,
     resume_bytes_offset: Arc<AtomicU64>,
     verify_cache: Arc<DashMap<String, VerificationEntry>>,
-    chunk_refcounts: Arc<OnceLock<Arc<Vec<AtomicUsize>>>>,
+    chunk_refcounts: Arc<OnceLock<Arc<Vec<AtomicU32>>>>,
     chunk_names: Arc<OnceLock<Arc<ChunkNameLookup>>>,
     last_assembly_update: Arc<Mutex<Instant>>,
     last_update: Arc<AtomicU64>,
@@ -113,7 +113,7 @@ struct InstallContext {
     last_speed_bytes: Arc<AtomicU64>,
     last_speed_time: Arc<AtomicU64>,
     updater: ProgressUpdater,
-    downloaded_chunks: Arc<OnceLock<Vec<AtomicU64>>>,
+    downloaded_chunks: Arc<OnceLock<Vec<AtomicU32>>>,
     chunks_since_save: Arc<AtomicU64>,
     last_save: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     state_saver: StateSaver,
@@ -602,7 +602,7 @@ fn register_chunks_for_file<'a>(
     chunk_entries: &mut Vec<Vec<FileEntry>>,
     download_items: &mut Vec<DownloadItem>,
     download_items_index: &mut HashMap<&'a str, usize>,
-    chunk_refcounts: &mut Vec<AtomicUsize>,
+    chunk_refcounts: &mut Vec<AtomicU32>,
     installer_idx: usize,
     pre_downloaded: &HashMap<u32, u64>,
 ) {
@@ -648,7 +648,7 @@ fn register_chunks_for_file<'a>(
         chunk_entries[item_idx].push((file_idx as u32, tmp_dir_idx as u32, Arc::clone(&pending)));
 
         if item_idx >= chunk_refcounts.len() {
-            chunk_refcounts.resize_with(item_idx + 1, || AtomicUsize::new(0));
+            chunk_refcounts.resize_with(item_idx + 1, || AtomicU32::new(0));
         }
         chunk_refcounts[item_idx].fetch_add(1, Ordering::Relaxed);
     }
@@ -664,7 +664,7 @@ async fn build_download_state(
     Vec<DownloadItem>,
     Arc<Vec<FileEntry>>,
     Arc<Vec<usize>>,
-    Vec<AtomicUsize>,
+    Vec<AtomicU32>,
     Arc<ChunkNameLookup>,
     Arc<ChunkNameLookup>,
 )> {
@@ -672,7 +672,7 @@ async fn build_download_state(
     let mut download_items: Vec<DownloadItem> = Vec::with_capacity(total_chunks);
     let mut download_items_index: HashMap<&str, usize> = HashMap::with_capacity(total_chunks);
     let mut chunk_entries: Vec<Vec<FileEntry>> = Vec::with_capacity(total_chunks);
-    let mut chunk_refcounts: Vec<AtomicUsize> = Vec::with_capacity(total_chunks);
+    let mut chunk_refcounts: Vec<AtomicU32> = Vec::with_capacity(total_chunks);
 
     let mut all_files_index: usize = 0;
 
@@ -833,7 +833,7 @@ async fn save_assembly_state(ctx: &Arc<InstallContext>) {
                 .filter_map(|(i, v)| {
                     let val = v.load(Ordering::Relaxed);
                     if val > 0 {
-                        Some((cn.get(i).to_string(), val))
+                        Some((cn.get(i).to_string(), val as u64))
                     } else {
                         None
                     }
@@ -1203,7 +1203,7 @@ async fn process_download_item(
     _chunk_timer.record_phase(super::profiling::ChunkPhase::PostDownload);
 
     if let Some(dc) = ctx.downloaded_chunks.get() {
-        dc[item_idx].store(chunk.chunk_size, Ordering::Relaxed);
+        dc[item_idx].store(chunk.chunk_size as u32, Ordering::Relaxed);
     }
 
     let count = ctx.chunks_since_save.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1228,7 +1228,7 @@ async fn process_download_item(
                     .filter_map(|(i, v)| {
                         let val = v.load(Ordering::Relaxed);
                         if val > 0 {
-                            Some((cn.get(i).to_string(), val))
+                            Some((cn.get(i).to_string(), val as u64))
                         } else {
                             None
                         }
@@ -1470,7 +1470,7 @@ async fn finalize_install(
                 dc.iter()
                     .enumerate()
                     .filter(|(_, v)| v.load(Ordering::Relaxed) > 0)
-                    .map(|(i, v)| (cn.get(i).to_string(), v.load(Ordering::Relaxed)))
+                    .map(|(i, v)| (cn.get(i).to_string(), v.load(Ordering::Relaxed) as u64))
                     .collect::<HashMap<String, u64>>()
             } else {
                 HashMap::new()
@@ -2076,22 +2076,22 @@ pub async fn install(
         ce_len = chunk_entries.len(),
         ce_sz = std::mem::size_of::<FileEntry>(),
         rc_len = chunk_refcounts_vec.len(),
-        rc_sz = std::mem::size_of::<AtomicUsize>(),
+        rc_sz = std::mem::size_of::<AtomicU32>(),
         dc_len = download_items.len(),
-        dc_sz = std::mem::size_of::<AtomicU64>(),
+        dc_sz = std::mem::size_of::<AtomicU32>(),
     );
 
     let _ = ctx.chunk_refcounts.set(Arc::new(chunk_refcounts_vec));
     let _ = ctx.chunk_names.set(Arc::clone(&chunk_names_lookup));
 
     {
-        let downloaded_chunks_vec: Vec<AtomicU64> = (0..download_items.len())
+        let downloaded_chunks_vec: Vec<AtomicU32> = (0..download_items.len())
             .map(|i| {
                 let item = &download_items[i];
                 let global_chunk_idx =
                     ctx.all_files.file_chunk_range(item.file_idx as usize).start + item.chunk_idx;
                 let val = initial_chunks.get(&global_chunk_idx).copied().unwrap_or(0);
-                AtomicU64::new(val)
+                AtomicU32::new(val as u32)
             })
             .collect();
         let _ = ctx.downloaded_chunks.set(downloaded_chunks_vec);
@@ -2554,7 +2554,7 @@ fn reassemble_single_asset(
         chunk_arena.intern(manifest.chunk(i).chunk_name);
     }
     let chunk_lookup = ChunkNameLookup::from_arena(chunk_arena);
-    let chunk_refcounts: Vec<AtomicUsize> = (0..chunk_count).map(|_| AtomicUsize::new(1)).collect();
+    let chunk_refcounts: Vec<AtomicU32> = (0..chunk_count).map(|_| AtomicU32::new(1)).collect();
     let result = assembly::assemble_file(
         &manifest,
         0,

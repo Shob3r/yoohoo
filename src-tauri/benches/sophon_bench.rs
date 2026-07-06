@@ -16,7 +16,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::FileExt;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::AtomicU32;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use md5::{Digest, Md5};
@@ -315,7 +315,7 @@ fn bench_assembly_e2e(c: &mut Criterion) {
         .map(|i| Box::leak(format!("ck{i:02}").into_boxed_str()) as &str)
         .collect();
     let lookup = ChunkNameLookup::from_arena(StringArena::from(name_refs.as_slice()));
-    let refcounts: Vec<AtomicUsize> = (0..num_chunks).map(|_| AtomicUsize::new(1000)).collect();
+    let refcounts: Vec<AtomicU32> = (0..num_chunks).map(|_| AtomicU32::new(1000)).collect();
     let cache: VerificationCache<String, VerificationEntry> = VerificationCache::new();
 
     assemble_file(
