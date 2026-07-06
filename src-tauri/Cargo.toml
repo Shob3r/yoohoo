@@ -67,7 +67,6 @@ tempfile = "3.27.0"
 fs_extra = "1.3.0"
 tauri-plugin-prevent-default = "5.0.1"
 tauri-plugin-deep-link = "2.4.9"
-openssl = "0.10.81"
 
 [features]
 sophon-profiling = ["tikv-jemalloc-ctl/stats", "tikv-jemallocator/stats"]
@@ -86,6 +85,7 @@ tauri-plugin-window-state = "2.4.1"
 tempfile = "3.27.0"
 wiremock = "0.6.5"
 criterion = "0.8"
+openssl = "0.10.81"
 
 [[bench]]
 name = "sophon_bench"
