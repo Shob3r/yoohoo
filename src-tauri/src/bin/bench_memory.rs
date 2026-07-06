@@ -533,7 +533,7 @@ fn op_zstd_oneshot_8m(dir: &Path) {
     }
     let cf = fs::File::open(&comp_path).expect("open");
     let comp_size = cf.metadata().unwrap().len() as usize;
-    let mmap = unsafe {
+    let comp_mmap = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
             comp_size,
@@ -543,16 +543,42 @@ fn op_zstd_oneshot_8m(dir: &Path) {
             0,
         )
     };
-    if mmap == libc::MAP_FAILED {
+    if comp_mmap == libc::MAP_FAILED {
         panic!("mmap failed");
     }
-    let comp_slice = unsafe { std::slice::from_raw_parts(mmap as *const u8, comp_size) };
-    let mut out = vec![0u8; 8 * 1024 * 1024];
-    let mut dec = zstd::Decoder::new(comp_slice).expect("decoder");
-    let written = std::io::Read::read_to_end(&mut dec, &mut out).expect("decompress");
+    let comp_slice = unsafe { std::slice::from_raw_parts(comp_mmap as *const u8, comp_size) };
+
+    let out_path = dir.join("oneshot_out.bin");
+    let of = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&out_path)
+        .unwrap();
+    of.set_len(8 * 1024 * 1024).unwrap();
+    let out_mmap = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            8 * 1024 * 1024,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            of.as_raw_fd(),
+            0,
+        )
+    };
+    if out_mmap == libc::MAP_FAILED {
+        panic!("out mmap failed");
+    }
+    let out_slice = unsafe { std::slice::from_raw_parts_mut(out_mmap as *mut u8, 8 * 1024 * 1024) };
+
+    let mut ctx = zstd::zstd_safe::DCtx::create();
+    let written = ctx.decompress(out_slice, comp_slice).expect("decompress");
     std::hint::black_box(written);
+
     unsafe {
-        libc::munmap(mmap, comp_size);
+        libc::munmap(comp_mmap, comp_size);
+        libc::munmap(out_mmap, 8 * 1024 * 1024);
     }
 }
 
