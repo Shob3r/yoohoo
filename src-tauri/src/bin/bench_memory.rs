@@ -585,8 +585,7 @@ fn op_zstd_oneshot_8m(dir: &Path) {
 /// Build a CompactManifest from a large synthetic manifest. Measures the arena
 /// and column vec allocations.
 fn op_compact_manifest_build_with_assets(assets: Vec<SophonManifestAssetProperty>) {
-    let manifest = SophonManifestProto { assets };
-    let compact = CompactManifest::from(manifest.assets);
+    let compact = CompactManifest::from(assets);
     std::hint::black_box(compact.num_files());
     std::hint::black_box(compact.num_chunks());
     thread::sleep(PEAK_HOLD);

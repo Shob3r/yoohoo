@@ -24,45 +24,49 @@ impl<'a> From<&'a SophonManifestAssetChunk> for ChunkRef<'a> {
 }
 
 /// Shared string arena. All manifest strings are concatenated into a single
-/// `String` and referenced by `(offset, len)` spans.
+/// `String` and referenced by offset. Length is derived from consecutive
+/// offsets, so each string costs 4 bytes (u32 offset) instead of 8.
 #[derive(Default)]
 pub struct StringArena {
     data: String,
-    spans: Vec<(u32, u32)>,
+    offsets: Vec<u32>,
 }
 
 impl StringArena {
     pub fn with_capacity(spans: usize, total_bytes: usize) -> Self {
         Self {
             data: String::with_capacity(total_bytes),
-            spans: Vec::with_capacity(spans),
+            offsets: Vec::with_capacity(spans + 1),
         }
     }
 
     pub fn intern(&mut self, s: &str) -> u32 {
-        let idx = self.spans.len() as u32;
-        let offset = self.data.len() as u32;
-        let len = s.len() as u32;
+        let idx = self.offsets.len() as u32;
+        self.offsets.push(self.data.len() as u32);
         self.data.push_str(s);
-        self.spans.push((offset, len));
         idx
     }
 
     #[inline]
     pub fn get(&self, idx: u32) -> &str {
-        let (offset, len) = self.spans[idx as usize];
-        &self.data[offset as usize..(offset + len) as usize]
+        let start = self.offsets[idx as usize] as usize;
+        let end = self
+            .offsets
+            .get(idx as usize + 1)
+            .copied()
+            .unwrap_or(self.data.len() as u32) as usize;
+        &self.data[start..end]
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.spans.len()
+        self.offsets.len()
     }
 
     #[inline]
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.spans.is_empty()
+        self.offsets.is_empty()
     }
 
     #[inline]
@@ -187,7 +191,7 @@ impl CompactManifest {
 
     /// Arena byte size for memory logging.
     pub fn arena_bytes(&self) -> usize {
-        self.arena.byte_len() + self.arena.len() * std::mem::size_of::<(u32, u32)>()
+        self.arena.byte_len() + self.arena.len() * std::mem::size_of::<u32>()
     }
 
     /// Columnar byte size for memory logging.
