@@ -14,6 +14,7 @@ use tauri_plugin_log::log;
 
 thread_local! {
     static TRANSFER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static HASHER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, return_md5, take_md5};
@@ -339,7 +340,14 @@ pub fn assemble_file(
                             return;
                         }
                     };
-                    let mut buf = vec![0u8; 256 * 1024];
+                    let mut buf = HASHER_BUF.with(|cell| {
+                        let mut buf = cell.take();
+                        if buf.capacity() < 256 * 1024 {
+                            buf = Vec::with_capacity(256 * 1024);
+                        }
+                        unsafe { buf.set_len(256 * 1024) };
+                        buf
+                    });
                     for (i, &(offset, size)) in chunk_infos.iter().enumerate() {
                         loop {
                             if err.lock().unwrap().is_some() {
@@ -382,6 +390,8 @@ pub fn assemble_file(
                             *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
                         }
                     }
+                    buf.clear();
+                    HASHER_BUF.with(|cell| cell.replace(buf));
                 });
             }
 
