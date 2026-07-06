@@ -9,8 +9,8 @@ use crate::commands::sophon_downloader::game_installer::hdiffpatch::parser::{
     BinaryExtensions, read_long_7bit_from_slice,
 };
 
-static SHARED_BUFFER_POOL: BufferPool = BufferPool::new(2);
-static CACHE_BUFFER_POOL: BufferPool = BufferPool::new(2);
+static SHARED_BUFFER_POOL: BufferPool = BufferPool::new(1);
+static CACHE_BUFFER_POOL: BufferPool = BufferPool::new(1);
 
 pub(crate) fn write_cover_stream_to_output(
     clips: &mut [Box<dyn Read>],

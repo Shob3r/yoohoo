@@ -8,8 +8,8 @@ use super::{BufferPool, HeaderInfo, SeekableRead};
 const MAX_STEP_SIZE: usize = 16 * 1024 * 1024;
 const IO_BUF_SIZE: usize = 256 * 1024;
 
-static WORK_BUF_POOL: BufferPool = BufferPool::new(2);
-static STEP_BUF_POOL: BufferPool = BufferPool::new(2);
+static WORK_BUF_POOL: BufferPool = BufferPool::new(1);
+static STEP_BUF_POOL: BufferPool = BufferPool::new(1);
 
 pub(crate) struct PatchSF {
     header_info: HeaderInfo,
