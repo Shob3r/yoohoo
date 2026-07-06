@@ -86,6 +86,12 @@ impl StringArena {
     pub fn byte_len(&self) -> usize {
         self.data.len()
     }
+
+    /// Drop the deduplication map to free memory after all interning is done.
+    pub fn clear_dedup(&mut self) {
+        self.dedup.clear();
+        self.dedup.shrink_to_fit();
+    }
 }
 
 impl From<&[&str]> for StringArena {
@@ -302,6 +308,8 @@ impl From<Vec<SophonManifestAssetProperty>> for CompactManifest {
                 chunk_old_offset.push(chunk.chunk_old_offset);
             }
         }
+
+        arena.clear_dedup();
 
         Self {
             arena,
