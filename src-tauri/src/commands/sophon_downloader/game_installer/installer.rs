@@ -607,22 +607,25 @@ fn register_chunks_for_file<'a>(
     pre_downloaded: &HashMap<u32, u64>,
 ) {
     let range = all_files.file_chunk_range(file_idx);
-    let downloadable: Vec<(usize, ChunkRef<'a>)> = (0..(range.end - range.start))
-        .map(|i| {
-            let chunk_idx = range.start as usize + i as usize;
-            (chunk_idx, all_files.chunk(chunk_idx))
-        })
-        .filter(|(_, c)| c.chunk_old_offset < 0)
-        .collect();
+    let mut chunk_count: usize = 0;
+    for ci in range.start..range.end {
+        if all_files.chunk(ci as usize).chunk_old_offset < 0 {
+            chunk_count += 1;
+        }
+    }
 
-    let chunk_count = downloadable.len();
     if chunk_count == 0 {
         return;
     }
 
     let pending_idx = pending_counts.len() as u32;
     pending_counts.push(AtomicU32::new(chunk_count as u32));
-    for (global_chunk_idx, chunk) in downloadable {
+    for ci in range.start..range.end {
+        let global_chunk_idx = ci as usize;
+        let chunk = all_files.chunk(global_chunk_idx);
+        if chunk.chunk_old_offset >= 0 {
+            continue;
+        }
         let name = chunk.chunk_name;
         let is_pre = pre_downloaded.contains_key(&(global_chunk_idx as u32));
 
