@@ -332,14 +332,6 @@ pub fn assemble_file(
                             return;
                         }
                     };
-                    let mmap = match super::assembly_opt::mmap_read_only(&file) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
-                            return;
-                        }
-                    };
-                    let data = mmap.as_slice();
                     let mut hasher = match super::assembly_opt::take_md5() {
                         Ok(h) => h,
                         Err(e) => {
@@ -347,6 +339,7 @@ pub fn assemble_file(
                             return;
                         }
                     };
+                    let mut buf = vec![0u8; 256 * 1024];
                     for (i, &(offset, size)) in chunk_infos.iter().enumerate() {
                         loop {
                             if err.lock().unwrap().is_some() {
@@ -357,11 +350,27 @@ pub fn assemble_file(
                             }
                             std::hint::spin_loop();
                         }
-                        let start = offset as usize;
-                        let end = start + size as usize;
-                        if let Err(e) = hasher.update(&data[start..end]) {
-                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
-                            return;
+                        let mut remaining = size as usize;
+                        let mut pos = offset;
+                        while remaining > 0 {
+                            let to_read = remaining.min(buf.len());
+                            use std::os::unix::fs::FileExt;
+                            let n = match file.read_at(&mut buf[..to_read], pos) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                                    return;
+                                }
+                            };
+                            if n == 0 {
+                                break;
+                            }
+                            if let Err(e) = hasher.update(&buf[..n]) {
+                                *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                                return;
+                            }
+                            remaining -= n;
+                            pos += n as u64;
                         }
                     }
                     match hasher.finish() {
