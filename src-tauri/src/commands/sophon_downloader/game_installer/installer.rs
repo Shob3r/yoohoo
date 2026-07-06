@@ -140,14 +140,14 @@ pub(crate) struct InstallerData {
 }
 
 struct DownloadItem {
-    file_idx: usize,
-    chunk_idx: usize,
-    installer_idx: usize,
+    file_idx: u32,
+    chunk_idx: u32,
+    installer_idx: u32,
     is_pre_downloaded: bool,
 }
 
 type PendingCount = Arc<AtomicUsize>;
-type FileEntry = (usize, usize, PendingCount);
+type FileEntry = (u32, u32, PendingCount);
 
 pub struct SophonInstaller {
     pub manifest: SophonManifestProto,
@@ -633,9 +633,9 @@ fn register_chunks_for_file<'a>(
         } else {
             let idx = download_items.len();
             download_items.push(DownloadItem {
-                file_idx,
-                chunk_idx: global_chunk_idx - range.start as usize,
-                installer_idx,
+                file_idx: file_idx as u32,
+                chunk_idx: (global_chunk_idx - range.start as usize) as u32,
+                installer_idx: installer_idx as u32,
                 is_pre_downloaded: is_pre,
             });
             download_items_index.insert(name, idx);
@@ -645,7 +645,7 @@ fn register_chunks_for_file<'a>(
         if item_idx >= chunk_entries.len() {
             chunk_entries.resize_with(item_idx + 1, Vec::new);
         }
-        chunk_entries[item_idx].push((file_idx, tmp_dir_idx, Arc::clone(&pending)));
+        chunk_entries[item_idx].push((file_idx as u32, tmp_dir_idx as u32, Arc::clone(&pending)));
 
         if item_idx >= chunk_refcounts.len() {
             chunk_refcounts.resize_with(item_idx + 1, || AtomicUsize::new(0));
@@ -737,7 +737,7 @@ async fn build_download_state(
         .iter()
         .map(|item| {
             ctx.all_files
-                .file_chunk(item.file_idx, item.chunk_idx)
+                .file_chunk(item.file_idx as usize, item.chunk_idx as usize)
                 .chunk_name
                 .len()
         })
@@ -747,7 +747,7 @@ async fn build_download_state(
     for item in &download_items {
         let name = ctx
             .all_files
-            .file_chunk(item.file_idx, item.chunk_idx)
+            .file_chunk(item.file_idx as usize, item.chunk_idx as usize)
             .chunk_name;
         arena.intern(name);
     }
@@ -1112,7 +1112,7 @@ fn notify_assembly_ready(
     for (file_idx, tmp_dir_idx, pending) in &chunk_entries[start..end] {
         let prev = pending.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
-            let _ = assemble_tx.try_send((*file_idx, *tmp_dir_idx));
+            let _ = assemble_tx.try_send((*file_idx as usize, *tmp_dir_idx as usize));
         }
     }
 }
@@ -1139,7 +1139,9 @@ async fn process_download_item(
             .await?;
     }
 
-    let chunk = ctx.all_files.file_chunk(item.file_idx, item.chunk_idx);
+    let chunk = ctx
+        .all_files
+        .file_chunk(item.file_idx as usize, item.chunk_idx as usize);
 
     if !validate_chunk_name(chunk.chunk_name) {
         return Err(SophonError::PathTraversal(chunk.chunk_name.into()));
@@ -1154,8 +1156,8 @@ async fn process_download_item(
         let result = check_needs_download(
             &dest,
             Arc::clone(&ctx.all_files),
-            item.file_idx,
-            item.chunk_idx,
+            item.file_idx as usize,
+            item.chunk_idx as usize,
             Arc::clone(&ctx.game_dir),
             Arc::clone(&ctx.verify_cache),
         )
@@ -1174,8 +1176,8 @@ async fn process_download_item(
     if needs_download.0 {
         download_chunk_with_retries(
             chunk,
-            &ctx.installer_clients[item.installer_idx],
-            &ctx.installer_downloads[item.installer_idx],
+            &ctx.installer_clients[item.installer_idx as usize],
+            &ctx.installer_downloads[item.installer_idx as usize],
             &dest,
             needs_download.1,
             &ctx,
@@ -2086,8 +2088,8 @@ pub async fn install(
         let downloaded_chunks_vec: Vec<AtomicU64> = (0..download_items.len())
             .map(|i| {
                 let item = &download_items[i];
-                let global_chunk_idx = ctx.all_files.file_chunk_range(item.file_idx).start as u32
-                    + item.chunk_idx as u32;
+                let global_chunk_idx =
+                    ctx.all_files.file_chunk_range(item.file_idx as usize).start + item.chunk_idx;
                 let val = initial_chunks.get(&global_chunk_idx).copied().unwrap_or(0);
                 AtomicU64::new(val)
             })
@@ -2974,7 +2976,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<(usize, usize)>(16);
 
         let pending: PendingCount = Arc::new(AtomicUsize::new(1usize));
-        let chunk_entries: Vec<FileEntry> = vec![(0usize, 0usize, Arc::clone(&pending))];
+        let chunk_entries: Vec<FileEntry> = vec![(0u32, 0u32, Arc::clone(&pending))];
         let chunk_entry_offsets: Vec<usize> = vec![0, 1];
 
         notify_assembly_ready(0, &chunk_entries, &chunk_entry_offsets, &tx);
