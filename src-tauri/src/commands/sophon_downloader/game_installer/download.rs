@@ -391,9 +391,10 @@ async fn download_full_file_with_response(
     let file = tokio::fs::File::create(dest).await?;
     let mut file = EvictingWriter::new(file);
     let mut stream = resp.bytes_stream();
-    let mut hasher = take_md5()?;
+    let needs_hash = !chunk.chunk_compressed_hash_md5.is_empty();
+    let mut hasher = if needs_hash { Some(take_md5()?) } else { None };
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> =
-        if chunk.chunk_compressed_hash_md5.len() == 16 {
+        if needs_hash && chunk.chunk_compressed_hash_md5.len() == 16 {
             Some(super::assembly_opt::take_xxh64())
         } else {
             None
@@ -433,7 +434,9 @@ async fn download_full_file_with_response(
                         actual: total_len,
                     });
                 }
-                hasher.update(&bytes)?;
+                if let Some(ref mut h) = hasher {
+                    h.update(&bytes)?;
+                }
                 if let Some(ref mut h) = xxh64_hasher {
                     h.update(&bytes);
                 }
@@ -468,7 +471,11 @@ async fn download_full_file_with_response(
         let expected = &chunk.chunk_compressed_hash_md5;
         match expected.len() {
             32 => {
-                let digest: [u8; 16] = hasher.finish().map_err(SophonError::Io)?;
+                let digest: [u8; 16] = hasher
+                    .as_mut()
+                    .expect("hasher present when compressed hash is non-empty")
+                    .finish()
+                    .map_err(SophonError::Io)?;
                 if !md5_hex_eq(&digest, expected) {
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Md5Mismatch {
@@ -516,7 +523,9 @@ async fn download_full_file_with_response(
 
     file.flush_and_evict_all().await.ok();
     drop(file);
-    return_md5(hasher);
+    if let Some(h) = hasher {
+        return_md5(h);
+    }
     if let Some(h) = xxh64_hasher {
         super::assembly_opt::return_xxh64(h);
     }
@@ -553,21 +562,25 @@ async fn download_with_resume(
 
     check_available_space(dest, remaining)?;
 
-    // Seed the hasher with existing file content using pread
-    let mut hasher = take_md5()?;
-    let needs_xxh64 = chunk.chunk_compressed_hash_md5.len() == 16;
+    let needs_hash = !chunk.chunk_compressed_hash_md5.is_empty();
+    let mut hasher = if needs_hash { Some(take_md5()?) } else { None };
+    let needs_xxh64 = needs_hash && chunk.chunk_compressed_hash_md5.len() == 16;
     let mut xxh64_hasher: Option<xxhash_rust::xxh64::Xxh64> = if needs_xxh64 {
         Some(super::assembly_opt::take_xxh64())
     } else {
         None
     };
-    pread_hash_slice(dest, existing_size, &mut |chunk| {
-        hasher.update(chunk)?;
-        if let Some(ref mut h) = xxh64_hasher {
-            h.update(chunk);
-        }
-        Ok(())
-    })?;
+    if needs_hash {
+        pread_hash_slice(dest, existing_size, &mut |chunk| {
+            if let Some(ref mut h) = hasher {
+                h.update(chunk)?;
+            }
+            if let Some(ref mut h) = xxh64_hasher {
+                h.update(chunk);
+            }
+            Ok(())
+        })?;
+    }
 
     let file = tokio::fs::OpenOptions::new()
         .append(true)
@@ -614,7 +627,9 @@ async fn download_with_resume(
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Io(err));
                 }
-                hasher.update(&bytes)?;
+                if let Some(ref mut h) = hasher {
+                    h.update(&bytes)?;
+                }
                 if let Some(ref mut h) = xxh64_hasher {
                     h.update(&bytes);
                 }
@@ -645,7 +660,11 @@ async fn download_with_resume(
         let expected = &chunk.chunk_compressed_hash_md5;
         match expected.len() {
             32 => {
-                let digest: [u8; 16] = hasher.finish().map_err(SophonError::Io)?;
+                let digest: [u8; 16] = hasher
+                    .as_mut()
+                    .expect("hasher present when compressed hash is non-empty")
+                    .finish()
+                    .map_err(SophonError::Io)?;
                 if !md5_hex_eq(&digest, expected) {
                     let _ = tokio::fs::remove_file(dest).await;
                     return Err(SophonError::Md5Mismatch {
@@ -693,7 +712,9 @@ async fn download_with_resume(
 
     file.flush_and_evict_all().await.ok();
     drop(file);
-    return_md5(hasher);
+    if let Some(h) = hasher {
+        return_md5(h);
+    }
     if let Some(h) = xxh64_hasher {
         super::assembly_opt::return_xxh64(h);
     }
