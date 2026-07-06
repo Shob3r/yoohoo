@@ -11,6 +11,7 @@
 //! Save a baseline:    cargo bench -- --save-baseline before
 //! Compare to baseline: cargo bench -- --baseline before
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt as _;
@@ -433,6 +434,206 @@ fn bench_verify_file_md5(c: &mut Criterion) {
     group.finish();
 }
 
+const HASH_MIB: u64 = 128;
+
+/// XXH64 vs MD5 throughput on a 128 MiB file via pread. XXH64 is the
+/// compressed-chunk hash format used by some manifests.
+fn bench_xxh64_vs_md5(c: &mut Criterion) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("hash.bin");
+    fill_file(&path, HASH_MIB as usize, 0xCD);
+    let bytes = HASH_MIB * 1024 * 1024;
+
+    let mut group = c.benchmark_group("hash_128m");
+    group.throughput(Throughput::Bytes(bytes));
+
+    group.bench_function("md5_crate", |b| {
+        b.iter(|| {
+            evict_page_cache(&path);
+            let f = fs::File::open(&path).unwrap();
+            let mut h = Md5::new();
+            let mut buf = vec![0u8; 256 * 1024];
+            let mut off = 0u64;
+            loop {
+                let n = f.read_at(&mut buf, off).unwrap();
+                if n == 0 {
+                    break;
+                }
+                h.update(&buf[..n]);
+                off += n as u64;
+            }
+            let _ = h.finalize();
+        });
+    });
+
+    group.bench_function("xxh64", |b| {
+        b.iter(|| {
+            evict_page_cache(&path);
+            let f = fs::File::open(&path).unwrap();
+            let mut h = xxhash_rust::xxh64::Xxh64::new(0);
+            let mut buf = vec![0u8; 256 * 1024];
+            let mut off = 0u64;
+            loop {
+                let n = f.read_at(&mut buf, off).unwrap();
+                if n == 0 {
+                    break;
+                }
+                h.update(&buf[..n]);
+                off += n as u64;
+            }
+            let _ = h.digest();
+        });
+    });
+
+    group.finish();
+}
+
+const ONESHOT_MIB: u64 = 8;
+
+/// One-shot zstd decompression (mmap input + single ZSTD_decompressDCtx) vs
+/// streaming decompression (BufReader + Decoder). The one-shot path is what
+/// `decompress_chunk_oneshot` uses for chunks <= 8 MiB.
+fn bench_zstd_oneshot(c: &mut Criterion) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let raw = vec![0x42u8; ONESHOT_MIB as usize * 1024 * 1024];
+    let comp = zstd::encode_all(&raw[..], 3).unwrap();
+    let comp_path = dir.path().join("oneshot.zst");
+    fs::write(&comp_path, &comp).unwrap();
+    let out = dir.path().join("out.bin");
+    let bytes = ONESHOT_MIB * 1024 * 1024;
+
+    let mut group = c.benchmark_group("zstd_oneshot");
+    group.throughput(Throughput::Bytes(bytes));
+
+    group.bench_function("streaming", |b| {
+        b.iter(|| {
+            evict_page_cache(&comp_path);
+            let o = fs::File::create(&out).unwrap();
+            o.set_len(raw.len() as u64).unwrap();
+            let cf = fs::File::open(&comp_path).unwrap();
+            let br = std::io::BufReader::with_capacity(256 * 1024, cf);
+            let mut dec = zstd::Decoder::new(br).unwrap();
+            let mut buf = vec![0u8; 256 * 1024];
+            let mut woff = 0u64;
+            loop {
+                let n = dec.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                o.write_all_at(&buf[..n], woff).unwrap();
+                woff += n as u64;
+            }
+            o.sync_all().unwrap();
+        });
+    });
+
+    group.bench_function("oneshot_heap", |b| {
+        b.iter(|| {
+            let comp_data = fs::read(&comp_path).unwrap();
+            let mut out_buf = vec![0u8; raw.len()];
+            let mut dec = zstd::Decoder::new(comp_data.as_slice()).unwrap();
+            std::io::Read::read_to_end(&mut dec, &mut out_buf).unwrap();
+        });
+    });
+
+    group.finish();
+}
+
+const MANIFEST_FILES: usize = 5000;
+const MANIFEST_CHUNKS_PER_FILE: usize = 50;
+
+/// CompactManifest build from a large synthetic manifest. Measures the arena
+/// interning and column vec construction cost.
+fn bench_compact_manifest_build(c: &mut Criterion) {
+    let hash_pool: Vec<String> = (0..MANIFEST_FILES).map(|i| format!("{i:032x}")).collect();
+    let assets: Vec<SophonManifestAssetProperty> = (0..MANIFEST_FILES)
+        .map(|f| {
+            let chunks: Vec<SophonManifestAssetChunk> = (0..MANIFEST_CHUNKS_PER_FILE)
+                .map(|c| {
+                    let h = &hash_pool[(f + c) % MANIFEST_FILES];
+                    SophonManifestAssetChunk {
+                        chunk_name: format!("f{f}c{c}"),
+                        chunk_decompressed_hash_md5: h.clone(),
+                        chunk_on_file_offset: (c * 1024 * 1024) as u64,
+                        chunk_size: 0,
+                        chunk_size_decompressed: 0,
+                        chunk_compressed_hash_xxh: 0,
+                        chunk_compressed_hash_md5: String::new(),
+                        chunk_old_offset: -1,
+                    }
+                })
+                .collect();
+            let size = chunks.iter().map(|c| c.chunk_size_decompressed).sum();
+            SophonManifestAssetProperty {
+                asset_name: format!("asset_{f}.pak"),
+                asset_chunks: chunks,
+                asset_type: 0,
+                asset_size: size,
+                asset_hash_md5: format!("{f:032x}"),
+            }
+        })
+        .collect();
+
+    let mut group = c.benchmark_group("compact_manifest");
+    group.throughput(Throughput::Elements(MANIFEST_FILES as u64));
+
+    group.bench_function("build_5000x50", |b| {
+        b.iter(|| {
+            let assets = assets.clone();
+            let manifest = CompactManifest::from(assets);
+            std::hint::black_box(manifest.num_files());
+        });
+    });
+
+    group.finish();
+}
+
+const LOOKUP_CHUNKS: usize = 10000;
+
+/// ChunkNameLookup binary search vs HashMap lookup. Measures the lookup
+/// throughput for the two approaches used to resolve chunk names.
+fn bench_chunk_lookup(c: &mut Criterion) {
+    let names: Vec<String> = (0..LOOKUP_CHUNKS)
+        .map(|i| format!("chunk_{i:08}"))
+        .collect();
+    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let arena = StringArena::from(name_refs.as_slice());
+    let lookup = ChunkNameLookup::from_arena(arena);
+    let mut hashmap: HashMap<String, usize> = HashMap::with_capacity(LOOKUP_CHUNKS);
+    for (i, n) in names.iter().enumerate() {
+        hashmap.insert(n.clone(), i);
+    }
+
+    let mut group = c.benchmark_group("chunk_lookup");
+    group.throughput(Throughput::Elements(LOOKUP_CHUNKS as u64));
+
+    group.bench_function("binary_search_10000", |b| {
+        b.iter(|| {
+            let mut found = 0usize;
+            for n in &names {
+                if lookup.lookup(n).is_some() {
+                    found += 1;
+                }
+            }
+            std::hint::black_box(found);
+        });
+    });
+
+    group.bench_function("hashmap_10000", |b| {
+        b.iter(|| {
+            let mut found = 0usize;
+            for n in &names {
+                if hashmap.contains_key(n) {
+                    found += 1;
+                }
+            }
+            std::hint::black_box(found);
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_io_copy,
@@ -440,5 +641,9 @@ criterion_group!(
     bench_zstd_decompress,
     bench_assembly_e2e,
     bench_verify_file_md5,
+    bench_xxh64_vs_md5,
+    bench_zstd_oneshot,
+    bench_compact_manifest_build,
+    bench_chunk_lookup,
 );
 criterion_main!(benches);
