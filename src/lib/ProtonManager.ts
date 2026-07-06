@@ -122,7 +122,7 @@ export const protonCommand = async (args: string): Promise<void> => {
 	const dataDir = await protonData();
 	await executeLocalBinary(`proton/proton`, `run ${args}`, {
 		STEAM_COMPAT_DATA_PATH: dataDir,
-		STEAM_COMPAT_CLIENT_INSTALL_PATH: "", // This does nothing, but is required to be here for proton to run
+		STEAM_COMPAT_CLIENT_INSTALL_PATH: "", // Required to be declared for proton to run, does nothing otherwise
 	});
 };
 
