@@ -77,7 +77,7 @@ impl PatchSF {
             on_progress,
         );
         WORK_BUF_POOL.return_buf(io_buf);
-        STEP_BUF_POOL.return_buf(step_buf);
+        STEP_BUF_POOL.return_buf_shrunken(step_buf, IO_BUF_SIZE);
         result
     }
 }
