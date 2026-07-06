@@ -613,7 +613,7 @@ fn register_chunks_for_file<'a>(
     download_items_index: &mut HashMap<&'a str, usize>,
     chunk_refcounts: &mut Vec<AtomicUsize>,
     installer_idx: usize,
-    pre_downloaded: &HashMap<String, u64>,
+    pre_downloaded: &HashMap<u32, u64>,
 ) {
     let range = all_files.file_chunk_range(file_idx);
     let downloadable: Vec<(usize, ChunkRef<'a>)> = (0..(range.end - range.start))
@@ -632,7 +632,7 @@ fn register_chunks_for_file<'a>(
     let pending = Arc::new(AtomicUsize::new(chunk_count));
     for (global_chunk_idx, chunk) in downloadable {
         let name = chunk.chunk_name;
-        let is_pre = pre_downloaded.contains_key(name);
+        let is_pre = pre_downloaded.contains_key(&(global_chunk_idx as u32));
 
         let item_idx = if let Some(&idx) = download_items_index.get(name) {
             if is_pre {
@@ -668,7 +668,7 @@ async fn build_download_state(
     ctx: &InstallContext,
     assemble_tx: &mpsc::Sender<(usize, usize)>,
     completed_indices: Option<&HashSet<usize>>,
-    pre_downloaded: &HashMap<String, u64>,
+    pre_downloaded: &HashMap<u32, u64>,
 ) -> SophonResult<(
     Vec<DownloadItem>,
     Arc<Vec<FileEntry>>,
@@ -1874,20 +1874,7 @@ pub async fn install(
         None
     };
 
-    {
-        let completed_names: HashSet<&str> = completed_chunk_indices
-            .iter()
-            .map(|r| all_files.chunk(*r.key() as usize).chunk_name)
-            .collect();
-        for (chunk_name, &size) in &prev_downloaded_chunks {
-            if completed_names.contains(chunk_name.as_str()) {
-                continue;
-            }
-            resume_bytes_offset += size;
-        }
-    }
-
-    let initial_chunks = if options.is_resume {
+    let initial_chunks: HashMap<u32, u64> = if options.is_resume {
         let chunk_name_bytes: usize = prev_downloaded_chunks.keys().map(|k| k.len()).sum();
         log::info!(
             "MEMORY: prev_downloaded_chunks={} entries, ~{:.1}MB (keys={}B + vals={}B + overhead=~{}B)",
@@ -1900,7 +1887,20 @@ pub async fn install(
             prev_downloaded_chunks.len() * 8,
             prev_downloaded_chunks.len() * 48,
         );
-        prev_downloaded_chunks
+        let mut m: HashMap<u32, u64> = HashMap::with_capacity(prev_downloaded_chunks.len());
+        for i in 0..all_files.num_chunks() {
+            let chunk = all_files.chunk(i);
+            if let Some(&size) = prev_downloaded_chunks.get(chunk.chunk_name) {
+                if completed_chunk_indices.contains(&(i as u32)) {
+                    continue;
+                }
+                m.insert(i as u32, size);
+                resume_bytes_offset += size;
+            }
+        }
+        drop(prev_downloaded_chunks);
+        super::reclaim_memory();
+        m
     } else {
         HashMap::new()
     };
@@ -2075,8 +2075,10 @@ pub async fn install(
     {
         let downloaded_chunks_vec: Vec<AtomicU64> = (0..download_items.len())
             .map(|i| {
-                let name = chunk_names_lookup.get(i);
-                let val = initial_chunks.get(name).copied().unwrap_or(0);
+                let item = &download_items[i];
+                let global_chunk_idx = ctx.all_files.file_chunk_range(item.file_idx).start as u32
+                    + item.chunk_idx as u32;
+                let val = initial_chunks.get(&global_chunk_idx).copied().unwrap_or(0);
                 AtomicU64::new(val)
             })
             .collect();
