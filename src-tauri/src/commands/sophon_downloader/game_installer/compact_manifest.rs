@@ -29,6 +29,7 @@ impl<'a> From<&'a SophonManifestAssetChunk> for ChunkRef<'a> {
 pub struct StringArena {
     data: String,
     offsets: Vec<u32>,
+    dedup: std::collections::HashMap<String, u32>,
 }
 
 impl StringArena {
@@ -36,6 +37,7 @@ impl StringArena {
         Self {
             data: String::with_capacity(total_bytes),
             offsets: Vec::with_capacity(spans + 1),
+            dedup: std::collections::HashMap::new(),
         }
     }
 
@@ -43,6 +45,18 @@ impl StringArena {
         let idx = self.offsets.len() as u32;
         self.offsets.push(self.data.len() as u32);
         self.data.push_str(s);
+        idx
+    }
+
+    /// Intern a string, returning the index of an existing identical string
+    /// if one was already interned. Saves memory when many chunks share the
+    /// same hash (e.g., empty `chunk_compressed_hash_md5`).
+    pub fn intern_dedup(&mut self, s: &str) -> u32 {
+        if let Some(&idx) = self.dedup.get(s) {
+            return idx;
+        }
+        let idx = self.intern(s);
+        self.dedup.insert(s.to_string(), idx);
         idx
     }
 
@@ -275,14 +289,14 @@ impl From<Vec<SophonManifestAssetProperty>> for CompactManifest {
 
         for file in &properties {
             file_name_idx.push(arena.intern(&file.asset_name));
-            file_hash_idx.push(arena.intern(&file.asset_hash_md5));
+            file_hash_idx.push(arena.intern_dedup(&file.asset_hash_md5));
             file_type.push(file.asset_type as u8);
             file_size.push(file.asset_size);
             file_chunk_start.push(chunk_name_idx.len() as u32);
             for chunk in &file.asset_chunks {
                 chunk_name_idx.push(arena.intern(&chunk.chunk_name));
-                chunk_decomp_hash_idx.push(arena.intern(&chunk.chunk_decompressed_hash_md5));
-                chunk_comp_hash_idx.push(arena.intern(&chunk.chunk_compressed_hash_md5));
+                chunk_decomp_hash_idx.push(arena.intern_dedup(&chunk.chunk_decompressed_hash_md5));
+                chunk_comp_hash_idx.push(arena.intern_dedup(&chunk.chunk_compressed_hash_md5));
                 chunk_size.push(chunk.chunk_size as u32);
                 chunk_size_decompressed.push(chunk.chunk_size_decompressed as u32);
                 chunk_old_offset.push(chunk.chunk_old_offset);
@@ -454,6 +468,6 @@ mod tests {
         let f1 = make_file("a.pak", "shared", 0, 100, vec![]);
         let f2 = make_file("b.pak", "shared", 0, 200, vec![]);
         let cm = CompactManifest::from(vec![f1, f2]);
-        assert_eq!(cm.arena.len(), 4);
+        assert_eq!(cm.arena.len(), 3);
     }
 }
