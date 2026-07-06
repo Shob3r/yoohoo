@@ -632,9 +632,9 @@ fn op_chunk_name_lookup(num_chunks: usize) {
 /// Mirrors the per-chunk `&str -> usize` map that locates duplicate chunks.
 fn op_download_items_index(num_chunks: usize) {
     let names: Vec<String> = (0..num_chunks).map(|i| format!("chunk_{i:08}")).collect();
-    let mut map: HashMap<&str, usize> = HashMap::with_capacity(num_chunks);
+    let mut map: HashMap<&str, u32> = HashMap::with_capacity(num_chunks);
     for (i, n) in names.iter().enumerate() {
-        map.insert(n.as_str(), i);
+        map.insert(n.as_str(), i as u32);
     }
     std::hint::black_box(map.len());
     thread::sleep(PEAK_HOLD);
