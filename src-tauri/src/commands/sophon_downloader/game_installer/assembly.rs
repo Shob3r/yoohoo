@@ -262,18 +262,18 @@ pub fn assemble_file(
         chunks_dir,
     };
 
+    let chunk_offsets: Vec<u64> = all_files.file_chunk_offsets(file_idx);
     let mut cursor = 0u64;
-    for ci in chunk_range.start..chunk_range.end {
+    for (i, ci) in (chunk_range.start..chunk_range.end).enumerate() {
         let chunk = all_files.chunk(ci as usize);
-        if chunk.chunk_on_file_offset != cursor {
+        if chunk_offsets[i] != cursor {
             return Err(SophonError::SizeMismatch {
                 item: file_name.to_string(),
                 expected: file_size,
-                actual: chunk.chunk_on_file_offset,
+                actual: chunk_offsets[i],
             });
         }
-        cursor = chunk
-            .chunk_on_file_offset
+        cursor = chunk_offsets[i]
             .checked_add(chunk.chunk_size_decompressed)
             .ok_or_else(|| SophonError::SizeMismatch {
                 item: file_name.to_string(),
@@ -311,8 +311,9 @@ pub fn assemble_file(
             (0..total_chunks).map(|_| AtomicBool::new(false)).collect();
         let chunk_infos: Vec<(u64, u64)> = (chunk_range.start..chunk_range.end)
             .map(|ci| {
+                let i = (ci - chunk_range.start) as usize;
                 let chunk = all_files.chunk(ci as usize);
-                (chunk.chunk_on_file_offset, chunk.chunk_size_decompressed)
+                (chunk_offsets[i], chunk.chunk_size_decompressed)
             })
             .collect();
 
@@ -394,6 +395,7 @@ pub fn assemble_file(
                 let cdir = chunks_dir;
                 let skip_evict = parallel_hashed_file;
                 let chunk_done = &chunk_done;
+                let chunk_offsets = &chunk_offsets[..];
                 s.spawn(move || {
                     let mut transfer_buf = TRANSFER_BUF.with(|cell| {
                         let mut buf = cell.take();
@@ -408,13 +410,15 @@ pub fn assemble_file(
                             break;
                         }
                         let chunk = files.chunk(ci as usize);
+                        let oi = (ci - chunk_range.start) as usize;
+                        let offset = chunk_offsets[oi];
                         let result = if chunk.chunk_old_offset >= 0 {
                             let old_file = old.expect("has_old_chunks guarantees old file");
                             write_from_old_file(
                                 old_file,
                                 target,
                                 out,
-                                chunk.chunk_on_file_offset,
+                                offset,
                                 chunk.chunk_old_offset as u64,
                                 chunk.chunk_size_decompressed,
                                 None,
@@ -430,7 +434,7 @@ pub fn assemble_file(
                                 write_decompressed_chunk_at(
                                     &chunk_path,
                                     out,
-                                    chunk.chunk_on_file_offset,
+                                    offset,
                                     chunk.chunk_size_decompressed,
                                     None,
                                     chunk.chunk_decompressed_hash_md5,
@@ -447,7 +451,7 @@ pub fn assemble_file(
                                 if !skip_evict {
                                     super::assembly_opt::sync_and_evict_range(
                                         raw_fd,
-                                        chunk.chunk_on_file_offset,
+                                        offset,
                                         chunk.chunk_size_decompressed,
                                     );
                                 }
@@ -483,6 +487,8 @@ pub fn assemble_file(
     } else {
         for ci in chunk_range.start..chunk_range.end {
             let chunk = all_files.chunk(ci as usize);
+            let oi = (ci - chunk_range.start) as usize;
+            let offset = chunk_offsets[oi];
             if chunk.chunk_old_offset >= 0 {
                 debug_assert!(
                     chunk.chunk_old_offset >= 0,
@@ -495,7 +501,7 @@ pub fn assemble_file(
                     old_file,
                     &target_path,
                     &out_file,
-                    chunk.chunk_on_file_offset,
+                    offset,
                     chunk.chunk_old_offset as u64,
                     chunk.chunk_size_decompressed,
                     file_hasher.as_mut(),
@@ -517,7 +523,7 @@ pub fn assemble_file(
                 let bytes_written = write_decompressed_chunk_at(
                     &chunk_path,
                     &out_file,
-                    chunk.chunk_on_file_offset,
+                    offset,
                     chunk.chunk_size_decompressed,
                     file_hasher.as_mut(),
                     chunk.chunk_decompressed_hash_md5,
@@ -533,7 +539,7 @@ pub fn assemble_file(
             // memory low during assembly of large multi-chunk files.
             super::assembly_opt::sync_and_evict_range(
                 out_file.as_raw_fd(),
-                chunk.chunk_on_file_offset,
+                offset,
                 chunk.chunk_size_decompressed,
             );
         }

@@ -14,7 +14,6 @@ impl<'a> From<&'a SophonManifestAssetChunk> for ChunkRef<'a> {
         ChunkRef {
             chunk_name: &chunk.chunk_name,
             chunk_decompressed_hash_md5: &chunk.chunk_decompressed_hash_md5,
-            chunk_on_file_offset: chunk.chunk_on_file_offset,
             chunk_size: chunk.chunk_size,
             chunk_size_decompressed: chunk.chunk_size_decompressed,
             chunk_compressed_hash_md5: &chunk.chunk_compressed_hash_md5,
@@ -91,7 +90,6 @@ impl From<&[&str]> for StringArena {
 pub struct ChunkRef<'a> {
     pub chunk_name: &'a str,
     pub chunk_decompressed_hash_md5: &'a str,
-    pub chunk_on_file_offset: u64,
     pub chunk_size: u64,
     pub chunk_size_decompressed: u64,
     pub chunk_compressed_hash_md5: &'a str,
@@ -112,7 +110,6 @@ pub struct CompactManifest {
     chunk_name_idx: Vec<u32>,
     chunk_decomp_hash_idx: Vec<u32>,
     chunk_comp_hash_idx: Vec<u32>,
-    chunk_on_file_offset: Vec<u64>,
     chunk_size: Vec<u32>,
     chunk_size_decompressed: Vec<u32>,
     chunk_old_offset: Vec<i64>,
@@ -164,12 +161,21 @@ impl CompactManifest {
         start..end
     }
 
+    /// Find the file index that owns a given global chunk index via binary
+    /// search.
+    #[inline]
+    pub fn file_idx_for_chunk(&self, chunk_idx: usize) -> usize {
+        match self.file_chunk_start.binary_search(&(chunk_idx as u32)) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        }
+    }
+
     #[inline]
     pub fn chunk(&self, chunk_idx: usize) -> ChunkRef<'_> {
         ChunkRef {
             chunk_name: self.arena.get(self.chunk_name_idx[chunk_idx]),
             chunk_decompressed_hash_md5: self.arena.get(self.chunk_decomp_hash_idx[chunk_idx]),
-            chunk_on_file_offset: self.chunk_on_file_offset[chunk_idx],
             chunk_size: self.chunk_size[chunk_idx] as u64,
             chunk_size_decompressed: self.chunk_size_decompressed[chunk_idx] as u64,
             chunk_compressed_hash_md5: self.arena.get(self.chunk_comp_hash_idx[chunk_idx]),
@@ -189,6 +195,29 @@ impl CompactManifest {
         self.chunk_name_idx[chunk_idx]
     }
 
+    /// Compute a chunk's offset within its file by summing decompressed sizes
+    /// of all preceding chunks in the same file. O(chunks_before) per call.
+    #[inline]
+    pub fn chunk_file_offset(&self, chunk_idx: usize) -> u64 {
+        let file_idx = self.file_idx_for_chunk(chunk_idx);
+        let range = self.file_chunk_range(file_idx);
+        (range.start as usize..chunk_idx)
+            .map(|i| self.chunk_size_decompressed[i] as u64)
+            .sum()
+    }
+
+    /// Precompute file offsets for all chunks in a file. O(chunks_in_file).
+    pub fn file_chunk_offsets(&self, file_idx: usize) -> Vec<u64> {
+        let range = self.file_chunk_range(file_idx);
+        let mut offsets = Vec::with_capacity((range.end - range.start) as usize);
+        let mut acc = 0u64;
+        for ci in range.start..range.end {
+            offsets.push(acc);
+            acc += self.chunk_size_decompressed[ci as usize] as u64;
+        }
+        offsets
+    }
+
     /// Arena byte size for memory logging.
     pub fn arena_bytes(&self) -> usize {
         self.arena.byte_len() + self.arena.len() * std::mem::size_of::<u32>()
@@ -199,9 +228,9 @@ impl CompactManifest {
         let n_files = self.file_name_idx.len();
         let n_chunks = self.chunk_name_idx.len();
         n_files * (4 + 4 + 1 + 8 + 4)
-            + n_chunks * (4 + 4 + 4 + 8 + 4 + 4 + 8)
+            + n_chunks * (4 + 4 + 4 + 4 + 4 + 8)
             + n_files * std::mem::size_of::<u32>() * 2
-            + 7 * std::mem::size_of::<Vec<u8>>()
+            + 6 * std::mem::size_of::<Vec<u8>>()
     }
 }
 
@@ -240,7 +269,6 @@ impl From<Vec<SophonManifestAssetProperty>> for CompactManifest {
         let mut chunk_name_idx = Vec::with_capacity(total_chunks);
         let mut chunk_decomp_hash_idx = Vec::with_capacity(total_chunks);
         let mut chunk_comp_hash_idx = Vec::with_capacity(total_chunks);
-        let mut chunk_on_file_offset = Vec::with_capacity(total_chunks);
         let mut chunk_size = Vec::with_capacity(total_chunks);
         let mut chunk_size_decompressed = Vec::with_capacity(total_chunks);
         let mut chunk_old_offset = Vec::with_capacity(total_chunks);
@@ -255,7 +283,6 @@ impl From<Vec<SophonManifestAssetProperty>> for CompactManifest {
                 chunk_name_idx.push(arena.intern(&chunk.chunk_name));
                 chunk_decomp_hash_idx.push(arena.intern(&chunk.chunk_decompressed_hash_md5));
                 chunk_comp_hash_idx.push(arena.intern(&chunk.chunk_compressed_hash_md5));
-                chunk_on_file_offset.push(chunk.chunk_on_file_offset);
                 chunk_size.push(chunk.chunk_size as u32);
                 chunk_size_decompressed.push(chunk.chunk_size_decompressed as u32);
                 chunk_old_offset.push(chunk.chunk_old_offset);
@@ -272,7 +299,6 @@ impl From<Vec<SophonManifestAssetProperty>> for CompactManifest {
             chunk_name_idx,
             chunk_decomp_hash_idx,
             chunk_comp_hash_idx,
-            chunk_on_file_offset,
             chunk_size,
             chunk_size_decompressed,
             chunk_old_offset,
@@ -390,10 +416,10 @@ mod tests {
         assert_eq!(c.chunk_name, "c1");
         assert_eq!(c.chunk_size, 100);
         assert_eq!(c.chunk_size_decompressed, 200);
-        assert_eq!(c.chunk_on_file_offset, 0);
+        assert_eq!(cm.chunk_file_offset(0), 0);
         let c = cm.file_chunk(0, 1);
         assert_eq!(c.chunk_name, "c2");
-        assert_eq!(c.chunk_on_file_offset, 200);
+        assert_eq!(cm.chunk_file_offset(1), 200);
     }
 
     #[test]

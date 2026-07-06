@@ -2406,7 +2406,6 @@ pub async fn verify_integrity(
                 let chunk_ref = ChunkRef {
                     chunk_name: &name,
                     chunk_decompressed_hash_md5: "",
-                    chunk_on_file_offset: 0,
                     chunk_size: size,
                     chunk_size_decompressed: 0,
                     chunk_compressed_hash_md5: "",
