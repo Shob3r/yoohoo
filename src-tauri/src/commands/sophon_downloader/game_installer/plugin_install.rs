@@ -95,7 +95,12 @@ async fn download_zip(
 
     let mut file = tokio::fs::File::create(dest).await?;
     let mut stream = resp.bytes_stream();
-    let mut hasher = super::assembly_opt::take_md5()?;
+    let needs_hash = !expected_md5.is_empty();
+    let mut hasher = if needs_hash {
+        Some(super::assembly_opt::take_md5()?)
+    } else {
+        None
+    };
     let mut downloaded: u64 = 0;
 
     let name = dest
@@ -108,7 +113,9 @@ async fn download_zip(
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
-        hasher.update(&bytes)?;
+        if let Some(ref mut h) = hasher {
+            h.update(&bytes)?;
+        }
         file.write_all(&bytes).await?;
         downloaded += bytes.len() as u64;
 
@@ -131,17 +138,21 @@ async fn download_zip(
 
     file.flush().await?;
 
-    let digest: [u8; 16] = hasher.finish()?;
-    if !md5_hex_eq(&digest, expected_md5) {
-        let _ = fs::remove_file(dest);
-        return Err(SophonError::Md5Mismatch {
-            item: name,
-            expected: expected_md5.to_string(),
-            actual: md5_to_hex(&digest),
-        });
+    if needs_hash {
+        let digest: [u8; 16] = hasher.as_mut().unwrap().finish()?;
+        if !md5_hex_eq(&digest, expected_md5) {
+            let _ = fs::remove_file(dest);
+            return Err(SophonError::Md5Mismatch {
+                item: name,
+                expected: expected_md5.to_string(),
+                actual: md5_to_hex(&digest),
+            });
+        }
     }
 
-    super::assembly_opt::return_md5(hasher);
+    if let Some(h) = hasher {
+        super::assembly_opt::return_md5(h);
+    }
     Ok(())
 }
 

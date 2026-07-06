@@ -1020,7 +1020,12 @@ async fn download_patch_chunk_inner(
     let mut stream = resp.bytes_stream();
     let file = tokio::fs::File::create(dest).await?;
     let mut file = super::download::EvictingWriter::new(file);
-    let mut hasher = super::assembly_opt::take_md5()?;
+    let needs_hash = !expected_md5.is_empty();
+    let mut hasher = if needs_hash {
+        Some(super::assembly_opt::take_md5()?)
+    } else {
+        None
+    };
     let mut total_len = 0u64;
 
     loop {
@@ -1054,7 +1059,9 @@ async fn download_patch_chunk_inner(
                         actual: total_len,
                     });
                 }
-                hasher.update(&bytes)?;
+                if let Some(ref mut h) = hasher {
+                    h.update(&bytes)?;
+                }
                 file.write_all(&bytes).await?;
             }
             Some(Err(e)) => {
@@ -1077,8 +1084,8 @@ async fn download_patch_chunk_inner(
         });
     }
 
-    if !expected_md5.is_empty() {
-        let digest: [u8; 16] = hasher.finish()?;
+    if needs_hash {
+        let digest: [u8; 16] = hasher.as_mut().unwrap().finish()?;
         if !md5_hex_eq(&digest, expected_md5) {
             let _ = tokio::fs::remove_file(dest).await;
             return Err(SophonError::Md5Mismatch {
@@ -1091,7 +1098,9 @@ async fn download_patch_chunk_inner(
 
     file.flush_and_evict_all().await.ok();
     drop(file);
-    super::assembly_opt::return_md5(hasher);
+    if let Some(h) = hasher {
+        super::assembly_opt::return_md5(h);
+    }
     Ok(())
 }
 
