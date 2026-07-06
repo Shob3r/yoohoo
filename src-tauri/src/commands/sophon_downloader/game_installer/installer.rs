@@ -663,7 +663,7 @@ async fn build_download_state(
 ) -> SophonResult<(
     Vec<DownloadItem>,
     Arc<Vec<FileEntry>>,
-    Arc<Vec<usize>>,
+    Arc<Vec<u32>>,
     Vec<AtomicU32>,
     Arc<ChunkNameLookup>,
     Arc<ChunkNameLookup>,
@@ -725,12 +725,12 @@ async fn build_download_state(
     );
 
     let total_flat_entries: usize = chunk_entries.iter().map(|v| v.len()).sum();
-    let mut chunk_entry_offsets: Vec<usize> = Vec::with_capacity(chunk_entries.len() + 1);
+    let mut chunk_entry_offsets: Vec<u32> = Vec::with_capacity(chunk_entries.len() + 1);
     let mut flat_chunk_entries: Vec<FileEntry> = Vec::with_capacity(total_flat_entries);
     chunk_entry_offsets.push(0);
     for inner in chunk_entries.drain(..) {
         flat_chunk_entries.extend(inner);
-        chunk_entry_offsets.push(flat_chunk_entries.len());
+        chunk_entry_offsets.push(flat_chunk_entries.len() as u32);
     }
 
     let total_name_bytes: usize = download_items
@@ -1100,11 +1100,11 @@ async fn download_chunk_with_retries(
 fn notify_assembly_ready(
     item_idx: usize,
     chunk_entries: &[FileEntry],
-    chunk_entry_offsets: &[usize],
+    chunk_entry_offsets: &[u32],
     assemble_tx: &mpsc::Sender<(usize, usize)>,
 ) {
-    let start = chunk_entry_offsets.get(item_idx).copied().unwrap_or(0);
-    let end = chunk_entry_offsets.get(item_idx + 1).copied().unwrap_or(0);
+    let start = chunk_entry_offsets.get(item_idx).copied().unwrap_or(0) as usize;
+    let end = chunk_entry_offsets.get(item_idx + 1).copied().unwrap_or(0) as usize;
     if start >= end {
         return;
     }
@@ -1122,7 +1122,7 @@ async fn process_download_item(
     item_idx: usize,
     ctx: Arc<InstallContext>,
     chunk_entries: Arc<Vec<FileEntry>>,
-    chunk_entry_offsets: Arc<Vec<usize>>,
+    chunk_entry_offsets: Arc<Vec<u32>>,
     assemble_tx: mpsc::Sender<(usize, usize)>,
     handle: DownloadHandle,
 ) -> SophonResult<()> {
@@ -1318,7 +1318,7 @@ async fn run_downloads(
     ctx: Arc<InstallContext>,
     download_items: Vec<DownloadItem>,
     chunk_entries: Arc<Vec<FileEntry>>,
-    chunk_entry_offsets: Arc<Vec<usize>>,
+    chunk_entry_offsets: Arc<Vec<u32>>,
     assemble_tx: &mpsc::Sender<(usize, usize)>,
     handle: DownloadHandle,
 ) -> DownloadSummary {
@@ -2976,7 +2976,7 @@ mod tests {
 
         let pending: PendingCount = Arc::new(AtomicUsize::new(1usize));
         let chunk_entries: Vec<FileEntry> = vec![(0u32, 0u32, Arc::clone(&pending))];
-        let chunk_entry_offsets: Vec<usize> = vec![0, 1];
+        let chunk_entry_offsets: Vec<u32> = vec![0, 1];
 
         notify_assembly_ready(0, &chunk_entries, &chunk_entry_offsets, &tx);
 
@@ -2989,7 +2989,7 @@ mod tests {
     #[tokio::test]
     async fn notify_assembly_ready_chunk_not_in_map() {
         let chunk_entries: Vec<FileEntry> = vec![];
-        let chunk_entry_offsets: Vec<usize> = vec![0];
+        let chunk_entry_offsets: Vec<u32> = vec![0];
         let (tx, rx) = mpsc::channel::<(usize, usize)>(16);
         drop(rx);
 
