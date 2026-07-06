@@ -997,19 +997,20 @@ async fn check_needs_download(
     chunk: ChunkRef<'_>,
     game_dir: &Arc<PathBuf>,
     verify_cache: &Arc<DashMap<String, VerificationEntry>>,
-) -> SophonResult<bool> {
+) -> SophonResult<(bool, Option<u64>)> {
     let chunk_size = chunk.chunk_size;
     let expected_md5: Arc<str> = Arc::from(chunk.chunk_compressed_hash_md5);
     let cache = Arc::clone(verify_cache);
     let dest: Arc<Path> = Arc::from(dest);
     let gd = Arc::clone(game_dir);
 
-    let valid = tokio::task::spawn_blocking(move || {
-        cache::check_file_md5_cached(&dest, chunk_size, &expected_md5, &gd, &cache).unwrap_or(false)
+    let result = tokio::task::spawn_blocking(move || {
+        cache::check_file_md5_cached_with_size(&dest, chunk_size, &expected_md5, &gd, &cache)
+            .unwrap_or((false, None))
     })
     .await?;
 
-    Ok(!valid)
+    Ok((!result.0, result.1))
 }
 
 async fn download_chunk_with_retries(
@@ -1017,6 +1018,7 @@ async fn download_chunk_with_retries(
     client: &Client,
     chunk_download: &DownloadInfo,
     dest: &Path,
+    existing_size: Option<u64>,
     ctx: &InstallContext,
     handle: &DownloadHandle,
 ) -> SophonResult<()> {
@@ -1028,8 +1030,15 @@ async fn download_chunk_with_retries(
             return Err(SophonError::Cancelled);
         }
 
-        match super::download::download_chunk(client, chunk_download, chunk, dest, Some(handle))
-            .await
+        match super::download::download_chunk(
+            client,
+            chunk_download,
+            chunk,
+            dest,
+            existing_size,
+            Some(handle),
+        )
+        .await
         {
             Ok(()) => return Ok(()),
             Err(SophonError::Md5Mismatch { .. }) => {
@@ -1147,7 +1156,7 @@ async fn process_download_item(
         _chunk_timer.record_phase(super::profiling::ChunkPhase::Verify);
         result
     } else {
-        true
+        (true, None)
     };
 
     if handle.is_cancelled() {
@@ -1155,12 +1164,13 @@ async fn process_download_item(
     }
 
     let mut was_actually_downloaded = false;
-    if needs_download {
+    if needs_download.0 {
         download_chunk_with_retries(
             chunk,
             &ctx.installer_clients[item.installer_idx],
             &ctx.installer_downloads[item.installer_idx],
             &dest,
+            needs_download.1,
             &ctx,
             &handle,
         )
@@ -2389,7 +2399,8 @@ pub async fn verify_integrity(
                     chunk_old_offset: -1,
                 };
                 let result =
-                    download::download_chunk(&client, &dl_info, chunk_ref, &chunk_path, None).await;
+                    download::download_chunk(&client, &dl_info, chunk_ref, &chunk_path, None, None)
+                        .await;
                 if result.is_ok() {
                     dl_completed.fetch_add(1, Ordering::Relaxed);
                     dl_bytes.fetch_add(size, Ordering::Relaxed);
@@ -2987,7 +2998,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(needs);
+        assert!(needs.0);
     }
 
     #[tokio::test]
@@ -3037,7 +3048,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!needs);
+        assert!(!needs.0);
     }
 
     #[tokio::test]
@@ -3135,6 +3146,7 @@ mod tests {
             &client,
             &chunk_download,
             &dest,
+            None,
             &ctx,
             &handle,
         )
@@ -3236,6 +3248,7 @@ mod tests {
             &client,
             &chunk_download,
             &dest,
+            None,
             &ctx,
             &handle,
         )

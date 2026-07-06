@@ -952,6 +952,7 @@ async fn download_chunk_with_retries(
             chunk_download,
             chunk.into(),
             dest,
+            None,
             Some(handle),
         )
         .await

@@ -222,6 +222,7 @@ pub async fn download_chunk(
     chunk_download: &DownloadInfo,
     chunk: ChunkRef<'_>,
     dest: &Path,
+    existing_size: Option<u64>,
     handle: Option<&super::handle::DownloadHandle>,
 ) -> SophonResult<()> {
     if !super::assembly::validate_chunk_name(chunk.chunk_name) {
@@ -229,7 +230,7 @@ pub async fn download_chunk(
     }
 
     let url = chunk_download.url_for(chunk.chunk_name);
-    do_download_chunk(client, &url, chunk, dest, handle).await
+    do_download_chunk(client, &url, chunk, dest, existing_size, handle).await
 }
 
 async fn do_download_chunk(
@@ -237,12 +238,15 @@ async fn do_download_chunk(
     url: &str,
     chunk: ChunkRef<'_>,
     dest: &Path,
+    existing_size: Option<u64>,
     handle: Option<&super::handle::DownloadHandle>,
 ) -> SophonResult<()> {
-    // Check for partial download to resume (skip exists() to avoid TOCTOU)
-    let mut existing_size = match tokio::fs::metadata(dest).await {
-        Ok(meta) => meta.len(),
-        Err(_) => 0,
+    let mut existing_size = match existing_size {
+        Some(s) => s,
+        None => match tokio::fs::metadata(dest).await {
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        },
     };
 
     if existing_size >= chunk.chunk_size {

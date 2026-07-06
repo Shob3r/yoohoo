@@ -130,6 +130,18 @@ pub fn check_file_md5_cached(
     check_file_md5_with_cache_key(path, expected_size, expected_md5, &cache_key, cache)
 }
 
+pub fn check_file_md5_cached_with_size(
+    path: &Path,
+    expected_size: u64,
+    expected_md5: &str,
+    game_dir: &Path,
+    cache: &DashMap<String, VerificationEntry>,
+) -> io::Result<(bool, Option<u64>)> {
+    let relative = path.strip_prefix(game_dir).unwrap_or(path);
+    let cache_key = relative.to_string_lossy();
+    check_file_md5_with_cache_key_and_size(path, expected_size, expected_md5, &cache_key, cache)
+}
+
 pub fn check_file_md5_with_cache_key(
     path: &Path,
     expected_size: u64,
@@ -137,14 +149,26 @@ pub fn check_file_md5_with_cache_key(
     cache_key: &str,
     cache: &DashMap<String, VerificationEntry>,
 ) -> io::Result<bool> {
+    check_file_md5_with_cache_key_and_size(path, expected_size, expected_md5, cache_key, cache)
+        .map(|(ok, _)| ok)
+}
+
+pub fn check_file_md5_with_cache_key_and_size(
+    path: &Path,
+    expected_size: u64,
+    expected_md5: &str,
+    cache_key: &str,
+    cache: &DashMap<String, VerificationEntry>,
+) -> io::Result<(bool, Option<u64>)> {
     let metadata = match path.metadata() {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             cache.remove(cache_key);
-            return Ok(false);
+            return Ok((false, None));
         }
         Err(err) => return Err(err),
     };
+    let actual_size = metadata.len();
     let mtime = metadata
         .modified()?
         .duration_since(UNIX_EPOCH)
@@ -156,16 +180,16 @@ pub fn check_file_md5_with_cache_key(
         && entry.md5 == expected_md5
     {
         if entry.mtime_secs == mtime {
-            return Ok(true);
+            return Ok((true, Some(actual_size)));
         }
-        if metadata.len() == expected_size {
-            return Ok(true);
+        if actual_size == expected_size {
+            return Ok((true, Some(actual_size)));
         }
     }
 
-    if metadata.len() != expected_size {
+    if actual_size != expected_size {
         cache.remove(cache_key);
-        return Ok(false);
+        return Ok((false, Some(actual_size)));
     }
 
     let actual = file_md5_digest(path)?;
@@ -173,7 +197,7 @@ pub fn check_file_md5_with_cache_key(
 
     if matches {
         if cache.len() >= VERIFICATION_CACHE_MAX_ENTRIES {
-            return Ok(true);
+            return Ok((true, Some(actual_size)));
         }
         cache.insert(
             cache_key.to_string(),
@@ -187,7 +211,7 @@ pub fn check_file_md5_with_cache_key(
         cache.remove(cache_key);
     }
 
-    Ok(matches)
+    Ok((matches, Some(actual_size)))
 }
 
 pub(crate) fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
