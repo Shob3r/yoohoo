@@ -190,16 +190,19 @@ async fn verify_existing_file_hash(path: &Path, expected_hash: &str) -> SophonRe
         return Ok(true);
     }
     let path = path.to_path_buf();
-    let expected_hash = expected_hash.to_string();
     let expected_len = expected_hash.len();
+    let mut hash_buf = [0u8; 32];
+    hash_buf[..expected_len].copy_from_slice(expected_hash.as_bytes());
     tokio::task::spawn_blocking(move || match expected_len {
         32 => {
             let digest = pread_hash_md5_digest(&path)?;
-            Ok(md5_hex_eq(&digest, &expected_hash))
+            let expected = std::str::from_utf8(&hash_buf[..32]).unwrap_or("");
+            Ok(md5_hex_eq(&digest, expected))
         }
         16 => {
             let digest = pread_hash_xxh64_digest(&path)?;
-            Ok(xxh64_hex_eq(digest, &expected_hash))
+            let expected = std::str::from_utf8(&hash_buf[..16]).unwrap_or("");
+            Ok(xxh64_hex_eq(digest, expected))
         }
         _ => {
             log::warn!(
