@@ -146,8 +146,7 @@ struct DownloadItem {
     is_pre_downloaded: bool,
 }
 
-type PendingCount = Arc<AtomicUsize>;
-type FileEntry = (u32, u32, PendingCount);
+type FileEntry = (u32, u32, u32);
 
 pub struct SophonInstaller {
     pub manifest: SophonManifestProto,
@@ -603,6 +602,7 @@ fn register_chunks_for_file<'a>(
     download_items: &mut Vec<DownloadItem>,
     download_items_index: &mut HashMap<&'a str, u32>,
     chunk_refcounts: &mut Vec<AtomicU32>,
+    pending_counts: &mut Vec<AtomicU32>,
     installer_idx: usize,
     pre_downloaded: &HashMap<u32, u64>,
 ) {
@@ -620,7 +620,8 @@ fn register_chunks_for_file<'a>(
         return;
     }
 
-    let pending = Arc::new(AtomicUsize::new(chunk_count));
+    let pending_idx = pending_counts.len() as u32;
+    pending_counts.push(AtomicU32::new(chunk_count as u32));
     for (global_chunk_idx, chunk) in downloadable {
         let name = chunk.chunk_name;
         let is_pre = pre_downloaded.contains_key(&(global_chunk_idx as u32));
@@ -645,11 +646,7 @@ fn register_chunks_for_file<'a>(
         if item_idx as usize >= chunk_entries.len() {
             chunk_entries.resize_with(item_idx as usize + 1, Vec::new);
         }
-        chunk_entries[item_idx as usize].push((
-            file_idx as u32,
-            tmp_dir_idx as u32,
-            Arc::clone(&pending),
-        ));
+        chunk_entries[item_idx as usize].push((file_idx as u32, tmp_dir_idx as u32, pending_idx));
 
         if item_idx as usize >= chunk_refcounts.len() {
             chunk_refcounts.resize_with(item_idx as usize + 1, || AtomicU32::new(0));
@@ -669,6 +666,7 @@ async fn build_download_state(
     Arc<Vec<FileEntry>>,
     Arc<Vec<u32>>,
     Vec<AtomicU32>,
+    Arc<Vec<AtomicU32>>,
     Arc<ChunkNameLookup>,
     Arc<ChunkNameLookup>,
 )> {
@@ -677,6 +675,7 @@ async fn build_download_state(
     let mut download_items_index: HashMap<&str, u32> = HashMap::with_capacity(total_chunks);
     let mut chunk_entries: Vec<Vec<FileEntry>> = Vec::with_capacity(total_chunks);
     let mut chunk_refcounts: Vec<AtomicU32> = Vec::with_capacity(total_chunks);
+    let mut pending_counts: Vec<AtomicU32> = Vec::new();
 
     let mut all_files_index: usize = 0;
 
@@ -715,6 +714,7 @@ async fn build_download_state(
                 &mut download_items,
                 &mut download_items_index,
                 &mut chunk_refcounts,
+                &mut pending_counts,
                 tmp_dir_idx,
                 pre_downloaded,
             );
@@ -762,6 +762,7 @@ async fn build_download_state(
         Arc::new(flat_chunk_entries),
         Arc::new(chunk_entry_offsets),
         chunk_refcounts,
+        Arc::new(pending_counts),
         chunk_names_lookup.clone(),
         chunk_names_lookup,
     ))
@@ -1105,6 +1106,7 @@ fn notify_assembly_ready(
     item_idx: usize,
     chunk_entries: &[FileEntry],
     chunk_entry_offsets: &[u32],
+    pending_counts: &[AtomicU32],
     assemble_tx: &mpsc::Sender<(usize, usize)>,
 ) {
     let start = chunk_entry_offsets.get(item_idx).copied().unwrap_or(0) as usize;
@@ -1113,20 +1115,22 @@ fn notify_assembly_ready(
         return;
     }
 
-    for (file_idx, tmp_dir_idx, pending) in &chunk_entries[start..end] {
-        let prev = pending.fetch_sub(1, Ordering::AcqRel);
+    for (file_idx, tmp_dir_idx, pending_idx) in &chunk_entries[start..end] {
+        let prev = pending_counts[*pending_idx as usize].fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
             let _ = assemble_tx.try_send((*file_idx as usize, *tmp_dir_idx as usize));
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_download_item(
     item: DownloadItem,
     item_idx: usize,
     ctx: Arc<InstallContext>,
     chunk_entries: Arc<Vec<FileEntry>>,
     chunk_entry_offsets: Arc<Vec<u32>>,
+    pending_counts: Arc<Vec<AtomicU32>>,
     assemble_tx: mpsc::Sender<(usize, usize)>,
     handle: DownloadHandle,
 ) -> SophonResult<()> {
@@ -1306,7 +1310,13 @@ async fn process_download_item(
         ctx.last_update.store(now, Ordering::Relaxed);
     }
 
-    notify_assembly_ready(item_idx, &chunk_entries, &chunk_entry_offsets, &assemble_tx);
+    notify_assembly_ready(
+        item_idx,
+        &chunk_entries,
+        &chunk_entry_offsets,
+        &pending_counts,
+        &assemble_tx,
+    );
 
     _chunk_timer.finish(chunk.chunk_size, was_actually_downloaded);
 
@@ -1323,6 +1333,7 @@ async fn run_downloads(
     download_items: Vec<DownloadItem>,
     chunk_entries: Arc<Vec<FileEntry>>,
     chunk_entry_offsets: Arc<Vec<u32>>,
+    pending_counts: Arc<Vec<AtomicU32>>,
     assemble_tx: &mpsc::Sender<(usize, usize)>,
     handle: DownloadHandle,
 ) -> DownloadSummary {
@@ -1344,6 +1355,7 @@ async fn run_downloads(
         let ctx = Arc::clone(&ctx);
         let chunk_entries = Arc::clone(&chunk_entries);
         let chunk_entry_offsets = Arc::clone(&chunk_entry_offsets);
+        let pending_counts = Arc::clone(&pending_counts);
         let assemble_tx = assemble_tx.clone();
         let handle = handle.clone();
         let cancelled = Arc::clone(&cancelled);
@@ -1374,6 +1386,7 @@ async fn run_downloads(
                     Arc::clone(&ctx),
                     Arc::clone(&chunk_entries),
                     Arc::clone(&chunk_entry_offsets),
+                    Arc::clone(&pending_counts),
                     assemble_tx.clone(),
                     handle.clone(),
                 )
@@ -2053,6 +2066,7 @@ pub async fn install(
         chunk_entries,
         chunk_entry_offsets,
         chunk_refcounts_vec,
+        pending_counts,
         chunk_names_lookup,
         _chunk_names,
     ) = build_download_state(
@@ -2119,6 +2133,7 @@ pub async fn install(
         download_items,
         chunk_entries,
         chunk_entry_offsets,
+        pending_counts,
         &assemble_tx,
         options.handle,
     )
@@ -2978,26 +2993,39 @@ mod tests {
     async fn notify_assembly_ready_single_file_ready() {
         let (tx, mut rx) = mpsc::channel::<(usize, usize)>(16);
 
-        let pending: PendingCount = Arc::new(AtomicUsize::new(1usize));
-        let chunk_entries: Vec<FileEntry> = vec![(0u32, 0u32, Arc::clone(&pending))];
+        let pending_counts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
+        let chunk_entries: Vec<FileEntry> = vec![(0u32, 0u32, 0u32)];
         let chunk_entry_offsets: Vec<u32> = vec![0, 1];
 
-        notify_assembly_ready(0, &chunk_entries, &chunk_entry_offsets, &tx);
+        notify_assembly_ready(
+            0,
+            &chunk_entries,
+            &chunk_entry_offsets,
+            &pending_counts,
+            &tx,
+        );
 
         let received = rx.try_recv();
         assert!(received.is_ok(), "file should be sent to assembly channel");
         assert_eq!(received.unwrap(), (0, 0));
-        assert_eq!(pending.load(Ordering::Acquire), 0);
+        assert_eq!(pending_counts[0].load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
     async fn notify_assembly_ready_chunk_not_in_map() {
         let chunk_entries: Vec<FileEntry> = vec![];
         let chunk_entry_offsets: Vec<u32> = vec![0];
+        let pending_counts: Vec<AtomicU32> = vec![];
         let (tx, rx) = mpsc::channel::<(usize, usize)>(16);
         drop(rx);
 
-        notify_assembly_ready(999, &chunk_entries, &chunk_entry_offsets, &tx);
+        notify_assembly_ready(
+            999,
+            &chunk_entries,
+            &chunk_entry_offsets,
+            &pending_counts,
+            &tx,
+        );
     }
 
     #[tokio::test]
