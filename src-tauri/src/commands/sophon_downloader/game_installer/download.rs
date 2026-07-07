@@ -61,14 +61,14 @@ impl EvictingWriter {
 }
 
 fn get_available_space(path: &Path) -> Option<u64> {
+    use rustc_hash::FxHashMap;
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::os::unix::ffi::OsStrExt;
     use std::rc::Rc;
     use std::time::Instant;
 
     thread_local! {
-        static CSTRING_CACHE: RefCell<HashMap<Rc<Path>, Rc<std::ffi::CString>>> = RefCell::new(HashMap::new());
+        static CSTRING_CACHE: RefCell<FxHashMap<Rc<Path>, Rc<std::ffi::CString>>> = RefCell::new(FxHashMap::default());
         static SPACE_CACHE: RefCell<Option<(Instant, u64)>> = const { RefCell::new(None) };
     }
 
