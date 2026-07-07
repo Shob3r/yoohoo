@@ -608,7 +608,7 @@ fn register_chunks_for_file<'a>(
     chunk_refcounts: &mut Vec<AtomicU32>,
     pending_counts: &mut Vec<AtomicU32>,
     installer_idx: usize,
-    pre_downloaded: &HashMap<u32, u64>,
+    pre_downloaded: &FxHashMap<u32, u64>,
 ) {
     let range = all_files.file_chunk_range(file_idx);
     let mut chunk_count: usize = 0;
@@ -667,7 +667,7 @@ async fn build_download_state(
     ctx: &InstallContext,
     assemble_tx: &mpsc::Sender<(usize, usize)>,
     completed_indices: Option<&HashSet<usize>>,
-    pre_downloaded: &HashMap<u32, u64>,
+    pre_downloaded: &FxHashMap<u32, u64>,
 ) -> SophonResult<(
     Vec<DownloadItem>,
     Arc<Vec<FileEntry>>,
@@ -1908,7 +1908,7 @@ pub async fn install(
         None
     };
 
-    let initial_chunks: HashMap<u32, u64> = if options.is_resume {
+    let initial_chunks: FxHashMap<u32, u64> = if options.is_resume {
         let chunk_name_bytes: usize = prev_downloaded_chunks.keys().map(|k| k.len()).sum();
         log::info!(
             "MEMORY: prev_downloaded_chunks={} entries, ~{:.1}MB (keys={}B + vals={}B + overhead=~{}B)",
@@ -1921,7 +1921,8 @@ pub async fn install(
             prev_downloaded_chunks.len() * 8,
             prev_downloaded_chunks.len() * 48,
         );
-        let mut m: HashMap<u32, u64> = HashMap::with_capacity(prev_downloaded_chunks.len());
+        let mut m: FxHashMap<u32, u64> =
+            FxHashMap::with_capacity_and_hasher(prev_downloaded_chunks.len(), Default::default());
         for i in 0..all_files.num_chunks() {
             let chunk = all_files.chunk(i);
             if let Some(&size) = prev_downloaded_chunks.get(chunk.chunk_name) {
@@ -1936,7 +1937,7 @@ pub async fn install(
         super::reclaim_memory();
         m
     } else {
-        HashMap::new()
+        FxHashMap::default()
     };
 
     let download_client = Arc::new(super::super::DownloadClient::new().0);
@@ -1977,7 +1978,8 @@ pub async fn install(
             }
             super::CompletedFiles::Legacy(names) => {
                 if !names.is_empty() {
-                    let mut map: HashMap<&str, usize> = HashMap::with_capacity(num_files);
+                    let mut map: FxHashMap<&str, usize> =
+                        FxHashMap::with_capacity_and_hasher(num_files, Default::default());
                     for idx in 0..num_files {
                         map.insert(all_files.file_name(idx), idx);
                     }
