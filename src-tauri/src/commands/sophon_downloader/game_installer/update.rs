@@ -151,7 +151,7 @@ pub async fn fetch_diff_sizes(
 
     let mut cs = 0u64;
     let mut ds = 0u64;
-    let mut seen_chunks: HashSet<String> = HashSet::new();
+    let mut seen_chunks: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
 
     let old_map: rustc_hash::FxHashMap<String, &SophonManifestMeta> = old_build
         .manifests

@@ -584,7 +584,7 @@ fn build_installer_data(
 }
 
 fn compute_totals(all_files: &CompactManifest) -> (u64, u64) {
-    let mut seen_chunks: HashSet<&str> = HashSet::new();
+    let mut seen_chunks: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
     let total_compressed: u64 = (0..all_files.num_chunks())
         .map(|i| all_files.chunk(i))
         .filter(|c| c.chunk_old_offset < 0)
@@ -2362,7 +2362,11 @@ pub async fn verify_integrity(
         .sum();
     let mut redownload_items: Vec<(String, u64, Arc<DownloadInfo>)> =
         Vec::with_capacity(total_chunks_upper);
-    let mut seen_chunks: HashSet<String> = HashSet::with_capacity(total_chunks_upper);
+    let mut seen_chunks: rustc_hash::FxHashSet<String> =
+        rustc_hash::FxHashSet::with_capacity_and_hasher(
+            total_chunks_upper,
+            rustc_hash::FxBuildHasher,
+        );
     for (asset, chunk_download, _) in &failed_verifications {
         for chunk in &asset.asset_chunks {
             if seen_chunks.contains(&chunk.chunk_name) {

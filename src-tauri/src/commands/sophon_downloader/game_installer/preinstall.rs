@@ -267,8 +267,8 @@ pub async fn build_preinstall_plan(
 
     let mut all_patch_assets: Vec<PatchAssetInfo> = Vec::new();
     let mut all_deleted_files: Vec<String> = Vec::new();
-    let mut seen_chunk_names: HashSet<String> = HashSet::new();
-    let mut seen_patch_targets: HashSet<String> = HashSet::new();
+    let mut seen_chunk_names: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    let mut seen_patch_targets: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
     let mut unique_chunks: Vec<PatchChunkInfo> = Vec::new();
     let mut diff_downloads: HashMap<String, Arc<DownloadInfo>> = HashMap::new();
 
