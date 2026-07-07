@@ -1605,7 +1605,8 @@ fn chunk_still_valid_for_resume(chunk_name: &str, chunk_size: u64, chunks_dir: &
     if !validate_chunk_name(chunk_name) {
         return false;
     }
-    let chunk_path = chunks_dir.join(format!("{chunk_name}.zstd"));
+    let mut chunk_path = chunks_dir.join(chunk_name);
+    chunk_path.set_extension("zstd");
     match std::fs::metadata(&chunk_path) {
         Ok(meta) => meta.len() == chunk_size,
         Err(_) => false,

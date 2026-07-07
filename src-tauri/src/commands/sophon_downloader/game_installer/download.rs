@@ -128,6 +128,34 @@ pub fn check_available_space(dest: &Path, needed: u64) -> Result<(), SophonError
     Ok(())
 }
 
+/// Format a Range header value into a stack buffer to avoid heap allocation.
+fn format_range_header(existing_size: u64, buf: &mut [u8; 32]) -> &str {
+    let mut offset = 0;
+    buf[offset..offset + 6].copy_from_slice(b"bytes=");
+    offset += 6;
+
+    let mut tmp = [0u8; 20];
+    let mut n = existing_size;
+    let mut i = 0;
+    while n > 0 {
+        tmp[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    if i == 0 {
+        tmp[0] = b'0';
+        i = 1;
+    }
+    for j in 0..i {
+        buf[offset + j] = tmp[i - 1 - j];
+    }
+    offset += i;
+    buf[offset] = b'-';
+    offset += 1;
+
+    std::str::from_utf8(&buf[..offset]).unwrap()
+}
+
 /// Parse Content-Range header to extract start position.
 fn parse_content_range_start(range_str: &str) -> Option<u64> {
     let prefix = "bytes ";
@@ -357,7 +385,8 @@ async fn do_download_chunk(
 
     if existing_size > 0 && existing_size < chunk.chunk_size {
         // Try to resume with Range request
-        let range_header = format!("bytes={existing_size}-");
+        let mut range_buf = [0u8; 32];
+        let range_header = format_range_header(existing_size, &mut range_buf);
         let resp = client
             .get(url)
             .header(reqwest::header::RANGE, range_header)

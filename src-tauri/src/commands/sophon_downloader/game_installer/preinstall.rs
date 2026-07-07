@@ -2219,7 +2219,8 @@ async fn apply_download_over(
 
     let download_semaphore = Arc::new(tokio::sync::Semaphore::new(super::DOWNLOAD_CONCURRENCY));
     let chunk_futures = file_entry.asset_chunks.iter().map(|chunk| {
-        let chunk_path = chunks_dir.join(super::assembly::chunk_filename(&chunk.chunk_name));
+        let mut chunk_path = chunks_dir.join(&chunk.chunk_name);
+        chunk_path.set_extension("zstd");
         let client = client.clone();
         let chunk_download = chunk_download.clone();
         let chunk = chunk.clone();
