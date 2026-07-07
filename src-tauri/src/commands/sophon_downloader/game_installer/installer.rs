@@ -1,3 +1,4 @@
+use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -344,9 +345,9 @@ fn compute_diff_files(
 pub fn intern_old_chunk_offsets<'a>(
     manifest: &'a SophonManifestProto,
 ) -> (
-    HashMap<(u32, u32), u64>,
-    HashMap<&'a str, u32>,
-    HashMap<&'a str, u32>,
+    FxHashMap<(u32, u32), u64>,
+    FxHashMap<&'a str, u32>,
+    FxHashMap<&'a str, u32>,
 ) {
     let non_dir: Vec<&SophonManifestAssetProperty> = manifest
         .assets
@@ -356,9 +357,12 @@ pub fn intern_old_chunk_offsets<'a>(
     let total_chunks: usize = non_dir.iter().map(|f| f.asset_chunks.len()).sum();
     let asset_count = non_dir.len();
 
-    let mut name_to_id: HashMap<&'a str, u32> = HashMap::with_capacity(asset_count);
-    let mut hash_to_id: HashMap<&'a str, u32> = HashMap::with_capacity(asset_count);
-    let mut offsets: HashMap<(u32, u32), u64> = HashMap::with_capacity(total_chunks);
+    let mut name_to_id: FxHashMap<&'a str, u32> =
+        FxHashMap::with_capacity_and_hasher(asset_count, Default::default());
+    let mut hash_to_id: FxHashMap<&'a str, u32> =
+        FxHashMap::with_capacity_and_hasher(asset_count, Default::default());
+    let mut offsets: FxHashMap<(u32, u32), u64> =
+        FxHashMap::with_capacity_and_hasher(total_chunks, Default::default());
     for f in non_dir {
         let next_name_id = name_to_id.len() as u32;
         let name_id = *name_to_id
@@ -380,9 +384,9 @@ pub fn intern_old_chunk_offsets<'a>(
 #[allow(clippy::type_complexity)]
 pub fn assign_chunk_offsets(
     diff_files: &mut [SophonManifestAssetProperty],
-    offsets: &HashMap<(u32, u32), u64>,
-    name_to_id: &HashMap<&str, u32>,
-    hash_to_id: &HashMap<&str, u32>,
+    offsets: &FxHashMap<(u32, u32), u64>,
+    name_to_id: &FxHashMap<&str, u32>,
+    hash_to_id: &FxHashMap<&str, u32>,
 ) {
     for file in diff_files.iter_mut() {
         let name_id = name_to_id.get(file.asset_name.as_str()).copied();
@@ -600,7 +604,7 @@ fn register_chunks_for_file<'a>(
     tmp_dir_idx: usize,
     chunk_entries: &mut Vec<Vec<FileEntry>>,
     download_items: &mut Vec<DownloadItem>,
-    download_items_index: &mut HashMap<&'a str, u32>,
+    download_items_index: &mut FxHashMap<&'a str, u32>,
     chunk_refcounts: &mut Vec<AtomicU32>,
     pending_counts: &mut Vec<AtomicU32>,
     installer_idx: usize,
@@ -675,7 +679,8 @@ async fn build_download_state(
 )> {
     let total_chunks: usize = ctx.all_files.num_chunks();
     let mut download_items: Vec<DownloadItem> = Vec::with_capacity(total_chunks);
-    let mut download_items_index: HashMap<&str, u32> = HashMap::with_capacity(total_chunks);
+    let mut download_items_index: FxHashMap<&str, u32> =
+        FxHashMap::with_capacity_and_hasher(total_chunks, Default::default());
     let mut chunk_entries: Vec<Vec<FileEntry>> = Vec::with_capacity(total_chunks);
     let mut chunk_refcounts: Vec<AtomicU32> = Vec::with_capacity(total_chunks);
     let mut pending_counts: Vec<AtomicU32> = Vec::new();
@@ -2902,7 +2907,12 @@ mod tests {
             "aa",
             vec![make_chunk_with_hash("c0", 100, "hash0", 0)],
         )];
-        assign_chunk_offsets(&mut diff, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        assign_chunk_offsets(
+            &mut diff,
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+        );
         assert_eq!(diff[0].asset_chunks[0].chunk_old_offset, -1);
     }
 

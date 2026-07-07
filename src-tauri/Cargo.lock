@@ -23,6 +23,7 @@ dependencies = [
  "openssl",
  "prost",
  "reqwest 0.13.4",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha2 0.11.0",
