@@ -168,12 +168,19 @@ pub fn assemble_file(
         return Ok(());
     }
     let target_path = game_dir.join(file_name);
-    // Hash the asset name to avoid tmp filename collisions.
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    file_name.hash(&mut hasher);
-    let tmp_path = temp_dir.join(format!("{:016x}.tmp", hasher.finish()));
+    #[allow(clippy::needless_range_loop)]
+    let mut name_buf = [0u8; 20];
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..16 {
+        let nibble = ((file_idx as u64) >> (60 - i * 4)) & 0xf;
+        name_buf[i] = match nibble {
+            0..=9 => b'0' + nibble as u8,
+            _ => b'a' + nibble as u8 - 10,
+        };
+    }
+    name_buf[16..20].copy_from_slice(b".tmp");
+    let tmp_name = std::str::from_utf8(&name_buf).unwrap();
+    let tmp_path = temp_dir.join(tmp_name);
 
     if !skip_md5_check && target_path.exists() {
         let already_valid = super::cache::check_file_md5_cached(
