@@ -71,3 +71,51 @@ impl BufferPool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod buffer_pool_tests {
+    use super::*;
+
+    #[test]
+    fn take_returns_exact_capacity_match() {
+        let pool = BufferPool::new(2);
+        pool.return_buf(Vec::with_capacity(1024));
+        let buf = pool.take(512);
+        assert!(buf.capacity() >= 1024);
+    }
+
+    #[test]
+    fn take_allocates_when_pool_empty() {
+        let pool = BufferPool::new(2);
+        let buf = pool.take(256);
+        assert!(buf.capacity() >= 256);
+    }
+
+    #[test]
+    fn return_buf_caps_at_max_idle() {
+        let pool = BufferPool::new(1);
+        pool.return_buf(Vec::with_capacity(64));
+        pool.return_buf(Vec::with_capacity(128));
+        let buf = pool.take(1);
+        assert!(buf.capacity() >= 64);
+    }
+
+    #[test]
+    fn return_buf_shrunken_does_not_grow() {
+        let pool = BufferPool::new(1);
+        let big = vec![0u8; 1024 * 1024];
+        let original_cap = big.capacity();
+        pool.return_buf_shrunken(big, 256 * 1024);
+        let buf = pool.take(1);
+        assert!(buf.capacity() <= original_cap);
+    }
+
+    #[test]
+    fn return_buf_shrunken_keeps_small_buffers() {
+        let pool = BufferPool::new(1);
+        let small = vec![0u8; 100];
+        pool.return_buf_shrunken(small, 256 * 1024);
+        let buf = pool.take(1);
+        assert!(buf.capacity() >= 100 && buf.capacity() <= 256 * 1024);
+    }
+}

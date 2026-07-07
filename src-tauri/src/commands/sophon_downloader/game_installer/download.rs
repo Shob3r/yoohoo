@@ -720,3 +720,98 @@ async fn download_with_resume(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pread_hash_slice_streams_full_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        let data = vec![0xABu8; 300_000];
+        std::fs::write(&path, &data).unwrap();
+
+        let mut collected = Vec::new();
+        pread_hash_slice(&path, data.len() as u64, &mut |chunk| {
+            collected.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collected, data);
+    }
+
+    #[test]
+    fn pread_hash_slice_respects_max_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        let data = vec![0xCDu8; 100_000];
+        std::fs::write(&path, &data).unwrap();
+
+        let mut total = 0u64;
+        pread_hash_slice(&path, 50_000, &mut |chunk| {
+            total += chunk.len() as u64;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(total, 50_000);
+    }
+
+    #[test]
+    fn pread_hash_slice_zero_bytes_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        std::fs::write(&path, b"data").unwrap();
+
+        let mut called = false;
+        pread_hash_slice(&path, 0, &mut |_| {
+            called = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!called);
+    }
+
+    #[test]
+    fn pread_hash_md5_digest_matches_known_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        std::fs::write(&path, b"hello world").unwrap();
+
+        let digest = pread_hash_md5_digest(&path).unwrap();
+        let hex = md5_to_hex(&digest);
+        assert_eq!(hex, "5eb63bbbe01eeed093cb22bb8f5acdc3");
+    }
+
+    #[test]
+    fn pread_hash_md5_digest_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let digest = pread_hash_md5_digest(&path).unwrap();
+        let hex = md5_to_hex(&digest);
+        assert_eq!(hex, "d41d8cd98f00b204e9800998ecf8427e");
+    }
+
+    #[test]
+    fn pread_hash_xxh64_digest_matches_known_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        std::fs::write(&path, b"hello world").unwrap();
+
+        let value = pread_hash_xxh64_digest(&path).unwrap();
+        let mut hasher = super::super::assembly_opt::take_xxh64();
+        hasher.update(b"hello world");
+        assert_eq!(value, hasher.digest());
+        super::super::assembly_opt::return_xxh64(hasher);
+    }
+
+    #[tokio::test]
+    async fn verify_existing_file_hash_empty_returns_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        std::fs::write(&path, b"data").unwrap();
+        assert!(verify_existing_file_hash(&path, "").await.unwrap());
+    }
+}

@@ -58,7 +58,6 @@ impl Md5 {
 
 thread_local! {
     static MD5_POOL: RefCell<Option<Md5>> = const { RefCell::new(None) };
-    static XXH64_POOL: RefCell<Option<xxhash_rust::xxh64::Xxh64>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn take_md5() -> SophonResult<Md5> {
@@ -70,14 +69,10 @@ pub(crate) fn return_md5(md5: Md5) {
 }
 
 pub(crate) fn take_xxh64() -> xxhash_rust::xxh64::Xxh64 {
-    XXH64_POOL
-        .with(|cell| cell.borrow_mut().take())
-        .unwrap_or_else(|| xxhash_rust::xxh64::Xxh64::new(0))
+    xxhash_rust::xxh64::Xxh64::new(0)
 }
 
-pub(crate) fn return_xxh64(hasher: xxhash_rust::xxh64::Xxh64) {
-    XXH64_POOL.with(|cell| cell.borrow_mut().replace(hasher));
-}
+pub(crate) fn return_xxh64(_hasher: xxhash_rust::xxh64::Xxh64) {}
 
 /// Compare an MD5 digest against an expected lowercase hex string without
 /// allocating. Returns false on length mismatch.
@@ -822,5 +817,27 @@ mod tests {
     fn xxh64_hex_eq_zero() {
         assert!(xxh64_hex_eq(0, "0000000000000000"));
         assert!(!xxh64_hex_eq(1, "0000000000000000"));
+    }
+
+    #[test]
+    fn chunk_hash_required_detects_empty_and_placeholder() {
+        assert!(!chunk_hash_required(""));
+        assert!(!chunk_hash_required("00000000000000000000000000000000"));
+        assert!(chunk_hash_required("d41d8cd98f00b204e9800998ecf8427e"));
+        assert!(!chunk_hash_required("short"));
+    }
+
+    #[test]
+    fn is_window_too_small_detects_window_errors() {
+        assert!(is_window_too_small(&Err(SophonError::Io(
+            std::io::Error::other("window size too small: out of bound")
+        ))));
+        assert!(is_window_too_small(&Err(SophonError::Io(
+            std::io::Error::other("too much memory for decoding")
+        ))));
+        assert!(!is_window_too_small(&Err(SophonError::Io(
+            std::io::Error::other("some other error")
+        ))));
+        assert!(!is_window_too_small(&Ok(42u64)));
     }
 }

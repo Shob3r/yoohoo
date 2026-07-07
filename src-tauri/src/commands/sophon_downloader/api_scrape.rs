@@ -335,6 +335,32 @@ mod tests {
     }
 
     #[test]
+    fn download_info_url_for_into_matches_url_for() {
+        let cases = [
+            ("https://example.com/", "v1", "manifest.dat"),
+            ("https://example.com//", "/v1/", "chunk_0.zst"),
+            ("https://example.com", "v1", "a/b/c.dat"),
+            ("https://cdn.example.com/prefix/", "", "file.bin"),
+        ];
+        let mut buf = String::new();
+        for (prefix, suffix, name) in cases {
+            let dl = DownloadInfo {
+                encryption: 0,
+                password: String::new(),
+                compression: Compression::None,
+                url_prefix: prefix.to_string(),
+                url_suffix: suffix.to_string(),
+            };
+            let expected = dl.url_for(name);
+            dl.url_for_into(name, &mut buf);
+            assert_eq!(
+                buf, expected,
+                "mismatch for prefix={prefix} suffix={suffix}"
+            );
+        }
+    }
+
+    #[test]
     fn download_info_is_compressed() {
         let zstd = DownloadInfo {
             encryption: 0,
