@@ -5,6 +5,8 @@ use std::fs;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 
+use rustc_hash::FxHashMap;
+
 use serde::Serialize;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager, State, command};
@@ -181,7 +183,7 @@ pub async fn sophon_download_version(
         &resolved_tag,
         game_installer::ResumeContext {
             prev_manifest_hash: String::new(),
-            prev_downloaded_chunks: HashMap::new(),
+            prev_downloaded_chunks: FxHashMap::default(),
             resume_seed: CompletedFiles::default(),
         },
         game_installer::InstallOptions {
@@ -286,7 +288,7 @@ pub async fn sophon_download(
         &tag,
         game_installer::ResumeContext {
             prev_manifest_hash: String::new(),
-            prev_downloaded_chunks: HashMap::new(),
+            prev_downloaded_chunks: FxHashMap::default(),
             resume_seed: CompletedFiles::default(),
         },
         game_installer::InstallOptions {
@@ -400,7 +402,7 @@ pub async fn sophon_update(
         &new_tag,
         game_installer::ResumeContext {
             prev_manifest_hash: String::new(),
-            prev_downloaded_chunks: HashMap::new(),
+            prev_downloaded_chunks: FxHashMap::default(),
             resume_seed: CompletedFiles::default(),
         },
         game_installer::InstallOptions {
@@ -682,13 +684,13 @@ pub async fn sophon_resume_download(
     };
 
     let manifest_changed = old_manifest_hash != manifest_hash;
-    let resumed_chunks = if manifest_changed {
+    let resumed_chunks: FxHashMap<String, u64> = if manifest_changed {
         if delete_chunks_dir(&app_handle, &state.output_path) {
             log::info!("Deleted stale chunks directory due to manifest change");
         }
-        HashMap::new()
+        FxHashMap::default()
     } else {
-        prev_chunks
+        prev_chunks.into_iter().collect()
     };
 
     let resumed_state = DownloadState {
@@ -698,7 +700,7 @@ pub async fn sophon_resume_download(
         download_type: state.download_type,
         current_tag,
         manifest_hash,
-        downloaded_chunks: resumed_chunks,
+        downloaded_chunks: resumed_chunks.into_iter().collect(),
         completed_files: state.completed_files.clone(),
     };
     let completion_state: Arc<OnceLock<Arc<[AtomicBool]>>> = Arc::new(OnceLock::new());
@@ -716,7 +718,7 @@ pub async fn sophon_resume_download(
         &tag,
         game_installer::ResumeContext {
             prev_manifest_hash: old_manifest_hash,
-            prev_downloaded_chunks: resumed_state.downloaded_chunks,
+            prev_downloaded_chunks: resumed_state.downloaded_chunks.into_iter().collect(),
             resume_seed: state.completed_files.clone(),
         },
         game_installer::InstallOptions {

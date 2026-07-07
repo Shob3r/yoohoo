@@ -81,7 +81,7 @@ pub type StateSaver = Arc<dyn Fn(&HashMap<String, u64>) + Send + Sync>;
 
 pub struct ResumeContext {
     pub prev_manifest_hash: String,
-    pub prev_downloaded_chunks: HashMap<String, u64>,
+    pub prev_downloaded_chunks: FxHashMap<String, u64>,
     /// Persisted completion seed loaded from the on-disk resume state.
     /// install() uses this to pre-populate `completion_flags` before
     /// assembly tasks fire so that previously finished files short-circuit
@@ -1717,8 +1717,9 @@ pub async fn install(
         super::game_filters::filter_nap_installers(game_dir, &mut installer_data);
     }
     {
-        let file_installer_map: HashMap<String, usize> = {
-            let mut m = HashMap::with_capacity(all_files_vec.len());
+        let file_installer_map: FxHashMap<String, usize> = {
+            let mut m: FxHashMap<String, usize> =
+                FxHashMap::with_capacity_and_hasher(all_files_vec.len(), Default::default());
             let mut idx: usize = 0;
             for (inst_idx, d) in installer_data.iter().enumerate() {
                 for _ in 0..d.file_count {
@@ -1741,7 +1742,7 @@ pub async fn install(
             d.file_count = 0;
         }
         for f in all_files_vec.iter() {
-            if let Some(&inst_idx) = file_installer_map.get(&f.asset_name) {
+            if let Some(&inst_idx) = file_installer_map.get(f.asset_name.as_str()) {
                 installer_data[inst_idx].file_count += 1;
             }
         }
