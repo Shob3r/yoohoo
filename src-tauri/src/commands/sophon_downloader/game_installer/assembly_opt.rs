@@ -840,4 +840,19 @@ mod tests {
         ))));
         assert!(!is_window_too_small(&Ok(42u64)));
     }
+
+    #[test]
+    fn md5_pool_reset_after_finish() {
+        let mut h1 = take_md5().unwrap();
+        h1.update(b"hello").unwrap();
+        let d1 = h1.finish().unwrap();
+        return_md5(h1);
+
+        let mut h2 = take_md5().unwrap();
+        h2.update(b"hello").unwrap();
+        let d2 = h2.finish().unwrap();
+        return_md5(h2);
+
+        assert_eq!(d1, d2, "pooled MD5 must reset after finish");
+    }
 }
