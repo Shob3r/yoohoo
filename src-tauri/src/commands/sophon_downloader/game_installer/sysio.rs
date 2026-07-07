@@ -100,6 +100,18 @@ pub fn copy_file_region_to(
     copy_file_from(&src, src_off, dst_file, dst_off, len)
 }
 
+/// Pre-allocate disk blocks for `file` up to `len` bytes using
+/// `posix_fallocate(2)`. Improves sequential write performance by
+/// avoiding fragmentation and CoW overhead on copy-on-write filesystems.
+pub fn preallocate(file: &File, len: u64) -> std::io::Result<()> {
+    let fd = file.as_raw_fd();
+    let ret = unsafe { libc::posix_fallocate(fd, 0, len as libc::off_t) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

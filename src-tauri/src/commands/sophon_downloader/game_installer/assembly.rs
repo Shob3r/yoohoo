@@ -226,6 +226,7 @@ pub fn assemble_file(
         .open(&tmp_path)?;
 
     out_file.set_len(file_size)?;
+    let _ = super::sysio::preallocate(&out_file, file_size);
 
     let mut total_written: u64 = 0;
     let all_chunks_have_hashes = (chunk_range.start..chunk_range.end).all(|ci| {
