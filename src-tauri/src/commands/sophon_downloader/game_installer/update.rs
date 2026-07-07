@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use reqwest::Client;
@@ -188,7 +187,7 @@ pub async fn fetch_diff_sizes(
                             .filter(|f| !f.is_directory())
                             .map(|f| (f.asset_name.clone(), f.asset_hash_md5.clone()))
                             .collect::<rustc_hash::FxHashMap<String, String>>();
-                        let old_chunks: HashSet<String> = old_manifest
+                        let old_chunks: rustc_hash::FxHashSet<String> = old_manifest
                             .assets
                             .iter()
                             .filter(|f| !f.is_directory())
@@ -198,7 +197,10 @@ pub async fn fetch_diff_sizes(
                         Ok(Some((old_files_md5, old_chunks)))
                     }
                     None => Ok::<
-                        Option<(rustc_hash::FxHashMap<String, String>, HashSet<String>)>,
+                        Option<(
+                            rustc_hash::FxHashMap<String, String>,
+                            rustc_hash::FxHashSet<String>,
+                        )>,
                         SophonError,
                     >(None),
                 }
@@ -206,11 +208,16 @@ pub async fn fetch_diff_sizes(
         )?;
         let new_manifest = new_response.manifest;
 
-        let (old_files_md5, old_chunks): (rustc_hash::FxHashMap<String, String>, HashSet<String>) =
-            match old_data {
-                Some((md5, chunks)) => (md5, chunks),
-                None => (rustc_hash::FxHashMap::default(), HashSet::new()),
-            };
+        let (old_files_md5, old_chunks): (
+            rustc_hash::FxHashMap<String, String>,
+            rustc_hash::FxHashSet<String>,
+        ) = match old_data {
+            Some((md5, chunks)) => (md5, chunks),
+            None => (
+                rustc_hash::FxHashMap::default(),
+                rustc_hash::FxHashSet::default(),
+            ),
+        };
 
         for file in &new_manifest.assets {
             if file.is_directory() {

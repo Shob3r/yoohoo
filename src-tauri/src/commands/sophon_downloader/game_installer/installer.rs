@@ -298,7 +298,7 @@ fn combine_manifest_hashes(installers: &[SophonInstaller]) -> String {
 #[inline]
 fn collect_deleted_files(
     old_manifest: &SophonManifestProto,
-    new_names: &HashSet<&str>,
+    new_names: &rustc_hash::FxHashSet<&str>,
 ) -> Vec<String> {
     old_manifest
         .assets
@@ -437,7 +437,7 @@ async fn build_diff_installers(
                 .await?;
         let new_manifest_hash = new_result.hash.clone();
 
-        let new_names: HashSet<&str> = new_result
+        let new_names: rustc_hash::FxHashSet<&str> = new_result
             .manifest
             .assets
             .iter()
@@ -492,7 +492,7 @@ async fn build_diff_installers(
                         "Excluding {count} corrupted old files from chunk reuse (wrong size on disk)",
                         count = corrupted_indices.len()
                     );
-                    let corrupted_names_set: HashSet<&str> = corrupted_indices
+                    let corrupted_names_set: rustc_hash::FxHashSet<&str> = corrupted_indices
                         .iter()
                         .map(|&i| old_manifest.assets[i].asset_name.as_str())
                         .collect();
@@ -661,7 +661,7 @@ async fn build_download_state(
     installer_data: Vec<InstallerData>,
     ctx: &InstallContext,
     assemble_tx: &mpsc::Sender<(usize, usize)>,
-    completed_indices: Option<&HashSet<usize>>,
+    completed_indices: Option<&rustc_hash::FxHashSet<usize>>,
     pre_downloaded: &FxHashMap<u32, u64>,
 ) -> SophonResult<(
     Vec<DownloadItem>,
@@ -1685,7 +1685,7 @@ pub async fn install(
             );
             // Only keep cached chunks whose names still exist in the new manifest.
             // Avoids MD5-validating chunks with no consumer.
-            let manifest_chunk_names: HashSet<&str> = installers
+            let manifest_chunk_names: rustc_hash::FxHashSet<&str> = installers
                 .iter()
                 .flat_map(|inst| inst.manifest.assets.iter())
                 .flat_map(|asset| asset.asset_chunks.iter())
@@ -1778,7 +1778,7 @@ pub async fn install(
     let mut resume_bytes_offset: u64 = 0;
     let mut pre_assembled: u64 = 0;
     let completed_chunk_indices: Arc<DashSet<u32>>;
-    let completed_indices: Option<HashSet<usize>> = if options.is_resume {
+    let completed_indices: Option<rustc_hash::FxHashSet<usize>> = if options.is_resume {
         let total = all_files.num_files() as u64;
         (callbacks.updater)(SophonProgress::CalculatingDownloads {
             checked_files: 0,
@@ -2928,7 +2928,7 @@ mod tests {
                 make_file("C", "c1", vec![]),
             ],
         };
-        let mut new_names = HashSet::new();
+        let mut new_names = rustc_hash::FxHashSet::default();
         new_names.insert("A");
         new_names.insert("D");
         let deleted = collect_deleted_files(&old, &new_names);
@@ -2942,7 +2942,7 @@ mod tests {
         let old = SophonManifestProto {
             assets: vec![make_file("A", "a1", vec![]), make_file("B", "b1", vec![])],
         };
-        let mut new_names = HashSet::new();
+        let mut new_names = rustc_hash::FxHashSet::default();
         new_names.insert("A");
         new_names.insert("B");
         let deleted = collect_deleted_files(&old, &new_names);
@@ -2954,7 +2954,7 @@ mod tests {
         let old = SophonManifestProto {
             assets: vec![make_dir("old_dir"), make_file("A", "a1", vec![])],
         };
-        let new_names: HashSet<&str> = HashSet::from(["A"]);
+        let new_names: rustc_hash::FxHashSet<&str> = ["A"].iter().copied().collect();
         let deleted = collect_deleted_files(&old, &new_names);
         assert!(deleted.is_empty());
     }
