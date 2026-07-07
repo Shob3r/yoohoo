@@ -8,6 +8,7 @@
 use crate::commands::sophon_downloader::proto_parse::{
     SophonManifestAssetChunk, SophonManifestAssetProperty,
 };
+use rustc_hash::FxHashMap;
 
 impl<'a> From<&'a SophonManifestAssetChunk> for ChunkRef<'a> {
     fn from(chunk: &'a SophonManifestAssetChunk) -> Self {
@@ -29,7 +30,7 @@ impl<'a> From<&'a SophonManifestAssetChunk> for ChunkRef<'a> {
 pub struct StringArena {
     data: String,
     offsets: Vec<u32>,
-    dedup: std::collections::HashMap<String, u32>,
+    dedup: FxHashMap<String, u32>,
 }
 
 impl StringArena {
@@ -37,7 +38,7 @@ impl StringArena {
         Self {
             data: String::with_capacity(total_bytes),
             offsets: Vec::with_capacity(spans + 1),
-            dedup: std::collections::HashMap::new(),
+            dedup: FxHashMap::default(),
         }
     }
 
