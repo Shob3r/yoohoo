@@ -1,5 +1,5 @@
 use libc;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead as _, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::io::AsRawFd;
@@ -114,8 +114,8 @@ pub struct PreinstallState {
     pub installed_tag: String,
     pub patch_assets: Vec<PatchAssetInfo>,
     pub deleted_files: Vec<String>,
-    pub downloaded_chunks: HashSet<String>,
-    pub diff_downloads: HashMap<String, Arc<DownloadInfo>>,
+    pub downloaded_chunks: rustc_hash::FxHashSet<String>,
+    pub diff_downloads: rustc_hash::FxHashMap<String, Arc<DownloadInfo>>,
     pub main_chunk_download: DownloadInfo,
     pub main_manifest_ids: Vec<(String, String)>,
 }
@@ -168,7 +168,7 @@ pub struct PreinstallPlan {
     pub patch_assets: Vec<PatchAssetInfo>,
     pub deleted_files: Vec<String>,
     pub unique_chunks: Vec<PatchChunkInfo>,
-    pub diff_downloads: HashMap<String, Arc<DownloadInfo>>,
+    pub diff_downloads: rustc_hash::FxHashMap<String, Arc<DownloadInfo>>,
     pub main_chunk_download: DownloadInfo,
     pub tag: String,
     pub main_manifest_ids: Vec<(String, String)>,
@@ -270,7 +270,8 @@ pub async fn build_preinstall_plan(
     let mut seen_chunk_names: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
     let mut seen_patch_targets: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
     let mut unique_chunks: Vec<PatchChunkInfo> = Vec::new();
-    let mut diff_downloads: HashMap<String, Arc<DownloadInfo>> = HashMap::new();
+    let mut diff_downloads: rustc_hash::FxHashMap<String, Arc<DownloadInfo>> =
+        rustc_hash::FxHashMap::default();
 
     let fetch_futures: Vec<_> = qualifying_patch
         .iter()
@@ -850,7 +851,7 @@ pub async fn preinstall_download(
         eta_seconds: 0.0,
     });
 
-    let downloaded_chunks: HashSet<String> = match Arc::try_unwrap(chunk_bytes_map) {
+    let downloaded_chunks: rustc_hash::FxHashSet<String> = match Arc::try_unwrap(chunk_bytes_map) {
         Ok(map) => map.into_iter().map(|(k, _)| k).collect(),
         Err(arc) => {
             log::warn!("chunk_bytes_map DashMap still has references, using iter");
@@ -2358,8 +2359,11 @@ mod tests {
                 matching_field: "game".to_string(),
             }],
             deleted_files: vec!["old_file.pak".to_string()],
-            downloaded_chunks: HashSet::from(["chunk_0".to_string()]),
-            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
+            downloaded_chunks: ["chunk_0".to_string()].into_iter().collect(),
+            diff_downloads: rustc_hash::FxHashMap::from_iter([(
+                "game".to_string(),
+                Arc::new(make_download_info()),
+            )]),
             main_chunk_download: DownloadInfo {
                 encryption: 0,
                 password: String::new(),
@@ -2862,8 +2866,11 @@ mod tests {
                 },
             ],
             deleted_files: vec![],
-            downloaded_chunks: HashSet::new(),
-            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
+            downloaded_chunks: rustc_hash::FxHashSet::default(),
+            diff_downloads: rustc_hash::FxHashMap::from_iter([(
+                "game".to_string(),
+                Arc::new(make_download_info()),
+            )]),
             main_chunk_download: make_download_info(),
             main_manifest_ids: vec![],
         };
@@ -2901,8 +2908,11 @@ mod tests {
                 matching_field: "cutscenes".to_string(),
             }],
             deleted_files: vec![],
-            downloaded_chunks: HashSet::new(),
-            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
+            downloaded_chunks: rustc_hash::FxHashSet::default(),
+            diff_downloads: rustc_hash::FxHashMap::from_iter([(
+                "game".to_string(),
+                Arc::new(make_download_info()),
+            )]),
             main_chunk_download: make_download_info(),
             main_manifest_ids: vec![],
         };
@@ -3438,8 +3448,11 @@ mod tests {
             installed_tag: "4.8.0".to_string(),
             patch_assets: vec![],
             deleted_files: vec![],
-            downloaded_chunks: HashSet::new(),
-            diff_downloads: HashMap::from([("game".to_string(), Arc::new(make_download_info()))]),
+            downloaded_chunks: rustc_hash::FxHashSet::default(),
+            diff_downloads: rustc_hash::FxHashMap::from_iter([(
+                "game".to_string(),
+                Arc::new(make_download_info()),
+            )]),
             main_chunk_download: make_download_info(),
             main_manifest_ids: vec![],
         };

@@ -1,5 +1,5 @@
 use rustc_hash::FxHashMap;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -496,7 +496,7 @@ async fn build_diff_installers(
                         .iter()
                         .map(|&i| old_manifest.assets[i].asset_name.as_str())
                         .collect();
-                    let mut corrupted_name_ids = HashSet::new();
+                    let mut corrupted_name_ids = rustc_hash::FxHashSet::default();
                     for name in &corrupted_names_set {
                         if let Some(id) = name_to_id.get(name) {
                             corrupted_name_ids.insert(*id);
