@@ -611,25 +611,16 @@ fn register_chunks_for_file<'a>(
     pre_downloaded: &FxHashMap<u32, u64>,
 ) {
     let range = all_files.file_chunk_range(file_idx);
-    let mut chunk_count: usize = 0;
-    for ci in range.start..range.end {
-        if all_files.chunk(ci as usize).chunk_old_offset < 0 {
-            chunk_count += 1;
-        }
-    }
-
-    if chunk_count == 0 {
-        return;
-    }
 
     let pending_idx = pending_counts.len() as u32;
-    pending_counts.push(AtomicU32::new(chunk_count as u32));
+    pending_counts.push(AtomicU32::new(0));
     for ci in range.start..range.end {
         let global_chunk_idx = ci as usize;
         let chunk = all_files.chunk(global_chunk_idx);
         if chunk.chunk_old_offset >= 0 {
             continue;
         }
+        pending_counts[pending_idx as usize].fetch_add(1, Ordering::Relaxed);
         let name = chunk.chunk_name;
         let is_pre = pre_downloaded.contains_key(&(global_chunk_idx as u32));
 
@@ -659,6 +650,10 @@ fn register_chunks_for_file<'a>(
             chunk_refcounts.resize_with(item_idx as usize + 1, || AtomicU32::new(0));
         }
         chunk_refcounts[item_idx as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    if pending_counts[pending_idx as usize].load(Ordering::Relaxed) == 0 {
+        pending_counts.pop();
     }
 }
 
