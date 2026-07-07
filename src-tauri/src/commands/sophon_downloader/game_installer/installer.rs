@@ -309,7 +309,7 @@ fn collect_deleted_files(
 }
 
 #[inline]
-fn build_old_md5_map(old_manifest: &SophonManifestProto) -> HashMap<&str, &str> {
+fn build_old_md5_map(old_manifest: &SophonManifestProto) -> FxHashMap<&str, &str> {
     old_manifest
         .assets
         .iter()
@@ -321,7 +321,7 @@ fn build_old_md5_map(old_manifest: &SophonManifestProto) -> HashMap<&str, &str> 
 #[inline]
 fn compute_diff_files(
     new_manifest: SophonManifestProto,
-    old_md5_map: &HashMap<&str, &str>,
+    old_md5_map: &FxHashMap<&str, &str>,
 ) -> Vec<SophonManifestAssetProperty> {
     new_manifest
         .assets
@@ -516,7 +516,7 @@ async fn build_diff_installers(
                 );
             }
             None => {
-                diff_files = compute_diff_files(new_result.manifest, &HashMap::new());
+                diff_files = compute_diff_files(new_result.manifest, &FxHashMap::default());
             }
         };
         super::reclaim_memory();
@@ -2738,7 +2738,7 @@ mod tests {
                 make_file("c.pak", "cc", vec![]),
             ],
         };
-        let old_md5_map = HashMap::new();
+        let old_md5_map = FxHashMap::default();
         let diff = compute_diff_files(new_manifest, &old_md5_map);
         assert_eq!(diff.len(), 3);
     }
@@ -2748,7 +2748,7 @@ mod tests {
         let new_manifest = SophonManifestProto {
             assets: vec![make_file("a.pak", "aa", vec![])],
         };
-        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        let mut old_md5_map: FxHashMap<&str, &str> = FxHashMap::default();
         old_md5_map.insert("a.pak", "aa");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
         assert!(diff.is_empty());
@@ -2759,7 +2759,7 @@ mod tests {
         let new_manifest = SophonManifestProto {
             assets: vec![make_file("a.pak", "new_md5", vec![])],
         };
-        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        let mut old_md5_map: FxHashMap<&str, &str> = FxHashMap::default();
         old_md5_map.insert("a.pak", "old_md5");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
         assert_eq!(diff.len(), 1);
@@ -2770,7 +2770,7 @@ mod tests {
         let new_manifest = SophonManifestProto {
             assets: vec![make_dir("GameData"), make_file("a.pak", "aa", vec![])],
         };
-        let diff = compute_diff_files(new_manifest, &HashMap::new());
+        let diff = compute_diff_files(new_manifest, &FxHashMap::default());
         assert_eq!(diff.len(), 2);
         let names: Vec<&str> = diff.iter().map(|f| f.asset_name.as_str()).collect();
         assert!(names.contains(&"GameData"));
@@ -2787,7 +2787,7 @@ mod tests {
                 make_dir("somedir"),
             ],
         };
-        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        let mut old_md5_map: FxHashMap<&str, &str> = FxHashMap::default();
         old_md5_map.insert("changed.pak", "old_md5");
         old_md5_map.insert("unchanged.pak", "same");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
@@ -3420,7 +3420,7 @@ mod tests {
                 make_file("b.pak", "bb", vec![]),
             ],
         };
-        let mut old_md5_map: HashMap<&str, &str> = HashMap::new();
+        let mut old_md5_map: FxHashMap<&str, &str> = FxHashMap::default();
         old_md5_map.insert("a.pak", "aa");
         old_md5_map.insert("b.pak", "bb");
         let diff = compute_diff_files(new_manifest, &old_md5_map);
