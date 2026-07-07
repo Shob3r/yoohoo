@@ -129,6 +129,7 @@ pub fn check_available_space(dest: &Path, needed: u64) -> Result<(), SophonError
 }
 
 /// Format a Range header value into a stack buffer to avoid heap allocation.
+#[inline]
 fn format_range_header(existing_size: u64, buf: &mut [u8; 32]) -> &str {
     let mut offset = 0;
     buf[offset..offset + 6].copy_from_slice(b"bytes=");

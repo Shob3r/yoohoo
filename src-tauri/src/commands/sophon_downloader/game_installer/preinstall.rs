@@ -236,7 +236,7 @@ pub async fn build_preinstall_plan(
         return Err(SophonError::NoGameManifest);
     }
 
-    let main_by_field: HashMap<&str, &SophonManifestMeta> = main_build
+    let main_by_field: rustc_hash::FxHashMap<&str, &SophonManifestMeta> = main_build
         .manifests
         .iter()
         .filter(|m| {
@@ -2104,7 +2104,7 @@ fn apply_hdiff_patch_from_files(
 #[allow(dead_code)]
 pub struct DownloadOverContext {
     pub build: SophonBuildData,
-    pub manifests: HashMap<String, (DownloadInfo, SophonManifestProto)>,
+    pub manifests: rustc_hash::FxHashMap<String, (DownloadInfo, SophonManifestProto)>,
 }
 
 pub async fn fetch_download_over_context(
@@ -2116,7 +2116,7 @@ pub async fn fetch_download_over_context(
     let pre_branch = pre_branch.ok_or(SophonError::NoPreinstallAvailable)?;
     let build = fetch_build(client, &pre_branch, None).await?;
 
-    let mut manifests = HashMap::new();
+    let mut manifests = rustc_hash::FxHashMap::default();
     for meta in &build.manifests {
         let should_fetch = meta.matching_field == "game"
             || vo_lang_matches(&meta.matching_field, vo_lang)
