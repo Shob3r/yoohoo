@@ -415,7 +415,7 @@ async fn build_diff_installers(
     vo_lang: &str,
     game_dir: &Path,
 ) -> SophonResult<(Vec<SophonInstaller>, Vec<String>)> {
-    let old_by_field: HashMap<&str, &SophonManifestMeta> = old_build
+    let old_by_field: FxHashMap<&str, &SophonManifestMeta> = old_build
         .manifests
         .iter()
         .map(|m| (m.matching_field.as_str(), m))
