@@ -681,8 +681,8 @@ async fn build_download_state(
     let mut download_items: Vec<DownloadItem> = Vec::with_capacity(total_chunks);
     let mut download_items_index: FxHashMap<&str, u32> =
         FxHashMap::with_capacity_and_hasher(total_chunks, Default::default());
-    let mut chunk_entries: Vec<Vec<FileEntry>> = Vec::with_capacity(total_chunks);
-    let mut chunk_refcounts: Vec<AtomicU32> = Vec::with_capacity(total_chunks);
+    let mut chunk_entries: Vec<Vec<FileEntry>> = Vec::new();
+    let mut chunk_refcounts: Vec<AtomicU32> = Vec::new();
     let mut pending_counts: Vec<AtomicU32> = Vec::new();
 
     let mut all_files_index: usize = 0;
