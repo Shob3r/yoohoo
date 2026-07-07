@@ -167,9 +167,12 @@ fn pread_hash_slice(
     Ok(())
 }
 
-fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
+fn pread_hash_md5_digest(path: &Path, known_size: Option<u64>) -> SophonResult<[u8; 16]> {
     let file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
+    let len = match known_size {
+        Some(s) => s,
+        None => file.metadata()?.len(),
+    };
     let fd = file.as_raw_fd();
     let mut hasher = take_md5()?;
     let result = if len == 0 {
@@ -194,9 +197,12 @@ fn pread_hash_md5_digest(path: &Path) -> SophonResult<[u8; 16]> {
     result
 }
 
-fn pread_hash_xxh64_digest(path: &Path) -> SophonResult<u64> {
+fn pread_hash_xxh64_digest(path: &Path, known_size: Option<u64>) -> SophonResult<u64> {
     let file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
+    let len = match known_size {
+        Some(s) => s,
+        None => file.metadata()?.len(),
+    };
     let fd = file.as_raw_fd();
     let result = if len == 0 {
         let mut hasher = super::assembly_opt::take_xxh64();
@@ -225,7 +231,11 @@ fn pread_hash_xxh64_digest(path: &Path) -> SophonResult<u64> {
     result
 }
 
-async fn verify_existing_file_hash(path: &Path, expected_hash: &str) -> SophonResult<bool> {
+async fn verify_existing_file_hash(
+    path: &Path,
+    expected_hash: &str,
+    known_size: Option<u64>,
+) -> SophonResult<bool> {
     if expected_hash.is_empty() {
         return Ok(true);
     }
@@ -235,12 +245,12 @@ async fn verify_existing_file_hash(path: &Path, expected_hash: &str) -> SophonRe
     hash_buf[..expected_len].copy_from_slice(expected_hash.as_bytes());
     tokio::task::spawn_blocking(move || match expected_len {
         32 => {
-            let digest = pread_hash_md5_digest(&path)?;
+            let digest = pread_hash_md5_digest(&path, known_size)?;
             let expected = std::str::from_utf8(&hash_buf[..32]).unwrap_or("");
             Ok(md5_hex_eq(&digest, expected))
         }
         16 => {
-            let digest = pread_hash_xxh64_digest(&path)?;
+            let digest = pread_hash_xxh64_digest(&path, known_size)?;
             let expected = std::str::from_utf8(&hash_buf[..16]).unwrap_or("");
             Ok(xxh64_hex_eq(digest, expected))
         }
@@ -319,7 +329,13 @@ async fn do_download_chunk(
 
         if existing_size >= chunk.chunk_size {
             if !chunk.chunk_compressed_hash_md5.is_empty() {
-                if verify_existing_file_hash(dest, chunk.chunk_compressed_hash_md5).await? {
+                if verify_existing_file_hash(
+                    dest,
+                    chunk.chunk_compressed_hash_md5,
+                    Some(existing_size),
+                )
+                .await?
+                {
                     return Ok(());
                 }
                 let _ = tokio::fs::remove_file(dest).await;
@@ -503,7 +519,7 @@ async fn download_full_file_with_response(
                     xxh64_hex_eq(digest, expected)
                 } else {
                     file.flush().await?;
-                    verify_existing_file_hash(dest, expected).await?
+                    verify_existing_file_hash(dest, expected, Some(total_len)).await?
                 };
                 if !matched {
                     let _ = tokio::fs::remove_file(dest).await;
@@ -692,7 +708,7 @@ async fn download_with_resume(
                     xxh64_hex_eq(digest, expected)
                 } else {
                     file.flush().await?;
-                    verify_existing_file_hash(dest, expected).await?
+                    verify_existing_file_hash(dest, expected, Some(total_len)).await?
                 };
                 if !matched {
                     let _ = tokio::fs::remove_file(dest).await;
@@ -790,7 +806,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"hello world").unwrap();
 
-        let digest = pread_hash_md5_digest(&path).unwrap();
+        let digest = pread_hash_md5_digest(&path, None).unwrap();
         let hex = md5_to_hex(&digest);
         assert_eq!(hex, "5eb63bbbe01eeed093cb22bb8f5acdc3");
     }
@@ -801,7 +817,7 @@ mod tests {
         let path = dir.path().join("empty.bin");
         std::fs::write(&path, b"").unwrap();
 
-        let digest = pread_hash_md5_digest(&path).unwrap();
+        let digest = pread_hash_md5_digest(&path, None).unwrap();
         let hex = md5_to_hex(&digest);
         assert_eq!(hex, "d41d8cd98f00b204e9800998ecf8427e");
     }
@@ -812,7 +828,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"hello world").unwrap();
 
-        let value = pread_hash_xxh64_digest(&path).unwrap();
+        let value = pread_hash_xxh64_digest(&path, None).unwrap();
         let mut hasher = super::super::assembly_opt::take_xxh64();
         hasher.update(b"hello world");
         assert_eq!(value, hasher.digest());
@@ -824,6 +840,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"data").unwrap();
-        assert!(verify_existing_file_hash(&path, "").await.unwrap());
+        assert!(verify_existing_file_hash(&path, "", None).await.unwrap());
     }
 }
