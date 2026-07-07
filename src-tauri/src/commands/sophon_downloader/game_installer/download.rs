@@ -65,9 +65,19 @@ fn get_available_space(path: &Path) -> Option<u64> {
     use std::collections::HashMap;
     use std::os::unix::ffi::OsStrExt;
     use std::rc::Rc;
+    use std::time::Instant;
 
     thread_local! {
         static CSTRING_CACHE: RefCell<HashMap<Rc<Path>, Rc<std::ffi::CString>>> = RefCell::new(HashMap::new());
+        static SPACE_CACHE: RefCell<Option<(Instant, u64)>> = const { RefCell::new(None) };
+    }
+
+    const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+    if let Some((checked_at, space)) = SPACE_CACHE.with(|cell| *cell.borrow())
+        && checked_at.elapsed() < CACHE_TTL
+    {
+        return Some(space);
     }
 
     let key: Rc<Path> = Rc::from(path.to_path_buf());
@@ -97,7 +107,9 @@ fn get_available_space(path: &Path) -> Option<u64> {
     if ret != 0 {
         return None;
     }
-    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+    let space = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+    SPACE_CACHE.with(|cell| *cell.borrow_mut() = Some((Instant::now(), space)));
+    Some(space)
 }
 
 pub fn check_available_space(dest: &Path, needed: u64) -> Result<(), SophonError> {
