@@ -87,7 +87,7 @@ pub(crate) fn get_clip_stream(
                     let mut out = Vec::with_capacity(length as usize);
                     {
                         let mut decoder = zstd::stream::read::Decoder::with_context(
-                            std::io::BufReader::with_capacity(64 * 1024, limited),
+                            std::io::BufReader::with_capacity(256 * 1024, limited),
                             &mut ctx,
                         );
                         match decoder.read_to_end(&mut out) {
@@ -113,7 +113,7 @@ pub(crate) fn get_clip_stream(
                     let mut out = Vec::with_capacity(length as usize);
                     {
                         let mut retry = zstd::stream::read::Decoder::with_context(
-                            std::io::BufReader::with_capacity(64 * 1024, retry_limited),
+                            std::io::BufReader::with_capacity(256 * 1024, retry_limited),
                             &mut ctx,
                         );
                         retry.read_to_end(&mut out)?;
