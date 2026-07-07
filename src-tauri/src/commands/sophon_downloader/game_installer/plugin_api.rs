@@ -165,7 +165,7 @@ pub async fn fetch_plugins(client: &Client, game_id: &str) -> SophonResult<Vec<P
     // upstream may return the same plugin in non-adjacent releases, and
     // `Vec::dedup_by` only removes consecutive duplicates. The first
     // occurrence (newest version) is retained.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
     let plugins: Vec<PluginPackageInfo> = resp
         .data
         .plugin_releases
