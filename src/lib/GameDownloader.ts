@@ -1,12 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
 import { info } from "@tauri-apps/plugin-log";
-import { type GameData, type ResumeInfo, Variants } from "../types";
+import {
+	type GameCodes,
+	type GameData,
+	type ResumeInfo,
+	Variants,
+} from "../types";
 import { broadcastNotification, createDesktopShortcut } from "./Desktop";
 import { exists } from "./Fs";
 import { protonExec, protonJadeiteExec } from "./ProtonManager";
 import { getOption } from "./Settings";
 import {
+	gameCodeToVariant,
 	variantToExeName,
 	variantToGameCode,
 	variantToGameName,
@@ -49,8 +55,6 @@ export const getPreinstallState = async (
 
 /**
  * Downloads a fresh install of any game to `games/gameCode`
- *
- * @param game
  */
 export const downloadGame = async (game: Variants): Promise<void> => {
 	const gameData = await getGameData(game);
@@ -68,14 +72,35 @@ export const downloadGame = async (game: Variants): Promise<void> => {
 		await broadcastNotification(
 			`${variantToGameName[game]} Has Finished Downloading`,
 		);
-		await createDesktopShortcut(game);
+		if (await getOption<boolean>("createShortcuts")) {
+			await createDesktopShortcut(game);
+		}
+	}
+};
+
+/**
+ * Downloads preinstalls and updates for all games that are out of date
+ */
+export const updateAllGames = async () => {
+	const games: GameCodes[] = ["bh3", "hk4e", "hkrpg", "nap"];
+	const updatesAllowed = await getOption<boolean>("autoUpdate");
+	const preloadsAllowed = await getOption<boolean>("autoPreload");
+
+	if (!updatesAllowed && !preloadsAllowed) return;
+	
+	for (let i = 0; i < games.length; i++) {
+		const variant = gameCodeToVariant[games[i]];
+		const res = await checkGameUpdate(variant);
+		if (res?.updateAvailable && updatesAllowed) {
+			await downloadUpdate(variant, false);
+		} else if (res?.preinstallAvailable && preloadsAllowed) {
+			await downloadUpdate(variant, true);
+		}
 	}
 };
 
 /**
  * Launches a game within a Proton environment. Additionally starts Jadeite if the game requires it to run
- *
- * @param game
  */
 export const runGame = async (game: Variants): Promise<void> => {
 	const gamePath = await join(
@@ -109,8 +134,6 @@ export const cancelDownload = async (): Promise<void> => {
 
 /**
  * Check if a preinstall for a specified game is available
- *
- * @param game The game in question
  * @returns Weather or not a preinstall for the specified game is available
  */
 export const isPreinstallAvailable = async (
@@ -131,8 +154,6 @@ export const isPreinstallAvailable = async (
 
 /**
  * Check if a game update is available
- *
- * @param game The game to check
  * @returns Object containing update availability info, or null if not installed
  */
 export const checkGameUpdate = async (
@@ -195,7 +216,6 @@ export const resumeDownloadInterrupted = async (): Promise<void> => {
 
 /**
  * Downloads an update/preinstall for a specified game
- *
  * @param game The specified game
  * @param isPreinstall Weather or not the download is for a preinstall
  */
