@@ -1950,7 +1950,8 @@ pub async fn install(
             .collect(),
     );
 
-    let adaptive_assembly = Arc::new(AdaptiveAssembly::new());
+    let assembled_files = Arc::new(AtomicU64::new(pre_assembled));
+    let adaptive_assembly = Arc::new(AdaptiveAssembly::with_tracker(Arc::clone(&assembled_files)));
 
     // Build the live completion bitset. Sized to the manifest's file count;
     // seeded from the persisted resume state (migrating legacy names to
@@ -2021,7 +2022,7 @@ pub async fn install(
         all_tmp_dirs: Arc::clone(&all_tmp_dirs),
         all_files: Arc::clone(&all_files),
         downloaded_bytes: Arc::new(AtomicU64::new(0)),
-        assembled_files: Arc::new(AtomicU64::new(pre_assembled)),
+        assembled_files: Arc::clone(&assembled_files),
         checked_files: Arc::new(AtomicU64::new(pre_assembled)),
         total_bytes: total_compressed,
         total_files,
@@ -2141,6 +2142,9 @@ pub async fn install(
         options.handle,
     )
     .await;
+
+    // Downloads are done — let assembly run at full speed.
+    ctx.adaptive_assembly.set_download_active(false);
 
     {
         let total = ctx.total_bytes;
