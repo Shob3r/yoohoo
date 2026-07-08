@@ -69,7 +69,7 @@ export const updateProtonComponent = async (
 
 	try {
 		info(`Installing/Updating ${component.componentName}`);
-		const assetURL = `https://raw.githubusercontent.com/elysiae-project/components/refs/heads/main/components/${component.componentName}.json`;
+		const assetURL = `https://aedes.elysiae.app/${component.componentName}.json`;
 		const assetResponse = await getApiJson<ModuleData[]>(assetURL);
 
 		const json = assetResponse[0];
@@ -186,7 +186,7 @@ export const getModuleVersion = async (
 };
 
 export const moduleTagsMatch = async (module: AppModules): Promise<boolean> => {
-	const url = `https://raw.githubusercontent.com/elysiae-project/components/refs/heads/main/components/${module}.json`;
+	const url = `https://aedes.elysiae.app/components/${module}.json`;
 
 	const installedTag = await getModuleVersion(module).catch((e) => {
 		error(`moduleTagsMatch: ${e}`);
