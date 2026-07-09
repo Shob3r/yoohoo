@@ -1,72 +1,146 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use tauri_plugin_log::log;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use super::*;
 
-const ASSEMBLY_RAM_CHECK_INTERVAL_SECS: u64 = 2;
-const ASSEMBLY_HIGH_RAM_THRESHOLD_MB: u64 = 512;
-const ASSEMBLY_LOW_RAM_THRESHOLD_MB: u64 = 128;
-const ASSEMBLY_CRITICAL_RAM_THRESHOLD_MB: u64 = 64;
+/// Interval between adaptive scaling checks (milliseconds).
+const ADJUST_INTERVAL_MS: u64 = 500;
+/// Minimum interval between actual adjustments to let throughput stabilize.
+const MIN_ADJUST_INTERVAL_MS: u64 = 400;
+/// Throughput drop threshold: if current throughput falls below this
+/// fraction of the previous measurement, a bottleneck is assumed.
+const BOTTLENECK_THRESHOLD: f64 = 0.80;
+/// Scale-up multiplier when throughput is healthy.
+const SCALE_UP_FACTOR: f64 = 1.5;
+/// Scale-down multiplier when a bottleneck is detected.
+const SCALE_DOWN_FACTOR: f64 = 0.5;
+/// Minimum concurrency during adaptive phase (same as during download).
+const MIN_ADAPTIVE_TARGET: usize = ASSEMBLY_CONCURRENCY;
 
+/// Assembly concurrency controller.
+///
+/// While downloads are active concurrency is capped at `ASSEMBLY_CONCURRENCY`
+/// so assembly does not starve download workers. Once downloads finish the
+/// controller switches to adaptive scaling: it measures how many files are
+/// assembled per time window and slowly raises concurrency. If throughput
+/// drops (bottleneck detected) it scales back down.
 pub struct AdaptiveAssembly {
     target: AtomicUsize,
+    download_active: AtomicBool,
+    assembled_files: Option<Arc<AtomicU64>>,
+    last_count: AtomicUsize,
+    last_throughput: AtomicU64, // files per second, scaled by 1000
+    last_adjust_time: std::sync::Mutex<Instant>,
 }
 
 impl AdaptiveAssembly {
     pub fn new() -> Self {
         Self {
             target: AtomicUsize::new(ASSEMBLY_CONCURRENCY),
+            download_active: AtomicBool::new(true),
+            assembled_files: None,
+            last_count: AtomicUsize::new(0),
+            last_throughput: AtomicU64::new(0),
+            last_adjust_time: std::sync::Mutex::new(Instant::now()),
+        }
+    }
+
+    pub fn with_tracker(assembled_files: Arc<AtomicU64>) -> Self {
+        Self {
+            target: AtomicUsize::new(ASSEMBLY_CONCURRENCY),
+            download_active: AtomicBool::new(true),
+            assembled_files: Some(assembled_files),
+            last_count: AtomicUsize::new(0),
+            last_throughput: AtomicU64::new(0),
+            last_adjust_time: std::sync::Mutex::new(Instant::now()),
         }
     }
 
     pub fn current_target(&self) -> usize {
-        self.target.load(Ordering::Acquire)
-    }
-
-    pub fn adjust(&self) -> usize {
-        let available_mb = available_ram_mb();
-        let current = self.target.load(Ordering::Acquire);
-
-        let new_target = if available_mb <= ASSEMBLY_CRITICAL_RAM_THRESHOLD_MB {
-            1
-        } else if available_mb <= ASSEMBLY_LOW_RAM_THRESHOLD_MB {
-            (ASSEMBLY_CONCURRENCY / 4).max(1)
-        } else if available_mb <= ASSEMBLY_HIGH_RAM_THRESHOLD_MB {
-            (ASSEMBLY_CONCURRENCY / 2).max(2)
-        } else {
+        if self.download_active.load(Ordering::Relaxed) {
             ASSEMBLY_CONCURRENCY
-        };
-
-        if new_target != current {
-            log::info!(
-                "AdaptiveAssembly: available RAM {} MiB, adjusting assembly concurrency {} → {}",
-                available_mb,
-                current,
-                new_target,
-            );
-            self.target.store(new_target, Ordering::Release);
+        } else {
+            self.target.load(Ordering::Relaxed).max(MIN_ADAPTIVE_TARGET)
         }
-
-        new_target
     }
 
-    pub fn spawn_adjuster(self: &Arc<Self>, cancel_token: tokio_util::sync::CancellationToken) {
-        let adaptive = Arc::clone(self);
-        let token = cancel_token.clone();
+    #[allow(dead_code)]
+    pub fn adjust(&self) -> usize {
+        self.current_target()
+    }
 
+    pub fn set_download_active(&self, active: bool) {
+        self.download_active.store(active, Ordering::Relaxed);
+    }
+
+    /// Spawn a background task that periodically measures assembly throughput
+    /// and adjusts the concurrency target.
+    pub fn spawn_adjuster(self: &Arc<Self>, cancel_token: tokio_util::sync::CancellationToken) {
+        let this = Arc::clone(self);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                ASSEMBLY_RAM_CHECK_INTERVAL_SECS,
-            ));
+            let mut interval = tokio::time::interval(Duration::from_millis(ADJUST_INTERVAL_MS));
             loop {
                 tokio::select! {
-                    _ = token.cancelled() => break,
-                    _ = interval.tick() => {
-                        adaptive.adjust();
-                    }
+                    biased;
+                    _ = cancel_token.cancelled() => break,
+                    _ = interval.tick() => {}
                 }
+
+                // Only adapt after downloads have finished.
+                if this.download_active.load(Ordering::Relaxed) {
+                    continue;
+                }
+
+                // Need a tracker to measure throughput.
+                let assembled_files = match &this.assembled_files {
+                    Some(tracker) => tracker,
+                    None => continue,
+                };
+
+                let now = Instant::now();
+                let mut last_time = match this.last_adjust_time.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+
+                let elapsed = now.duration_since(*last_time);
+                if elapsed.as_millis() < MIN_ADJUST_INTERVAL_MS as u128 {
+                    continue;
+                }
+
+                let current_count = assembled_files.load(Ordering::Relaxed) as usize;
+                let prev_count = this.last_count.load(Ordering::Relaxed);
+                let delta = current_count.saturating_sub(prev_count);
+                this.last_count.store(current_count, Ordering::Relaxed);
+
+                let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+                let throughput = (delta as f64) / elapsed_secs;
+                let prev_throughput = this.last_throughput.load(Ordering::Relaxed) as f64 / 1000.0;
+                this.last_throughput
+                    .store((throughput * 1000.0) as u64, Ordering::Relaxed);
+                *last_time = now;
+                drop(last_time);
+
+                // On the first measurement after downloads finish just record
+                // the baseline and do not adjust yet.
+                if prev_throughput == 0.0 {
+                    continue;
+                }
+
+                let current_target = this.target.load(Ordering::Relaxed);
+                let new_target = if throughput >= prev_throughput * BOTTLENECK_THRESHOLD {
+                    // Throughput is healthy — scale up.
+                    let scaled = (current_target as f64 * SCALE_UP_FACTOR) as usize;
+                    let incremented = current_target.saturating_add(1);
+                    scaled.max(incremented)
+                } else {
+                    // Bottleneck detected — scale down.
+                    let scaled = (current_target as f64 * SCALE_DOWN_FACTOR) as usize;
+                    scaled.max(MIN_ADAPTIVE_TARGET)
+                };
+
+                this.target.store(new_target, Ordering::Relaxed);
             }
         });
     }
@@ -76,19 +150,6 @@ impl Default for AdaptiveAssembly {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn available_ram_mb() -> u64 {
-    use std::sync::{Mutex, OnceLock};
-    use sysinfo::System;
-
-    static SYS: OnceLock<Mutex<System>> = OnceLock::new();
-    let sys = SYS.get_or_init(|| Mutex::new(System::new()));
-    let Ok(mut guard) = sys.lock() else {
-        return u64::MAX;
-    };
-    guard.refresh_memory();
-    guard.available_memory() / (1024 * 1024)
 }
 
 #[cfg(test)]
@@ -102,97 +163,32 @@ mod tests {
     }
 
     #[test]
-    fn adjust_critical_ram() {
-        assert_eq!(1, 1);
-        assert_eq!((ASSEMBLY_CONCURRENCY / 4).max(1), ASSEMBLY_CONCURRENCY / 4);
-        assert_eq!((ASSEMBLY_CONCURRENCY / 2).max(2), ASSEMBLY_CONCURRENCY / 2);
-    }
-
-    #[test]
-    fn target_never_below_one() {
+    fn target_limited_during_download() {
         let aa = AdaptiveAssembly::new();
-        let target = aa.current_target();
-        assert!(target >= 1);
+        assert_eq!(aa.current_target(), ASSEMBLY_CONCURRENCY);
     }
 
     #[test]
-    fn adjust_updates_target() {
+    fn target_adaptive_after_download_finishes() {
         let aa = AdaptiveAssembly::new();
-        let _ = aa.adjust();
-        // adjust() reads available RAM via sysinfo; on failure, returns u64::MAX (full
-        // concurrency)
-        let target = aa.current_target();
-        assert!(target >= 1);
-        assert!(target <= ASSEMBLY_CONCURRENCY);
+        aa.set_download_active(false);
+        // Before any adjustment the target is still the initial value.
+        assert_eq!(aa.current_target(), ASSEMBLY_CONCURRENCY);
     }
 
     #[test]
-    fn available_ram_mb_reads_proc_meminfo() {
-        let mb = available_ram_mb();
-        assert!(mb > 0, "MemAvailable should be positive on Linux");
-        assert!(mb < 1_000_000, "MemAvailable should be less than 1M MiB");
-    }
-
-    #[test]
-    fn adjust_high_ram_stays_at_max() {
+    fn target_returns_to_limited_when_download_restarts() {
         let aa = AdaptiveAssembly::new();
-        let _ = aa.adjust();
-        let target = aa.current_target();
-        if available_ram_mb() > ASSEMBLY_HIGH_RAM_THRESHOLD_MB {
-            assert_eq!(target, ASSEMBLY_CONCURRENCY);
-        }
+        aa.set_download_active(false);
+        aa.target.store(128, Ordering::Relaxed);
+        aa.set_download_active(true);
+        assert_eq!(aa.current_target(), ASSEMBLY_CONCURRENCY);
     }
 
     #[test]
-    fn adjust_critical_ram_goes_to_one() {
-        let critical_threshold = ASSEMBLY_CRITICAL_RAM_THRESHOLD_MB;
-        let low_threshold = ASSEMBLY_LOW_RAM_THRESHOLD_MB;
-        let high_threshold = ASSEMBLY_HIGH_RAM_THRESHOLD_MB;
-        assert!(critical_threshold < low_threshold);
-        assert!(low_threshold < high_threshold);
-        let target_when_critical = if 0 < critical_threshold {
-            1usize
-        } else {
-            ASSEMBLY_CONCURRENCY
-        };
-        assert_eq!(target_when_critical, 1);
-    }
-
-    #[tokio::test]
-    async fn spawn_adjuster_cancels_cleanly() {
-        let aa = Arc::new(AdaptiveAssembly::new());
-        let token = tokio_util::sync::CancellationToken::new();
-        aa.spawn_adjuster(token.clone());
-        token.cancel();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        assert!(aa.current_target() >= 1);
-        assert!(aa.current_target() <= ASSEMBLY_CONCURRENCY);
-    }
-
-    /// The spawned adjuster task must terminate promptly after cancel so it
-    /// does not leak across install runs. We assert that spawning-then-cancel
-    /// returns control without task leaks, and that the target field is
-    /// always within configured bounds.
-    #[tokio::test(flavor = "current_thread")]
-    async fn spawn_adjuster_returns_to_runtime_after_cancel() {
-        let aa = Arc::new(AdaptiveAssembly::new());
-        let token = tokio_util::sync::CancellationToken::new();
-        aa.spawn_adjuster(token.clone());
-        // Cancel immediately — the interval future inside the loop has not
-        // yet fired, so cancellation must be observed on the next select.
-        token.cancel();
-        // The cancel propagation is synchronous; the background task should
-        // exit well within a tick interval. We give it 3× the tick interval
-        // to avoid flakes on heavily loaded CI.
-        tokio::time::sleep(std::time::Duration::from_millis(
-            ASSEMBLY_RAM_CHECK_INTERVAL_SECS * 3000,
-        ))
-        .await;
-        // The target must remain in the valid range, never grow unbounded.
-        assert!(
-            aa.current_target() <= ASSEMBLY_CONCURRENCY,
-            "target must not exceed ASSEMBLY_CONCURRENCY after cancel"
-        );
-        assert!(aa.current_target() >= 1, "target must always be ≥ 1");
+    fn with_tracker_starts_at_concurrency() {
+        let tracker = Arc::new(AtomicU64::new(0));
+        let aa = AdaptiveAssembly::with_tracker(tracker);
+        assert_eq!(aa.current_target(), ASSEMBLY_CONCURRENCY);
     }
 }

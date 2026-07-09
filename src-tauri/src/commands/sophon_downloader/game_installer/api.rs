@@ -1,4 +1,3 @@
-use std::io::{Read, Write};
 use std::time::Duration;
 
 use reqwest::Client;
@@ -93,36 +92,21 @@ pub async fn fetch_manifest(
         .await
         .map_err(|_| SophonError::Timeout(300))??;
 
-    let raw = if dl.is_compressed() {
-        tokio::task::spawn_blocking(move || {
-            let tmp = tempfile::NamedTempFile::new()?;
-            {
-                let mut f = tmp.as_file();
-                f.write_all(&bytes)?;
-                f.flush()?;
-            }
-            let raw = decompress_zstd_from_file(tmp.path())?;
-            Ok::<Vec<u8>, SophonError>(raw)
+    let manifest: SophonManifestProto = if dl.is_compressed() {
+        let raw = tokio::task::spawn_blocking(move || {
+            let mut decoder = zstd::Decoder::new(bytes.as_ref())?;
+            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(26))?;
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut decoder, &mut out)?;
+            Ok::<Vec<u8>, SophonError>(out)
         })
-        .await??
+        .await??;
+        decode_manifest(&raw).map_err(SophonError::ManifestDecode)?
     } else {
-        bytes.to_vec()
+        decode_manifest(&bytes).map_err(SophonError::ManifestDecode)?
     };
-
-    let manifest: SophonManifestProto =
-        decode_manifest(&raw).map_err(SophonError::ManifestDecode)?;
     let hash = compute_content_manifest_hash(&manifest);
     Ok(ManifestWithHash { manifest, hash })
-}
-
-/// Decompresses zstd data from a file, keeping only the decompressed output in
-/// memory.
-fn decompress_zstd_from_file(path: &std::path::Path) -> SophonResult<Vec<u8>> {
-    let file = std::fs::File::open(path)?;
-    let mut decoder = zstd::Decoder::new(file)?;
-    let mut out = Vec::new();
-    decoder.read_to_end(&mut out)?;
-    Ok(out)
 }
 
 pub async fn fetch_build(
@@ -130,17 +114,32 @@ pub async fn fetch_build(
     branch: &PackageBranch,
     tag: Option<&str>,
 ) -> SophonResult<SophonBuildData> {
-    let tag_str = tag.unwrap_or(&branch.tag);
-    let url = format!(
-        "{}?branch={}&package_id={}&password={}&tag={}",
-        SOPHON_BUILD_URL_BASE, branch.branch, branch.package_id, branch.password, tag_str,
-    );
+    let url = if let Some(tag_str) = tag {
+        format!(
+            "{base}?branch={branch}&package_id={package_id}&password={password}&tag={tag_str}",
+            base = SOPHON_BUILD_URL_BASE,
+            branch = branch.branch,
+            package_id = branch.package_id,
+            password = branch.password,
+        )
+    } else {
+        format!(
+            "{base}?branch={branch}&package_id={package_id}&password={password}",
+            base = SOPHON_BUILD_URL_BASE,
+            branch = branch.branch,
+            package_id = branch.package_id,
+            password = branch.password,
+        )
+    };
 
     let resp: SophonBuildResponse = fetch_json_with_retry(client, &url, 35).await?;
-    if resp.data.manifests.is_empty() {
+    let data = resp
+        .data
+        .ok_or_else(|| SophonError::ApiError(resp.retcode, resp.message))?;
+    if data.manifests.is_empty() {
         return Err(SophonError::NoManifests);
     }
-    Ok(resp.data)
+    Ok(data)
 }
 
 pub const SOPHON_PATCH_BUILD_URL_BASE: &str = concat!(
@@ -153,17 +152,24 @@ pub async fn fetch_patch_build(
     branch: &PackageBranch,
 ) -> SophonResult<SophonPatchBuildData> {
     let url = format!(
-        "{}?branch={}&package_id={}&password={}&tag={}",
-        SOPHON_PATCH_BUILD_URL_BASE, branch.branch, branch.package_id, branch.password, branch.tag,
+        "{base}?branch={branch}&package_id={package_id}&password={password}&tag={tag}",
+        base = SOPHON_PATCH_BUILD_URL_BASE,
+        branch = branch.branch,
+        package_id = branch.package_id,
+        password = branch.password,
+        tag = branch.tag,
     );
 
     let raw_resp =
         tokio::time::timeout(Duration::from_secs(35), client.post(&url).send()).await??;
     let resp: SophonPatchBuildResponse = raw_resp.error_for_status()?.json().await?;
-    if resp.data.manifests.is_empty() {
+    let data = resp
+        .data
+        .ok_or_else(|| SophonError::ApiError(resp.retcode, resp.message))?;
+    if data.manifests.is_empty() {
         return Err(SophonError::NoManifests);
     }
-    Ok(resp.data)
+    Ok(data)
 }
 
 pub struct PatchManifestWithMeta {
@@ -189,14 +195,11 @@ pub async fn fetch_patch_manifest(
 
     let raw = if meta.manifest_download.is_compressed() {
         tokio::task::spawn_blocking(move || {
-            let tmp = tempfile::NamedTempFile::new()?;
-            {
-                let mut f = tmp.as_file();
-                f.write_all(&bytes)?;
-                f.flush()?;
-            }
-            let raw = decompress_zstd_from_file(tmp.path())?;
-            Ok::<Vec<u8>, SophonError>(raw)
+            let mut decoder = zstd::Decoder::new(bytes.as_ref())?;
+            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(26))?;
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut decoder, &mut out)?;
+            Ok::<Vec<u8>, SophonError>(out)
         })
         .await??
     } else {

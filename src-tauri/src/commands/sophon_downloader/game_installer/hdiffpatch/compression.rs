@@ -4,6 +4,16 @@ use flate2::read::DeflateDecoder;
 use tauri_plugin_log::log;
 
 use super::CompressionMode;
+use crate::commands::sophon_downloader::game_installer::assembly_opt::{
+    MAX_WINDOW_LOG, return_dctx, take_dctx, window_log_for_size,
+};
+
+/// True when a zstd decode error indicates the `WindowLogMax` cap was
+/// too small for the frame's actual window.
+fn is_window_too_small_err(e: &std::io::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("out of bound") || msg.contains("too much memory for decoding")
+}
 
 pub(crate) fn get_clip_stream(
     mut file: std::fs::File,
@@ -16,12 +26,11 @@ pub(crate) fn get_clip_stream(
     let file_bytes = if comp_length > 0 { comp_length } else { length };
     file.seek(SeekFrom::Start(start))?;
 
-    const MAX_BUFFERED_SIZE: u64 = 512 * 1024 * 1024; // 512 MB
+    const MAX_BUFFERED_SIZE: u64 = 64 * 1024 * 1024;
 
     if comp_mode == CompressionMode::Nocomp || comp_length == 0 {
-        // When comp_length=0 with a non-Nocomp mode, this is unusual — log
-        // a warning to surface potentially corrupt headers without breaking
-        // compatibility with diff producers that emit empty compressed clips.
+        // Non-Nocomp with comp_length=0: fall back to uncompressed read;
+        // tolerates diff producers that omit comp_length for tiny clips.
         if comp_mode != CompressionMode::Nocomp && comp_length == 0 {
             log::warn!(
                 "Compressed stream (mode={comp_mode:?}) has comp_length=0; \
@@ -34,7 +43,12 @@ pub(crate) fn get_clip_stream(
                     "buffered stream exceeds maximum size",
                 ));
             }
-            let mut buf = vec![0u8; length as usize];
+            #[allow(clippy::uninit_vec)]
+            let mut buf = {
+                let mut v = Vec::with_capacity(length as usize);
+                unsafe { v.set_len(length as usize) };
+                v
+            };
             file.read_exact(&mut buf)?;
             return Ok((Box::new(Cursor::new(buf)), file_bytes));
         }
@@ -47,17 +61,14 @@ pub(crate) fn get_clip_stream(
 
     match comp_mode {
         CompressionMode::Zstd => {
-            let window_log: u32 = if cfg!(target_pointer_width = "64") {
-                31
-            } else {
-                30
-            };
+            // Clone the fd before consuming into LimitedFile so a retry on
+            // "too much memory for decoding" can re-wrap without reopening
+            // by path (caller may not have the path handy).
+            let mut retry_file = file.try_clone()?;
             let limited = LimitedFile {
                 file,
                 remaining: comp_length,
             };
-            let mut decoder = zstd::stream::read::Decoder::new(limited)?;
-            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
 
             if is_buffered {
                 if length > MAX_BUFFERED_SIZE {
@@ -65,10 +76,56 @@ pub(crate) fn get_clip_stream(
                         "buffered zstd stream exceeds maximum size",
                     ));
                 }
-                let mut out = Vec::with_capacity(length as usize);
-                decoder.read_to_end(&mut out)?;
+                let tight_log = window_log_for_size(length);
+                let mut ctx = take_dctx();
+
+                let out = {
+                    ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+                        .map_err(|_| std::io::Error::other("zstd DCtx reset"))?;
+                    ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(tight_log))
+                        .map_err(|_| std::io::Error::other("zstd DCtx WindowLogMax"))?;
+                    let mut out = Vec::with_capacity(length as usize);
+                    {
+                        let mut decoder = zstd::stream::read::Decoder::with_context(
+                            std::io::BufReader::with_capacity(256 * 1024, limited),
+                            &mut ctx,
+                        );
+                        match decoder.read_to_end(&mut out) {
+                            Ok(_) => out,
+                            Err(ref e) if is_window_too_small_err(e) => Vec::new(),
+                            Err(e) => return Err(e),
+                        }
+                    }
+                };
+
+                let out = if !out.is_empty() {
+                    out
+                } else {
+                    ctx.reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+                        .map_err(|_| std::io::Error::other("zstd DCtx reset"))?;
+                    ctx.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(MAX_WINDOW_LOG))
+                        .map_err(|_| std::io::Error::other("zstd DCtx WindowLogMax"))?;
+                    retry_file.seek(SeekFrom::Start(start))?;
+                    let retry_limited = LimitedFile {
+                        file: retry_file,
+                        remaining: comp_length,
+                    };
+                    let mut out = Vec::with_capacity(length as usize);
+                    {
+                        let mut retry = zstd::stream::read::Decoder::with_context(
+                            std::io::BufReader::with_capacity(256 * 1024, retry_limited),
+                            &mut ctx,
+                        );
+                        retry.read_to_end(&mut out)?;
+                    }
+                    out
+                };
+
+                return_dctx(ctx);
                 Ok((Box::new(Cursor::new(out)), file_bytes))
             } else {
+                let mut decoder = zstd::stream::read::Decoder::new(limited)?;
+                decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(MAX_WINDOW_LOG))?;
                 Ok((Box::new(decoder), file_bytes))
             }
         }
@@ -78,7 +135,7 @@ pub(crate) fn get_clip_stream(
             // `deflateInit2(... -MAX_WBITS ...)` with a 1-byte `windowBits`
             // prefix prepended at write time. The prefix byte is compensated
             // by the caller (`patch_single.rs`) before `get_clip_stream` is
-            // invoked, so the bytes we receive here are plain raw deflate — no
+            // invoked, so the bytes we receive here are plain raw deflate ,  no
             // 0x78 0x9C header and no Adler32 trailer. Use DeflateDecoder (not
             // ZlibDecoder) accordingly.
             let limited = LimitedFile {
@@ -241,7 +298,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"x").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        let max = 512u64 * 1024 * 1024;
+        let max = 64u64 * 1024 * 1024;
         let result = get_clip_stream(file, CompressionMode::Nocomp, 0, max + 1, max + 1, true);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -257,7 +314,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"x").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        let max = 512u64 * 1024 * 1024;
+        let max = 64u64 * 1024 * 1024;
         let result = get_clip_stream(file, CompressionMode::Zstd, 0, max + 1, 100, true);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -389,7 +446,7 @@ mod tests {
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"x").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        let max = 512u64 * 1024 * 1024;
+        let max = 64u64 * 1024 * 1024;
         let result = get_clip_stream(file, CompressionMode::Zlib, 0, max + 1, 100, true);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
@@ -398,21 +455,14 @@ mod tests {
             "should report exceeding max buffered size, got: {msg}"
         );
     }
-    /// Test that Nocomp mode returns error when reached in the match arm
-    /// (should not happen in normal operation since Nocomp is handled early)
+    /// Nocomp falls through the match arm only when entered with the wrong
+    /// shape.
     #[test]
     fn get_clip_stream_nocomp_with_comp_length_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"Hello World!").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        // This should not happen in normal operation, but test the error path
-        // by passing comp_length > 0 with Nocomp mode (which bypasses the early return)
-        // Actually, the early return at line 21 catches Nocomp, so we can't reach
-        // the match arm. This test documents the expected behavior.
-        // The error at line 122-126 is a safety net that should never be reached.
-        // To test it, we'd need to modify the code, which defeats the purpose.
-        // Instead, this test verifies that Nocomp works correctly in normal operation.
         let result = get_clip_stream(file, CompressionMode::Nocomp, 0, 5, 5, false);
         assert!(result.is_ok(), "Nocomp should succeed with comp_length > 0");
     }
