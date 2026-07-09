@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use md5::{Digest, Md5};
 use reqwest::Client;
 use tauri_plugin_log::log;
 use tokio::io::AsyncWriteExt;
 use zip::ZipArchive;
 
+use super::assembly_opt::{md5_hex_eq, md5_to_hex};
 use super::cache;
 use super::error::{SophonError, SophonResult};
 use super::plugin_api::{
@@ -37,9 +37,8 @@ fn read_plugin_versions(game_dir: &Path) -> HashMap<String, String> {
 }
 
 fn write_plugin_version(game_dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
-    // Acquire the global lock so that concurrent calls do not race on the
-    // read-modify-write of plugin_versions.json. The lock is held only during
-    // the synchronous I/O section; no await points exist inside this function.
+    // Hold the global lock during synchronous I/O to prevent races on
+    // plugin_versions.json. No await points exist inside this function.
     let _lock = PLUGIN_VERSION_LOCK
         .lock()
         .unwrap_or_else(|err| err.into_inner());
@@ -96,7 +95,12 @@ async fn download_zip(
 
     let mut file = tokio::fs::File::create(dest).await?;
     let mut stream = resp.bytes_stream();
-    let mut hasher = Md5::new();
+    let needs_hash = !expected_md5.is_empty();
+    let mut hasher = if needs_hash {
+        Some(super::assembly_opt::take_md5()?)
+    } else {
+        None
+    };
     let mut downloaded: u64 = 0;
 
     let name = dest
@@ -109,7 +113,9 @@ async fn download_zip(
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
-        hasher.update(&bytes);
+        if let Some(ref mut h) = hasher {
+            h.update(&bytes)?;
+        }
         file.write_all(&bytes).await?;
         downloaded += bytes.len() as u64;
 
@@ -132,18 +138,21 @@ async fn download_zip(
 
     file.flush().await?;
 
-    let actual_md5 = hex::encode(hasher.finalize());
-    // Compare case-insensitively: hex::encode always emits lowercase, but the
-    // upstream API has no contract on the case of its returned hex digest.
-    if actual_md5 != expected_md5.to_ascii_lowercase() {
-        let _ = fs::remove_file(dest);
-        return Err(SophonError::Md5Mismatch {
-            item: name,
-            expected: expected_md5.to_string(),
-            actual: actual_md5,
-        });
+    if needs_hash {
+        let digest: [u8; 16] = hasher.as_mut().unwrap().finish()?;
+        if !md5_hex_eq(&digest, expected_md5) {
+            let _ = fs::remove_file(dest);
+            return Err(SophonError::Md5Mismatch {
+                item: name,
+                expected: expected_md5.to_string(),
+                actual: md5_to_hex(&digest),
+            });
+        }
     }
 
+    if let Some(h) = hasher {
+        super::assembly_opt::return_md5(h);
+    }
     Ok(())
 }
 
@@ -166,8 +175,8 @@ fn extract_zip(zip_path: &Path, game_dir: &Path) -> SophonResult<()> {
 
     if archive.len() > ZIP_MAX_ENTRIES {
         return Err(SophonError::Decompression(format!(
-            "archive has {} entries, exceeds limit of {ZIP_MAX_ENTRIES}",
-            archive.len()
+            "archive has {archive_len} entries, exceeds limit of {ZIP_MAX_ENTRIES}",
+            archive_len = archive.len()
         )));
     }
 
@@ -181,13 +190,12 @@ fn extract_zip(zip_path: &Path, game_dir: &Path) -> SophonResult<()> {
             .by_index(i)
             .map_err(|err| SophonError::Decompression(err.to_string()))?;
 
-        // Reject symlink entries outright — silently treating a symlink-target
-        // string as the contents of a regular file is a data-integrity bug and
-        // could leak attacker-controlled text into game_dir.
+        // Reject symlink entries. Treating a symlink target as file contents
+        // is a data-integrity bug.
         if entry.is_symlink() {
             log::warn!(
-                "Rejecting symlink entry '{}' in plugin archive",
-                entry.name()
+                "Rejecting symlink entry '{name}' in plugin archive",
+                name = entry.name()
             );
             continue;
         }
@@ -196,8 +204,8 @@ fn extract_zip(zip_path: &Path, game_dir: &Path) -> SophonResult<()> {
         // Legitimate plugin/SDK paths never contain ':'.
         if entry.name().contains(':') {
             log::warn!(
-                "Rejecting entry with alternate-data-stream name '{}'",
-                entry.name()
+                "Rejecting entry with alternate-data-stream name '{name}'",
+                name = entry.name()
             );
             continue;
         }
@@ -205,8 +213,8 @@ fn extract_zip(zip_path: &Path, game_dir: &Path) -> SophonResult<()> {
         let declared = entry.size();
         if declared > ZIP_MAX_ENTRY_BYTES {
             return Err(SophonError::Decompression(format!(
-                "entry '{}' declares {declared} bytes, exceeds per-entry limit of {ZIP_MAX_ENTRY_BYTES}",
-                entry.name()
+                "entry '{name}' declares {declared} bytes, exceeds per-entry limit of {ZIP_MAX_ENTRY_BYTES}",
+                name = entry.name()
             )));
         }
         // Ratio check on the declared compressed size; skip if the entry did
@@ -214,9 +222,9 @@ fn extract_zip(zip_path: &Path, game_dir: &Path) -> SophonResult<()> {
         let cc = entry.compressed_size();
         if cc > 0 && declared > cc.saturating_mul(ZIP_MAX_RATIO) {
             return Err(SophonError::Decompression(format!(
-                "entry '{}' ratio {} exceeds {ZIP_MAX_RATIO}",
-                entry.name(),
-                declared / cc,
+                "entry '{name}' ratio {ratio} exceeds {ZIP_MAX_RATIO}",
+                name = entry.name(),
+                ratio = declared / cc,
             )));
         }
         total_extracted = match total_extracted.checked_add(declared) {
@@ -246,9 +254,8 @@ fn extract_zip(zip_path: &Path, game_dir: &Path) -> SophonResult<()> {
                 log::warn!("Skipping path traversal attempt: {:?}", out_path);
                 if let Err(err) = fs::remove_dir_all(&out_path) {
                     log::warn!(
-                        "Failed to clean up symlink-traversal directory {}: {}",
-                        out_path.display(),
-                        err
+                        "Failed to clean up symlink-traversal directory {path}: {err}",
+                        path = out_path.display(),
                     );
                 }
                 continue;
@@ -266,9 +273,7 @@ fn extract_zip(zip_path: &Path, game_dir: &Path) -> SophonResult<()> {
             let mut out_file = File::create(&out_path)?;
             std::io::copy(&mut entry, &mut out_file)?;
 
-            // Preserve Unix mode bits from the ZIP entry when present so that
-            // shipped executables retain their +x bit instead of falling back
-            // to the umask (which on many distros is 0o644).
+            // Preserve Unix mode bits from the ZIP entry so executables retain +x.
             if let Some(mode) = entry.unix_mode() {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = fs::set_permissions(&out_path, fs::Permissions::from_mode(mode & 0o7777));
@@ -301,29 +306,27 @@ fn verify_validation(game_dir: &Path, validation: &[ValidationEntry]) -> bool {
             && meta.len() != expected_size
         {
             log::warn!(
-                "Validation file size mismatch: {} (expected {}, got {})",
-                entry.path,
-                expected_size,
-                meta.len()
+                "Validation file size mismatch: {path} (expected {expected_size}, got {actual})",
+                path = entry.path,
+                actual = meta.len()
             );
             return false;
         }
         // Verify MD5 hash if provided for stronger integrity guarantee
         if let Some(ref expected_md5) = entry.md5 {
-            let computed = match cache::file_md5_hex(&file_path) {
-                Ok(md5) => md5,
+            let computed = match cache::file_md5_digest(&file_path) {
+                Ok(d) => d,
                 Err(err) => {
                     let path = &entry.path;
                     log::warn!("Failed to compute MD5 for {path}: {err}");
                     return false;
                 }
             };
-            if computed != *expected_md5 {
+            if !md5_hex_eq(&computed, expected_md5) {
                 log::warn!(
-                    "Validation file MD5 mismatch: {} (expected {}, got {})",
-                    entry.path,
-                    expected_md5,
-                    computed
+                    "Validation file MD5 mismatch: {path} (expected {expected_md5}, got {actual})",
+                    path = entry.path,
+                    actual = md5_to_hex(&computed)
                 );
                 return false;
             }
@@ -795,10 +798,7 @@ mod tests {
     /// uncompressed size and stores only a few bytes of payload. Used to
     /// exercise the per-entry size cap in `extract_zip`.
     fn write_forged_zip(path: &Path, declared_uncompressed: u32) {
-        // Build the ZIP bytes without the ambiguity of std::io::Write
-        // vs tokio::io::AsyncWriteExt (both of which impl write_all for
-        // Vec<u8>), by directly constructing the on-disk bytes via array
-        // concat on a primitive buffer.
+        // Build the ZIP bytes directly to avoid trait ambiguity.
         let mut src = std::fs::File::create(path).unwrap();
         use std::io::Write as _;
 
@@ -823,12 +823,8 @@ mod tests {
         src.write_all(fname).unwrap();
         src.write_all(payload).unwrap();
 
-        // Compute the central-directory offset from bytes written so far.
-        // 30 bytes of local header + 4 bytes payload declared-comp-size + 4
-        // bytes payload declared-uncomp-size + 2 + 2 + 9 + payload length
-        //   = 30 + 4 + 4 + 2 + 2 + sizeof(payload) + 9 + filename length
-        // We'll rely on the offset being deterministic: it's the size of the
-        // local header entry + payload.
+        // Central-directory offset equals the size of the local header entry plus
+        // payload.
         let local_header_size: u32 = 30 + (fname.len() as u32) + (payload.len() as u32);
         let cd_offset: u32 = local_header_size;
 
@@ -887,10 +883,9 @@ mod tests {
 
     #[test]
     fn extract_zip_rejects_colon_entry() {
-        // NTFS-style alternate data stream: "safe/path:hidden" — `enclosed_name`
-        // would happily accept this on Linux, but the entry name embeds a ':'
-        // which our adapter rejects as it's never legitimate for plugin/SDK
-        // archives.
+        // NTFS alternate data stream: "safe/path:hidden". `enclosed_name`
+        // accepts this on Linux, but the ':' is rejected as it's never
+        // legitimate for plugin/SDK archives.
         let dir = tempfile::tempdir().unwrap();
         let zip_path = dir.path().join("ads.zip");
         let file = File::create(&zip_path).unwrap();
@@ -916,9 +911,9 @@ mod tests {
     fn md5_comparison_case_insensitive() {
         // Compute expected_md5 in lowercase manually for a known input.
         fn md5_hex(input: &[u8]) -> String {
-            let mut hasher = Md5::new();
-            hasher.update(input);
-            hex::encode(hasher.finalize())
+            let mut hasher = super::super::assembly_opt::Md5::new().unwrap();
+            hasher.update(input).unwrap();
+            hex::encode(hasher.finish().unwrap())
         }
         let lower = md5_hex(b"abc123");
         let upper = lower.to_ascii_uppercase();

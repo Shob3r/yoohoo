@@ -1,13 +1,16 @@
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 use super::{
-    CoverHeader, HeaderInfo, K_BYTE_RLE_TYPE, K_SIGN_TAG_BIT, MAX_ARRAY_POOL_LEN,
+    BufferPool, CoverHeader, HeaderInfo, K_BYTE_RLE_TYPE, K_SIGN_TAG_BIT, MAX_ARRAY_POOL_LEN,
     MAX_ARRAY_POOL_SECOND_OFFSET, MAX_MEM_BUFFER_LEN, MAX_MEM_BUFFER_LIMIT, RleRefClip,
     SeekableRead,
 };
 use crate::commands::sophon_downloader::game_installer::hdiffpatch::parser::{
     BinaryExtensions, read_long_7bit_from_slice,
 };
+
+static SHARED_BUFFER_POOL: BufferPool = BufferPool::new(1);
+static CACHE_BUFFER_POOL: BufferPool = BufferPool::new(1);
 
 pub(crate) fn write_cover_stream_to_output(
     clips: &mut [Box<dyn Read>],
@@ -16,31 +19,36 @@ pub(crate) fn write_cover_stream_to_output(
     header_info: &HeaderInfo,
     on_progress: Option<&dyn Fn(u64)>,
 ) -> std::io::Result<()> {
-    // Both halves of the shared buffer are fully written via read_exact
-    // before any byte is read from them. Skip the zero-init that
-    // `vec![0; n]` would perform to avoid touching 4 MiB of memory
-    // on every patch application.
-    // Safety: every index 0..MAX_ARRAY_POOL_LEN is populated by
-    // read_exact or write_all before being read in the RLE decode loop.
+    // Safety: every index 0..MAX_ARRAY_POOL_LEN is populated by read_exact
+    // or write_all before being read in the RLE decode loop.
     #[allow(clippy::uninit_vec)]
-    let mut shared_buffer = {
-        let mut v = Vec::with_capacity(MAX_ARRAY_POOL_LEN);
-        unsafe { v.set_len(MAX_ARRAY_POOL_LEN) };
-        v
-    };
-    let mut cache = Cursor::new(Vec::<u8>::new());
+    let mut shared_buffer = SHARED_BUFFER_POOL.take(MAX_ARRAY_POOL_LEN);
+    if shared_buffer.capacity() < MAX_ARRAY_POOL_LEN {
+        shared_buffer = Vec::with_capacity(MAX_ARRAY_POOL_LEN);
+    }
+    unsafe { shared_buffer.set_len(MAX_ARRAY_POOL_LEN) };
+    let mut cache = Cursor::new(CACHE_BUFFER_POOL.take(MAX_MEM_BUFFER_LEN as usize));
 
     let mut new_pos_back = 0i64;
     let mut total_written: u64 = 0;
     let mut rle_struct = RleRefClip::default();
-    let (left, right) = clips.split_at_mut(2);
-    let headers = enumerate_cover_headers(
-        &mut *left[0],
+    let (cover_slice, rest_slice) = clips.split_first_mut().unwrap();
+    let cover_reader = &mut **cover_slice;
+    let rest_slice: &mut [Box<dyn Read>] = rest_slice;
+    let [rle_ctrl_box, rle_code_box, new_data_box] = rest_slice else {
+        return Err(std::io::Error::other("expected 3 remaining clip streams"));
+    };
+    let rle_ctrl_reader = &mut **rle_ctrl_box;
+    let rle_code_reader = &mut **rle_code_box;
+    let new_data_reader = &mut **new_data_box;
+    let headers = enumerate_cover_headers_checked(
+        cover_reader,
         header_info.chunk_info.cover_buf_size,
         header_info.chunk_info.cover_count,
     )?;
 
-    for cover in &headers {
+    for cover_result in headers {
+        let cover = cover_result?;
         if cover.new_pos < new_pos_back {
             return Err(std::io::Error::other(
                 "backward or overlapping covers in patch",
@@ -59,7 +67,7 @@ pub(crate) fn write_cover_stream_to_output(
             let copy_length = cover.new_pos - new_pos_back;
             tbytes_copy_stream_from_old_clip(
                 &mut cache,
-                &mut *right[1],
+                new_data_reader,
                 copy_length,
                 &mut shared_buffer,
             )?;
@@ -68,8 +76,8 @@ pub(crate) fn write_cover_stream_to_output(
                 &mut cache,
                 copy_length,
                 &mut shared_buffer,
-                &mut *left[1],
-                &mut *right[0],
+                rle_ctrl_reader,
+                rle_code_reader,
             )?;
         }
 
@@ -80,8 +88,8 @@ pub(crate) fn write_cover_stream_to_output(
             cover.old_pos,
             cover.cover_length,
             &mut shared_buffer,
-            &mut *left[1],
-            &mut *right[0],
+            rle_ctrl_reader,
+            rle_code_reader,
         )?;
         new_pos_back = cover
             .new_pos
@@ -106,7 +114,7 @@ pub(crate) fn write_cover_stream_to_output(
         }
         tbytes_copy_stream_from_old_clip(
             &mut cache,
-            &mut *right[1],
+            new_data_reader,
             copy_length,
             &mut shared_buffer,
         )?;
@@ -115,8 +123,8 @@ pub(crate) fn write_cover_stream_to_output(
             &mut cache,
             copy_length,
             &mut shared_buffer,
-            &mut *left[1],
-            &mut *right[0],
+            rle_ctrl_reader,
+            rle_code_reader,
         )?;
         let cache_len = cache.get_ref().len() as u64;
         write_cache_to_output(&mut cache, output_stream)?;
@@ -125,6 +133,8 @@ pub(crate) fn write_cover_stream_to_output(
             cb(total_written);
         }
     }
+    SHARED_BUFFER_POOL.return_buf(shared_buffer);
+    CACHE_BUFFER_POOL.return_buf(cache.into_inner());
     Ok(())
 }
 
@@ -347,7 +357,7 @@ pub(crate) fn tbytes_set_rle_vector_software(
     // Use split_at_mut to obtain two non-overlapping mutable slices from
     // buf. The pattern relies on the invariant that rle_idx and
     // (old_idx + decode_step) split the buffer so the two ranges are
-    // disjoint — true for all callers in this codebase. Iter-zip form
+    // disjoint ,  true for all callers in this codebase. Iter-zip form
     // enables LLVM autovectorization (vpaddb/AVX2).
     if rle_idx + decode_step <= old_idx || old_idx + decode_step <= rle_idx {
         if rle_idx < old_idx {
@@ -410,7 +420,12 @@ impl<'a> CoverHeaderIterator<'a> {
             });
         }
         let reader = if cover_size < MAX_MEM_BUFFER_LEN {
-            let mut buffer = vec![0u8; cover_size as usize];
+            #[allow(clippy::uninit_vec)]
+            let mut buffer = {
+                let mut v = Vec::with_capacity(cover_size as usize);
+                unsafe { v.set_len(cover_size as usize) };
+                v
+            };
             cover_reader.read_exact(&mut buffer).map_err(|err| {
                 std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -610,6 +625,7 @@ impl<'a> Iterator for CoverHeaderIterator<'a> {
 
 impl<'a> ExactSizeIterator for CoverHeaderIterator<'a> {}
 
+#[cfg(test)]
 pub(crate) fn enumerate_cover_headers(
     cover_reader: &mut dyn Read,
     cover_size: i64,
@@ -636,7 +652,7 @@ pub(crate) fn enumerate_cover_headers(
     CoverHeaderIterator::new(cover_reader, cover_size, cover_count)?.collect()
 }
 
-#[allow(dead_code, clippy::needless_lifetimes)]
+#[allow(clippy::needless_lifetimes)]
 pub(crate) fn enumerate_cover_headers_checked<'a>(
     cover_reader: &'a mut dyn Read,
     cover_size: i64,
@@ -663,16 +679,12 @@ pub(crate) fn enumerate_cover_headers_checked<'a>(
     CoverHeaderIterator::new(cover_reader, cover_size, cover_count)
 }
 
-// ========== RLE Unit Tests ==========
-
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
     use super::RleRefClip;
     use super::{tbytes_set_rle_single, tbytes_set_rle_vector_software};
-
-    // ========== RleRefClip Struct Tests ==========
 
     #[test]
     fn rle_ref_clip_default_initialization() {
@@ -697,8 +709,6 @@ mod tests {
             "original should be unchanged after copy modification"
         );
     }
-
-    // ========== tbytes_set_rle_single Tests ==========
 
     /// Test mem_set_value == 0 behavior: should skip bytes without modification
     #[test]
@@ -849,8 +859,6 @@ mod tests {
             "cache position should not advance"
         );
     }
-
-    // ========== tbytes_set_rle_vector_software Tests ==========
 
     /// Test wrapping_add edge case: 0xFF + 0x01 = 0x00
     #[test]
@@ -1014,8 +1022,6 @@ mod tests {
         assert_eq!(copy_length, 2, "copy_length should be 5 - 3 = 2");
     }
 
-    // ========== RLE Edge Case: mem_set_step capping ==========
-
     /// When mem_set_length exceeds shared_buffer.len(), the step should be
     /// capped to the buffer size. Only shared_buffer.len() bytes are processed.
     #[test]
@@ -1107,8 +1113,6 @@ mod tests {
         );
     }
 
-    // ========== RLE Edge Case: empty streams ==========
-
     /// When both mem_set_length and mem_copy_length are 0, tbytes_set_rle
     /// should return immediately without doing anything.
     #[test]
@@ -1145,8 +1149,6 @@ mod tests {
         );
     }
 
-    // ========== RLE Edge Case: mem_copy_length bounds ==========
-
     /// When mem_copy_length exceeds MAX_ARRAY_POOL_SECOND_OFFSET, the decode
     /// step is capped to MAX_ARRAY_POOL_SECOND_OFFSET in tbytes_set_rle.
     #[test]
@@ -1179,7 +1181,7 @@ mod tests {
         }
 
         // decode_step = min(mem_copy_length, copy_length, MAX_ARRAY_POOL_SECOND_OFFSET)
-        // = min(offset+100, offset+100, offset) = offset
+        // min(offset+100, offset+100, offset) = offset
         let result = tbytes_set_rle_vector_software(
             &mut rle_loader,
             &mut cache,
@@ -1234,8 +1236,6 @@ mod tests {
         assert_eq!(copy_length, 8, "nothing consumed");
     }
 
-    // ========== tbytes_copy_stream_from_old_clip Negative Tests ==========
-
     /// tbytes_copy_stream_from_old_clip with negative copy_length should return
     /// an error.
     #[test]
@@ -1251,8 +1251,6 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("copy_length is negative"), "msg={msg}");
     }
-
-    // ========== tbytes_set_rle_single Additional Wrapping Tests ==========
 
     /// tbytes_set_rle_single with basic non-zero addition (add 0x10).
     #[test]

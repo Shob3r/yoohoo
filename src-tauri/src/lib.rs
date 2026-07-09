@@ -4,13 +4,23 @@ use std::time::Duration;
 use tauri::{Manager, command};
 
 use crate::commands::{file_downloader, file_manager};
-mod commands;
+pub mod commands;
 use crate::commands::sophon_downloader::ActiveDownload;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     apply_nvidia_wayland_workaround();
     apply_webkit_memory_improvements();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(32)
+        .thread_stack_size(512 * 1024)
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    tauri::async_runtime::set(runtime.handle().clone());
+    std::mem::forget(runtime);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -24,18 +34,16 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(commands::sophon_downloader::HttpClient(
             reqwest::Client::builder()
-                .pool_max_idle_per_host(4)
+                .pool_max_idle_per_host(8)
+                .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_nodelay(true)
-                .http2_adaptive_window(true)
-                .http2_keep_alive_interval(Duration::from_secs(30))
-                .http2_keep_alive_timeout(Duration::from_secs(20))
-                .tcp_keepalive(Duration::from_secs(60))
-                .connect_timeout(Duration::from_secs(15))
-                .read_timeout(Duration::from_secs(600))
+                .tcp_keepalive(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(Duration::from_secs(300))
                 .user_agent(format!(
-                    "{}/{}",
-                    env!("CARGO_PKG_NAME"),
-                    env!("CARGO_PKG_VERSION")
+                    "{name}/{ver}",
+                    name = env!("CARGO_PKG_NAME"),
+                    ver = env!("CARGO_PKG_VERSION")
                 ))
                 .build()
                 .unwrap(),
@@ -57,10 +65,10 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
-                if !is_flatpak() {
-                    if let Err(e) = app.deep_link().register_all() {
-                        eprintln!("Elysiae: Failed to register deep links: {e}");
-                    }
+                if !is_flatpak()
+                    && let Err(e) = app.deep_link().register_all()
+                {
+                    eprintln!("Elysiae: Failed to register deep links: {e}");
                 }
             }
             Ok(())
@@ -69,18 +77,19 @@ pub fn run() {
             file_downloader::download_file,
             file_manager::extract_file,
             file_manager::get_dir_size,
-            commands::sophon_downloader::sophon_download,
-            commands::sophon_downloader::sophon_update,
-            commands::sophon_downloader::sophon_preinstall,
-            commands::sophon_downloader::sophon_apply_preinstall,
-            commands::sophon_downloader::sophon_resume_download,
-            commands::sophon_downloader::sophon_has_resume_state,
-            commands::sophon_downloader::sophon_get_resume_info,
-            commands::sophon_downloader::sophon_verify_integrity,
-            commands::sophon_downloader::sophon_pause,
-            commands::sophon_downloader::sophon_resume,
-            commands::sophon_downloader::sophon_cancel,
-            commands::sophon_downloader::sophon_check_update,
+            commands::sophon_downloader::commands::sophon_download,
+            commands::sophon_downloader::commands::sophon_download_version,
+            commands::sophon_downloader::commands::sophon_update,
+            commands::sophon_downloader::commands::sophon_preinstall,
+            commands::sophon_downloader::commands::sophon_apply_preinstall,
+            commands::sophon_downloader::commands::sophon_resume_download,
+            commands::sophon_downloader::commands::sophon_has_resume_state,
+            commands::sophon_downloader::commands::sophon_get_resume_info,
+            commands::sophon_downloader::commands::sophon_verify_integrity,
+            commands::sophon_downloader::commands::sophon_pause,
+            commands::sophon_downloader::commands::sophon_resume,
+            commands::sophon_downloader::commands::sophon_cancel,
+            commands::sophon_downloader::commands::sophon_check_update,
             elysiae_version,
         ])
         .run(tauri::generate_context!())

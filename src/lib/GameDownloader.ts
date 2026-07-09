@@ -18,6 +18,41 @@ import {
 	variantToGameName,
 } from "./VariantConverter";
 
+export type PreinstallState = "download" | "downloaded" | "apply" | "hidden";
+
+/**
+ * Determine the preinstall button state for a game.
+ * - "download": preinstall is available but not yet downloaded
+ * - "downloaded": preinstall is downloaded, waiting for update release
+ * - "apply": update is released and preinstall was already downloaded
+ * - "hidden": no preinstall action available
+ */
+export const getPreinstallState = async (
+	game: Variants,
+): Promise<PreinstallState> => {
+	const gameData = await getGameData(game);
+	const installed = await isGameInstalled(game);
+	if (!installed) return "hidden";
+
+	const info = await invoke<{
+		update_available: boolean;
+		preinstall_available: boolean;
+		preinstall_downloaded: boolean;
+		preinstall_tag: string | null;
+	}>("sophon_check_update", {
+		gameId: gameData.gameCode,
+		voLang: gameData.requestedLanguage,
+		outputPath: gameData.gameDir,
+	});
+
+	if (info.update_available && info.preinstall_downloaded) return "apply";
+	if (info.preinstall_available && info.preinstall_downloaded)
+		return "downloaded";
+	if (info.preinstall_available && !info.preinstall_downloaded)
+		return "download";
+	return "hidden";
+};
+
 /**
  * Downloads a fresh install of any game to `games/gameCode`
  */
@@ -190,18 +225,23 @@ export const downloadUpdate = async (
 ): Promise<void> => {
 	const gameData = await getGameData(game);
 
-	if (isPreinstall) {
-		await invoke("sophon_preinstall", {
-			gameId: gameData.gameCode,
-			voLang: gameData.requestedLanguage,
-			outputPath: gameData.gameDir,
-		});
-	} else {
-		await invoke("sophon_update", {
-			gameId: gameData.gameCode,
-			voLang: gameData.requestedLanguage,
-			outputPath: gameData.gameDir,
-		});
+	try {
+		if (isPreinstall) {
+			await invoke("sophon_preinstall", {
+				gameId: gameData.gameCode,
+				voLang: gameData.requestedLanguage,
+				outputPath: gameData.gameDir,
+			});
+		} else {
+			await invoke("sophon_update", {
+				gameId: gameData.gameCode,
+				voLang: gameData.requestedLanguage,
+				outputPath: gameData.gameDir,
+			});
+		}
+	} catch (err) {
+		info(`downloadUpdate failed: ${err}`);
+		throw err;
 	}
 };
 
@@ -213,23 +253,28 @@ export const downloadUpdate = async (
 export const applyUpdate = async (game: Variants): Promise<void> => {
 	const gameData = await getGameData(game);
 
-	const { preinstall_tag } = await invoke<{ preinstall_tag: string | null }>(
-		"sophon_check_update",
-		{
-			gameId: gameData.gameCode,
-			voLang: gameData.requestedLanguage,
+	try {
+		const { preinstall_tag } = await invoke<{ preinstall_tag: string | null }>(
+			"sophon_check_update",
+			{
+				gameId: gameData.gameCode,
+				voLang: gameData.requestedLanguage,
+				outputPath: gameData.gameDir,
+			},
+		);
+
+		if (!preinstall_tag) {
+			throw new Error(`No Preinstall found for ${gameData.gameCode}`);
+		}
+
+		await invoke("sophon_apply_preinstall", {
+			preinstallTag: preinstall_tag,
 			outputPath: gameData.gameDir,
-		},
-	);
-
-	if (!preinstall_tag) {
-		throw new Error(`No Preinstall found for ${gameData.gameCode}`);
+		});
+	} catch (err) {
+		info(`applyUpdate failed: ${err}`);
+		throw err;
 	}
-
-	await invoke("sophon_apply_preinstall", {
-		preinstallTag: preinstall_tag,
-		outputPath: gameData.gameDir,
-	});
 };
 
 /**
@@ -263,8 +308,13 @@ export const verifyGameIntegrity = async (game: Variants): Promise<void> => {
  * @returns Weather or not `game` is installed
  */
 export const isGameInstalled = async (game: Variants): Promise<boolean> => {
-	const path = await join("games", variantToGameCode[game], "pkg_version");
-	return exists(path);
+	const pkgPath = await join("games", variantToGameCode[game], "pkg_version");
+	const sophonPath = await join(
+		"games",
+		variantToGameCode[game],
+		".sophon_version",
+	);
+	return (await exists(pkgPath)) || (await exists(sophonPath));
 };
 
 /**
