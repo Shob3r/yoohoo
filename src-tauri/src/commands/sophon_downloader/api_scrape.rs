@@ -42,7 +42,7 @@ pub struct PackageBranch {
 pub struct SophonBuildResponse {
     pub retcode: i32,
     pub message: String,
-    pub data: SophonBuildData,
+    pub data: Option<SophonBuildData>,
 }
 
 #[allow(dead_code)]
@@ -94,6 +94,9 @@ pub struct DownloadInfo {
 pub enum Compression {
     None = 0,
     Zstd = 1,
+    Gzip = 2,
+    Brotli = 3,
+    Deflate = 4,
 }
 
 impl From<Compression> for i32 {
@@ -109,6 +112,9 @@ impl TryFrom<i32> for Compression {
         match value {
             0 => Ok(Compression::None),
             1 => Ok(Compression::Zstd),
+            2 => Ok(Compression::Gzip),
+            3 => Ok(Compression::Brotli),
+            4 => Ok(Compression::Deflate),
             _ => Err(format!("Invalid compression value: {value}")),
         }
     }
@@ -136,6 +142,9 @@ impl<'de> Deserialize<'de> for Compression {
                 match v {
                     0 => Ok(Compression::None),
                     1 => Ok(Compression::Zstd),
+                    2 => Ok(Compression::Gzip),
+                    3 => Ok(Compression::Brotli),
+                    4 => Ok(Compression::Deflate),
                     _ => Err(de::Error::invalid_value(
                         Unexpected::Signed(v as i64),
                         &self,
@@ -146,6 +155,9 @@ impl<'de> Deserialize<'de> for Compression {
                 match v {
                     0 => Ok(Compression::None),
                     1 => Ok(Compression::Zstd),
+                    2 => Ok(Compression::Gzip),
+                    3 => Ok(Compression::Brotli),
+                    4 => Ok(Compression::Deflate),
                     _ => Err(de::Error::invalid_value(Unexpected::Signed(v), &self)),
                 }
             }
@@ -153,6 +165,9 @@ impl<'de> Deserialize<'de> for Compression {
                 match v {
                     0 => Ok(Compression::None),
                     1 => Ok(Compression::Zstd),
+                    2 => Ok(Compression::Gzip),
+                    3 => Ok(Compression::Brotli),
+                    4 => Ok(Compression::Deflate),
                     _ => Err(de::Error::invalid_value(Unexpected::Unsigned(v), &self)),
                 }
             }
@@ -185,6 +200,19 @@ impl DownloadInfo {
         }
     }
 
+    pub fn url_for_into(&self, item_name: &str, buf: &mut String) {
+        buf.clear();
+        let prefix = self.url_prefix.trim_end_matches('/');
+        let suffix = self.url_suffix.trim_matches('/');
+        buf.push_str(prefix);
+        buf.push('/');
+        if !suffix.is_empty() {
+            buf.push_str(suffix);
+            buf.push('/');
+        }
+        buf.push_str(item_name);
+    }
+
     pub fn is_compressed(&self) -> bool {
         matches!(self.compression, Compression::Zstd)
     }
@@ -204,7 +232,7 @@ pub struct Stats {
 pub struct SophonPatchBuildResponse {
     pub retcode: i32,
     pub message: String,
-    pub data: SophonPatchBuildData,
+    pub data: Option<SophonPatchBuildData>,
 }
 
 #[allow(dead_code)]
@@ -237,6 +265,9 @@ mod tests {
     fn compression_try_from_valid() {
         assert_eq!(Compression::try_from(0).unwrap(), Compression::None);
         assert_eq!(Compression::try_from(1).unwrap(), Compression::Zstd);
+        assert_eq!(Compression::try_from(2).unwrap(), Compression::Gzip);
+        assert_eq!(Compression::try_from(3).unwrap(), Compression::Brotli);
+        assert_eq!(Compression::try_from(4).unwrap(), Compression::Deflate);
     }
 
     #[test]
@@ -247,7 +278,7 @@ mod tests {
     #[test]
     fn compression_try_from_boundary() {
         assert!(Compression::try_from(-1).is_err());
-        assert!(Compression::try_from(2).is_err());
+        assert!(Compression::try_from(5).is_err());
         assert!(Compression::try_from(i32::MAX).is_err());
     }
 
@@ -268,7 +299,7 @@ mod tests {
 
     #[test]
     fn download_info_url_for_trims_slashes() {
-        // Test that trailing/leading slashes are properly trimmed
+        // Verify slash trimming.
         let dl = DownloadInfo {
             encryption: 0,
             password: String::new(),
@@ -276,7 +307,7 @@ mod tests {
             url_prefix: "https://example.com//".to_string(),
             url_suffix: "/v1/".to_string(),
         };
-        // Should not have double slashes (except in protocol)
+        // Check for double slashes.
         let url = dl.url_for("manifest.dat");
         // Check for double slashes not in protocol
         let after_protocol = url.strip_prefix("https://").unwrap_or(&url);
@@ -301,6 +332,32 @@ mod tests {
             dl.url_for("manifest.dat"),
             "https://example.com/v1/manifest.dat"
         );
+    }
+
+    #[test]
+    fn download_info_url_for_into_matches_url_for() {
+        let cases = [
+            ("https://example.com/", "v1", "manifest.dat"),
+            ("https://example.com//", "/v1/", "chunk_0.zst"),
+            ("https://example.com", "v1", "a/b/c.dat"),
+            ("https://cdn.example.com/prefix/", "", "file.bin"),
+        ];
+        let mut buf = String::new();
+        for (prefix, suffix, name) in cases {
+            let dl = DownloadInfo {
+                encryption: 0,
+                password: String::new(),
+                compression: Compression::None,
+                url_prefix: prefix.to_string(),
+                url_suffix: suffix.to_string(),
+            };
+            let expected = dl.url_for(name);
+            dl.url_for_into(name, &mut buf);
+            assert_eq!(
+                buf, expected,
+                "mismatch for prefix={prefix} suffix={suffix}"
+            );
+        }
     }
 
     #[test]

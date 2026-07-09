@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use reqwest::Client;
@@ -58,7 +57,7 @@ pub async fn check_update(
 
     let (
         preinstall_available,
-        preinstall_tag,
+        mut preinstall_tag,
         preinstall_compressed_size,
         preinstall_decompressed_size,
     ) = match pre_download_branch {
@@ -79,6 +78,14 @@ pub async fn check_update(
         let marker = game_dir.join(format!(".sophon_preinstall_{ptag}"));
         let state_file = game_dir.join(format!(".sophon_preinstall_{ptag}.json"));
         marker.exists() || state_file.exists()
+    } else if update_available {
+        let marker = game_dir.join(format!(".sophon_preinstall_{remote_tag}"));
+        let state_file = game_dir.join(format!(".sophon_preinstall_{remote_tag}.json"));
+        let downloaded = marker.exists() || state_file.exists();
+        if downloaded {
+            preinstall_tag = Some(remote_tag.clone());
+        }
+        downloaded
     } else {
         false
     };
@@ -143,9 +150,9 @@ pub async fn fetch_diff_sizes(
 
     let mut cs = 0u64;
     let mut ds = 0u64;
-    let mut seen_chunks: HashSet<String> = HashSet::new();
+    let mut seen_chunks: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
 
-    let old_map: HashMap<String, &SophonManifestMeta> = old_build
+    let old_map: rustc_hash::FxHashMap<String, &SophonManifestMeta> = old_build
         .manifests
         .iter()
         .map(|m| (m.matching_field.clone(), m))
@@ -179,8 +186,8 @@ pub async fn fetch_diff_sizes(
                             .iter()
                             .filter(|f| !f.is_directory())
                             .map(|f| (f.asset_name.clone(), f.asset_hash_md5.clone()))
-                            .collect::<HashMap<String, String>>();
-                        let old_chunks: HashSet<String> = old_manifest
+                            .collect::<rustc_hash::FxHashMap<String, String>>();
+                        let old_chunks: rustc_hash::FxHashSet<String> = old_manifest
                             .assets
                             .iter()
                             .filter(|f| !f.is_directory())
@@ -189,18 +196,27 @@ pub async fn fetch_diff_sizes(
                             .collect();
                         Ok(Some((old_files_md5, old_chunks)))
                     }
-                    None => {
-                        Ok::<Option<(HashMap<String, String>, HashSet<String>)>, SophonError>(None)
-                    }
+                    None => Ok::<
+                        Option<(
+                            rustc_hash::FxHashMap<String, String>,
+                            rustc_hash::FxHashSet<String>,
+                        )>,
+                        SophonError,
+                    >(None),
                 }
             }
         )?;
         let new_manifest = new_response.manifest;
 
-        let (old_files_md5, old_chunks): (HashMap<String, String>, HashSet<String>) = match old_data
-        {
+        let (old_files_md5, old_chunks): (
+            rustc_hash::FxHashMap<String, String>,
+            rustc_hash::FxHashSet<String>,
+        ) = match old_data {
             Some((md5, chunks)) => (md5, chunks),
-            None => (HashMap::new(), HashSet::new()),
+            None => (
+                rustc_hash::FxHashMap::default(),
+                rustc_hash::FxHashSet::default(),
+            ),
         };
 
         for file in &new_manifest.assets {

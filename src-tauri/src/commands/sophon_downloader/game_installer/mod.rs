@@ -1,41 +1,39 @@
-//! Core game installer module for Sophon chunk-based downloads.
+//! Sophon chunk-based game installer.
 mod adaptive_assembly;
-mod adaptive_download;
 mod api;
-mod assembly;
-mod cache;
+pub mod assembly;
+mod assembly_opt;
+pub mod cache;
+pub mod compact_manifest;
 mod download;
 mod error;
 mod game_filters;
 mod handle;
 mod hdiffpatch;
-mod installer;
+pub mod installer;
 mod plugin_api;
 mod plugin_install;
 mod preinstall;
 mod update;
 
-#[cfg(test)]
-mod bench_tests;
+mod profiling;
+pub mod sysio;
+
 #[cfg(test)]
 mod integration_tests;
 
-/// Maximum retry attempts for failed chunk downloads.
+/// Max retries for failed chunk downloads.
 pub const MAX_RETRIES: u32 = 5;
 pub const MAX_HASH_RETRIES: u32 = 5;
 
-/// Streaming-download idle-poll interval. The HTTP body streaming loop wakes
-/// at this cadence to re-check cancellation and pause state. Must be small
-/// enough that a stalled connection cannot delay user-initiated cancel/pause
-/// past this bound on the order of seconds.
-pub const STREAM_POLL_INTERVAL_MS: u64 = 1_000;
+/// Max concurrent chunk downloads. Matches the HTTP pool idle-per-host limit.
+pub const DOWNLOAD_CONCURRENCY: usize = 24;
 
 use std::time::Duration;
 
 pub fn retry_delay(attempt: u32) -> Duration {
     let exp = 1000u64.saturating_mul(1u64 << attempt.min(5));
-    // Add jitter to prevent thundering herd when multiple chunks fail
-    // simultaneously Use timestamp-based pseudo-random jitter
+    // Jitter prevents thundering-herd when multiple chunks fail at once.
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -60,35 +58,69 @@ pub async fn cancelable_sleep(
         } => Err(()),
     }
 }
-/// Maximum concurrent file assembly tasks.
-pub const ASSEMBLY_CONCURRENCY: usize = 8;
-/// Size of the channel buffer for assembly task scheduling.
-pub const ASSEMBLY_CHANNEL_SIZE: usize = ASSEMBLY_CONCURRENCY * 4;
-/// Filename for the installed version marker file.
+/// Max concurrent assembly tasks.
+pub const ASSEMBLY_CONCURRENCY: usize = 4;
+/// Assembly task channel buffer size.
+pub const ASSEMBLY_CHANNEL_SIZE: usize = 4096;
+/// Installed version marker filename.
 pub const VERSION_FILE_NAME: &str = ".sophon_version";
-/// Filename for the MD5 verification cache.
+/// MD5 verification cache filename.
 pub const VERIFICATION_CACHE_FILE: &str = ".sophon_verify_cache";
 
-/// Buffer size for file writes during assembly (256 KiB).
+/// File write buffer during assembly (zstd streaming input + output).
 pub const FILE_WRITE_BUFFER_SIZE: usize = 256 * 1024;
+/// File write buffer during chunk downloads.
+pub const CHUNK_WRITE_BUFFER_SIZE: usize = 256 * 1024;
 
-/// Minimum interval between progress updates (ms).
+/// Minimum progress update interval (ms).
 pub const PROGRESS_UPDATE_INTERVAL_MS: u64 = 1000;
 
-/// Minimum concurrent downloads in adaptive mode.
-pub const ADAPTIVE_MIN_CONCURRENCY: usize = 8;
-/// Maximum concurrent downloads in adaptive mode.
-/// Computed as (cores * 4) clamped to [8, 128].
-pub fn adaptive_max_concurrency() -> usize {
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    (cpus * 4).clamp(8, 128)
+/// Download speed smoothing window (seconds).
+pub const SPEED_SMOOTH_WINDOW_SECS: f64 = 5.0;
+
+/// Update an EWMA-smoothed value stored as a scaled u64.
+pub fn ewma_update(atomic: &std::sync::atomic::AtomicU64, raw_value: f64, alpha: f64) -> f64 {
+    const SCALE: f64 = 1000.0;
+    use std::sync::atomic::Ordering;
+    let prev_raw = atomic.load(Ordering::Relaxed);
+    let prev = prev_raw as f64 / SCALE;
+    let new_val = if prev == 0.0 {
+        raw_value
+    } else {
+        alpha * raw_value + (1.0 - alpha) * prev
+    };
+    atomic.store((new_val * SCALE) as u64, Ordering::Release);
+    new_val
 }
-/// Initial concurrent downloads in adaptive mode.
-pub const ADAPTIVE_INITIAL_CONCURRENCY: usize = 32;
-/// Time window for throughput measurement (seconds).
-pub const ADAPTIVE_WINDOW_SECS: u64 = 3;
+
+/// ETA speed sample window size.
+pub const ETA_WINDOW_SAMPLES: usize = 30;
+/// Minimum samples before ETA is displayed.
+pub const ETA_MIN_SAMPLES: usize = 5;
+
+/// Compute ETA speed using median filtering over recent speed samples.
+/// Returns 0.0 if fewer than `ETA_MIN_SAMPLES` are available.
+pub fn compute_eta_speed(
+    history: &std::sync::Mutex<std::collections::VecDeque<f64>>,
+    instant_speed: f64,
+) -> f64 {
+    let mut samples = history.lock().unwrap_or_else(|err| err.into_inner());
+    samples.push_back(instant_speed);
+    if samples.len() > ETA_WINDOW_SAMPLES {
+        samples.pop_front();
+    }
+    if samples.len() < ETA_MIN_SAMPLES {
+        return 0.0;
+    }
+    let mut sorted: Vec<f64> = samples.iter().copied().collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
 
 pub const FRONT_DOOR_URL: &str = concat!(
     "\x68\x74\x74\x70\x73\x3a\x2f\x2f\x73\x67\x2d\x68\x79\x70\x2d\x61\x70\x69\x2e\x68\x6f\x79\x6f\x76\x65\x72\x73\x65\x2e\x63\x6f\x6d",
@@ -108,28 +140,40 @@ fn version_file_path(game_dir: &Path) -> PathBuf {
     game_dir.join(VERSION_FILE_NAME)
 }
 
-/// Reads the installed version tag from the game directory, if present.
+/// Read the installed version tag, if present.
 pub fn read_installed_tag(game_dir: &Path) -> Option<String> {
     fs::read_to_string(version_file_path(game_dir))
         .ok()
         .map(|s| s.trim().to_owned())
 }
 
-/// Writes the installed version tag to the game directory.
+/// Write the installed version tag.
 pub fn write_installed_tag(game_dir: &Path, tag: &str) -> io::Result<()> {
     fs::write(version_file_path(game_dir), tag)
 }
 
+pub use crate::commands::sophon_downloader::types::CompletedFiles;
 pub use assembly::validate_asset_name;
 pub use error::SophonError;
 pub use handle::DownloadHandle;
 pub use installer::{
-    InstallCallbacks, InstallOptions, ResumeContext, StateSaver, build_installers,
-    build_update_installers, install, verify_integrity,
+    InstallCallbacks, InstallOptions, ResumeContext, StateSaver, assign_chunk_offsets,
+    build_installers, build_installers_for_tag, build_update_installers, install,
+    intern_old_chunk_offsets, verify_integrity,
 };
 pub use plugin_install::{install_channel_sdks, install_plugins};
 pub use preinstall::{apply_preinstall, build_preinstall_plan, preinstall_download};
 pub use update::{UpdateInfo, check_update};
+
+/// Advance jemalloc epoch and trigger a background decay pass. Call after
+/// major sophon phase transitions (download → assembly, etc.) to reduce
+/// resident memory.
+pub fn reclaim_memory() {
+    #[cfg(not(target_env = "msvc"))]
+    {
+        let _ = tikv_jemalloc_ctl::epoch::advance();
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -154,22 +198,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_installed_tag(dir.path(), "2.0.0").unwrap();
         assert_eq!(read_installed_tag(dir.path()), Some("2.0.0".to_string()));
-    }
-
-    #[test]
-    fn adaptive_max_concurrency_bounds() {
-        let c = adaptive_max_concurrency();
-        assert!(c >= 8, "concurrency {c} < 8");
-        assert!(c <= 128, "concurrency {c} > 128");
-    }
-
-    #[test]
-    fn adaptive_max_concurrency_formula() {
-        let cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        let expected = (cpus * 4).clamp(8, 128);
-        assert_eq!(adaptive_max_concurrency(), expected);
     }
 
     #[test]
@@ -211,5 +239,67 @@ mod tests {
         handle.cancel();
         let result = cancelable_sleep(&handle, Duration::from_secs(30)).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn ewma_update_first_sample_is_raw() {
+        let atomic = std::sync::atomic::AtomicU64::new(0);
+        let val = ewma_update(&atomic, 1000.0, 0.2);
+        assert!((val - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn ewma_update_smoothing_converges() {
+        let atomic = std::sync::atomic::AtomicU64::new(0);
+        ewma_update(&atomic, 1000.0, 0.2);
+        let val = ewma_update(&atomic, 500.0, 0.2);
+        assert!((val - 900.0).abs() < 0.01);
+        let val = ewma_update(&atomic, 500.0, 0.2);
+        assert!(val < 900.0 && val > 500.0);
+    }
+
+    #[test]
+    fn ewma_update_speed_window_alpha() {
+        let alpha = 1.0 / (SPEED_SMOOTH_WINDOW_SECS * 1000.0 / PROGRESS_UPDATE_INTERVAL_MS as f64);
+        assert!((alpha - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn compute_eta_speed_returns_zero_with_few_samples() {
+        let history = std::sync::Mutex::new(std::collections::VecDeque::new());
+        assert_eq!(compute_eta_speed(&history, 1000.0), 0.0);
+        assert_eq!(compute_eta_speed(&history, 2000.0), 0.0);
+        assert_eq!(compute_eta_speed(&history, 3000.0), 0.0);
+        assert_eq!(compute_eta_speed(&history, 4000.0), 0.0);
+    }
+
+    #[test]
+    fn compute_eta_speed_median_with_enough_samples() {
+        let history = std::sync::Mutex::new(std::collections::VecDeque::new());
+        for _ in 0..4 {
+            compute_eta_speed(&history, 1000.0);
+        }
+        let result = compute_eta_speed(&history, 1000.0);
+        assert!((result - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_eta_speed_median_rejects_outlier() {
+        let history = std::sync::Mutex::new(std::collections::VecDeque::new());
+        for _ in 0..4 {
+            compute_eta_speed(&history, 100.0);
+        }
+        let result = compute_eta_speed(&history, 10000.0);
+        assert!((result - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_eta_speed_window_bounds() {
+        let history = std::sync::Mutex::new(std::collections::VecDeque::new());
+        for i in 0..ETA_WINDOW_SAMPLES + 5 {
+            compute_eta_speed(&history, i as f64 * 100.0);
+        }
+        let guard = history.lock().unwrap();
+        assert!(guard.len() <= ETA_WINDOW_SAMPLES);
     }
 }

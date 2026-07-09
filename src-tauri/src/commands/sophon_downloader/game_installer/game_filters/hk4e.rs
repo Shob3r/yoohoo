@@ -7,6 +7,7 @@ use serde::Serialize;
 use tauri_plugin_log::log;
 
 use super::write_lang_file;
+use crate::commands::sophon_downloader::game_installer::compact_manifest::CompactManifest;
 use crate::commands::sophon_downloader::proto_parse::SophonManifestAssetProperty;
 
 const ALL_AUDIO_LANGUAGES: &[&str] = &["Chinese", "English(US)", "Japanese", "Korean"];
@@ -113,7 +114,7 @@ struct PkgVersionEntry {
 
 pub fn write_pkg_version_from_manifest(
     game_dir: &Path,
-    assets: &Arc<Vec<SophonManifestAssetProperty>>,
+    assets: &Arc<CompactManifest>,
     vo_langs: &[String],
 ) -> std::io::Result<()> {
     write_single_pkg_version(game_dir, "pkg_version", assets)?;
@@ -122,12 +123,10 @@ pub fn write_pkg_version_from_manifest(
         if let Some(lang_name) = locale_code_to_audio_lang_name(lang) {
             let filename = format!("Audio_{lang_name}_pkg_version");
             let pattern = format!("/{lang_name}/").to_lowercase();
-            let filtered: Vec<SophonManifestAssetProperty> = assets
-                .iter()
-                .filter(|a| a.asset_name.to_lowercase().contains(&pattern))
-                .cloned()
+            let matching_indices: Vec<usize> = (0..assets.num_files())
+                .filter(|&i| assets.file_name(i).to_lowercase().contains(&pattern))
                 .collect();
-            write_single_pkg_version(game_dir, &filename, &filtered)?;
+            write_single_pkg_version_from_indices(game_dir, &filename, assets, &matching_indices)?;
         }
     }
 
@@ -165,19 +164,45 @@ fn read_installed_audio_langs(persistent_dir: &Path, vo_langs: &[String]) -> Vec
 fn write_single_pkg_version(
     game_dir: &Path,
     filename: &str,
-    assets: &[SophonManifestAssetProperty],
+    assets: &CompactManifest,
 ) -> std::io::Result<()> {
     let path = game_dir.join(filename);
     let mut file = File::create(&path)?;
 
-    for asset in assets {
-        if asset.is_directory() {
+    for i in 0..assets.num_files() {
+        if assets.is_directory(i) {
             continue;
         }
         let entry = PkgVersionEntry {
-            remoteName: asset.asset_name.clone(),
-            md5: asset.asset_hash_md5.clone(),
-            file_size: asset.asset_size,
+            remoteName: assets.file_name(i).to_string(),
+            md5: assets.file_hash_md5(i).to_string(),
+            file_size: assets.file_size(i),
+        };
+        let mut line = serde_json::to_string(&entry)?;
+        line.push('\n');
+        file.write_all(line.as_bytes())?;
+    }
+
+    Ok(())
+}
+
+fn write_single_pkg_version_from_indices(
+    game_dir: &Path,
+    filename: &str,
+    assets: &CompactManifest,
+    indices: &[usize],
+) -> std::io::Result<()> {
+    let path = game_dir.join(filename);
+    let mut file = File::create(&path)?;
+
+    for &i in indices {
+        if assets.is_directory(i) {
+            continue;
+        }
+        let entry = PkgVersionEntry {
+            remoteName: assets.file_name(i).to_string(),
+            md5: assets.file_hash_md5(i).to_string(),
+            file_size: assets.file_size(i),
         };
         let mut line = serde_json::to_string(&entry)?;
         line.push('\n');
@@ -196,11 +221,7 @@ mod tests {
         base.join(format!("{GAME_DATA_DIR}/Persistent"))
     }
 
-    // -----------------------------------------------------------------------
-    // locale_code_to_audio_lang_name (tested via super::)
-    // -----------------------------------------------------------------------
-    // locale_code_to_audio_lang_name (tested via super::)
-    // -----------------------------------------------------------------------
+    // locale_code_to_audio_lang_name
     #[test]
     fn test_locale_code_to_audio_lang_name_zh_cn() {
         assert_eq!(locale_code_to_audio_lang_name("zh-cn"), Some("Chinese"));
@@ -247,9 +268,7 @@ mod tests {
         assert_eq!(locale_code_to_audio_lang_name(""), None);
     }
 
-    // -----------------------------------------------------------------------
     // filter_hk4e_asset_list
-    // -----------------------------------------------------------------------
     #[test]
     fn test_filter_hk4e_asset_list_filters_uninstalled_languages() {
         let dir = tempfile::tempdir().unwrap();
@@ -306,7 +325,7 @@ mod tests {
             &["en-us".to_string(), "zh-cn".to_string()],
         );
 
-        // Chinese and English(US) should be kept, Japanese and Korean filtered
+        // Chinese and English(US) kept; Japanese and Korean filtered.
         assert_eq!(assets.len(), 3);
         assert!(assets.iter().any(|a| a.asset_name.contains("Chinese")));
         assert!(assets.iter().any(|a| a.asset_name.contains("English(US)")));
@@ -341,7 +360,7 @@ mod tests {
 
         filter_hk4e_asset_list(dir.path(), &mut assets, &["zh-cn".to_string()]);
 
-        // ctable file should be filtered even though Chinese is installed
+        // ctable file filtered even when Chinese is installed.
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].asset_name, "data/asset_bundle/normal_file.pck");
     }
@@ -393,8 +412,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let persistent_dir = persistent_dir(dir.path());
         fs::create_dir_all(&persistent_dir).unwrap();
-        // No audio_lang_14 file -> falls back to vo_langs mapping which is empty
-        // So no installed_langs -> all audio languages are ignored
+        // No audio_lang_14 file; falls back to empty vo_langs mapping.
 
         let mut assets = vec![
             SophonManifestAssetProperty {
@@ -420,9 +438,7 @@ mod tests {
         assert_eq!(assets[0].asset_name, "data/asset_bundle/non_audio/file.dat");
     }
 
-    // -----------------------------------------------------------------------
     // write_audio_lang_record
-    // -----------------------------------------------------------------------
     #[test]
     fn test_write_audio_lang_record_creates_persistent_dir_and_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -437,14 +453,13 @@ mod tests {
         assert_eq!(content, "Chinese\nEnglish(US)\n");
     }
 
-    // -----------------------------------------------------------------------
     // write_pkg_version_from_manifest
-    // -----------------------------------------------------------------------
     #[test]
     fn test_write_pkg_version_from_manifest_creates_files() {
+        use crate::commands::sophon_downloader::game_installer::compact_manifest::CompactManifest;
         let dir = tempfile::tempdir().unwrap();
 
-        let assets = Arc::new(vec![
+        let assets_vec = vec![
             SophonManifestAssetProperty {
                 asset_name: "data/asset_bundle/Chinese/file.pck".into(),
                 asset_chunks: vec![],
@@ -466,7 +481,7 @@ mod tests {
                 asset_size: 300,
                 asset_hash_md5: "md5_common".into(),
             },
-            // Directory entry - should be skipped
+            // Directory entry skipped.
             SophonManifestAssetProperty {
                 asset_name: "data/asset_bundle/".into(),
                 asset_chunks: vec![],
@@ -474,23 +489,24 @@ mod tests {
                 asset_size: 0,
                 asset_hash_md5: String::new(),
             },
-        ]);
+        ];
+        let assets = Arc::new(CompactManifest::from(assets_vec));
 
         let vo_langs = vec!["zh-cn".to_string(), "en-us".to_string()];
         write_pkg_version_from_manifest(dir.path(), &assets, &vo_langs).unwrap();
 
-        // Check pkg_version contains all non-directory assets
+        // Verify pkg_version contains all non-directory assets.
         let pkg_content = fs::read_to_string(dir.path().join("pkg_version")).unwrap();
         let lines: Vec<&str> = pkg_content.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 3);
 
-        // Check Audio_Chinese_pkg_version
+        // Verify Audio_Chinese_pkg_version.
         let audio_cn = fs::read_to_string(dir.path().join("Audio_Chinese_pkg_version")).unwrap();
         let cn_lines: Vec<&str> = audio_cn.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(cn_lines.len(), 1);
         assert!(cn_lines[0].contains("Chinese"));
 
-        // Check Audio_English(US)_pkg_version
+        // Verify Audio_English(US)_pkg_version.
         let audio_en =
             fs::read_to_string(dir.path().join("Audio_English(US)_pkg_version")).unwrap();
         let en_lines: Vec<&str> = audio_en.lines().filter(|l| !l.is_empty()).collect();
@@ -500,27 +516,27 @@ mod tests {
 
     #[test]
     fn test_write_pkg_version_from_manifest_no_audio_langs() {
+        use crate::commands::sophon_downloader::game_installer::compact_manifest::CompactManifest;
         let dir = tempfile::tempdir().unwrap();
 
-        let assets = Arc::new(vec![SophonManifestAssetProperty {
+        let assets_vec = vec![SophonManifestAssetProperty {
             asset_name: "data/common.bin".into(),
             asset_chunks: vec![],
             asset_type: 0,
             asset_size: 100,
             asset_hash_md5: "md5".into(),
-        }]);
+        }];
+        let assets = Arc::new(CompactManifest::from(assets_vec));
 
         write_pkg_version_from_manifest(dir.path(), &assets, &[]).unwrap();
 
-        // pkg_version should exist
+        // Verify pkg_version exists.
         assert!(dir.path().join("pkg_version").exists());
-        // No audio-specific files
+        // No audio-specific files expected.
         assert!(!dir.path().join("Audio_Chinese_pkg_version").exists());
     }
 
-    // -----------------------------------------------------------------------
-    // read_installed_audio_langs (private fn tested via super::)
-    // -----------------------------------------------------------------------
+    // read_installed_audio_langs
     #[test]
     fn test_read_installed_audio_langs_from_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -534,7 +550,7 @@ mod tests {
 
         let persistent_dir = find_hk4e_persistent_dir(dir.path());
         let result = read_installed_audio_langs(&persistent_dir, &["ja-jp".to_string()]);
-        // Should read from the file, not use vo_langs fallback
+        // Should read from the file, not vo_langs fallback.
         assert_eq!(
             result,
             vec!["Chinese".to_string(), "English(US)".to_string()]
@@ -546,13 +562,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let persistent_dir = persistent_dir(dir.path());
         fs::create_dir_all(&persistent_dir).unwrap();
-        // No audio_lang_* files
+        // No audio_lang_* files present.
 
         let result = read_installed_audio_langs(
             &persistent_dir,
             &["ja-jp".to_string(), "ko-kr".to_string()],
         );
-        // Falls back to vo_langs mapped names
+        // Falls back to vo_langs mapped names.
         assert_eq!(result, vec!["Japanese".to_string(), "Korean".to_string()]);
     }
 
@@ -566,13 +582,12 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    // -----------------------------------------------------------------------
-    // write_single_pkg_version (private fn tested via super::)
-    // -----------------------------------------------------------------------
+    // write_single_pkg_version
     #[test]
     fn test_write_single_pkg_version_skips_directories() {
+        use crate::commands::sophon_downloader::game_installer::compact_manifest::CompactManifest;
         let dir = tempfile::tempdir().unwrap();
-        let assets = vec![
+        let assets_vec = vec![
             SophonManifestAssetProperty {
                 asset_name: "dir/".into(),
                 asset_chunks: vec![],
@@ -588,6 +603,7 @@ mod tests {
                 asset_hash_md5: "hash".into(),
             },
         ];
+        let assets = CompactManifest::from(assets_vec);
 
         write_single_pkg_version(dir.path(), "test_pkg_version", &assets).unwrap();
         let content = fs::read_to_string(dir.path().join("test_pkg_version")).unwrap();
@@ -596,9 +612,7 @@ mod tests {
         assert!(lines[0].contains("data/file.bin"));
     }
 
-    // -----------------------------------------------------------------------
     // find_hk4e_persistent_dir
-    // -----------------------------------------------------------------------
     #[test]
     fn test_find_hk4e_persistent_dir_with_hk4e_data() {
         let dir = tempfile::tempdir().unwrap();
@@ -622,7 +636,7 @@ mod tests {
     #[test]
     fn test_find_hk4e_persistent_dir_with_neither() {
         let dir = tempfile::tempdir().unwrap();
-        // Create a random dir that doesn't match
+        // Create a random dir.
         let other_data = dir.path().join("Other_Data");
         fs::create_dir(&other_data).unwrap();
 
