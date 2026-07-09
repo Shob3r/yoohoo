@@ -4,6 +4,7 @@ import { useDownload } from "../../hooks/useDownload";
 import { useGame } from "../../hooks/useGame";
 import { pauseDownload, resumeDownload } from "../../lib/GameDownloader";
 import { variantToGameName } from "../../lib/VariantConverter";
+import type { DownloadType } from "../../contexts/DownloadContext";
 import Button from "../Button";
 import Progressbar from "../Progressbar";
 
@@ -15,6 +16,50 @@ const formatNumber = (num: number): string => {
 	}
 };
 
+type TitleContext = {
+	isApplyingPreinstall: boolean;
+	isPaused: boolean;
+	isSettingUpProton: boolean;
+	downloadInProgress: boolean;
+	verifyingInProgress: boolean;
+	assemblingInProgress: boolean;
+	downloadType: DownloadType;
+	gameName: string;
+};
+
+const resolveTitleText = (ctx: TitleContext): string => {
+	if (ctx.isApplyingPreinstall) return "Applying Preinstall...";
+	if (ctx.isPaused) {
+		return ctx.downloadType === "update" ? "Update Paused" : "Download Paused";
+	}
+	if (ctx.isSettingUpProton) return "Setting Up Environment...";
+	if (ctx.downloadInProgress) {
+		if (ctx.downloadType === "update") {
+			return `Downloading update for ${ctx.gameName}...`;
+		}
+		if (ctx.downloadType === "preinstall") {
+			return `Downloading preinstall for ${ctx.gameName}...`;
+		}
+		return `Downloading ${ctx.gameName}...`;
+	}
+	if (ctx.verifyingInProgress) {
+		return `Verifying files for ${ctx.gameName}...`;
+	}
+	if (ctx.assemblingInProgress) {
+		return `Assembling chunks ${ctx.gameName}...`;
+	}
+	if (ctx.gameName !== "") {
+		if (ctx.downloadType === "update") {
+			return `Downloading update for ${ctx.gameName}...`;
+		}
+		if (ctx.downloadType === "preinstall") {
+			return `Downloading preinstall for ${ctx.gameName}...`;
+		}
+		return `Downloading ${ctx.gameName}...`;
+	}
+	return "Downloading...";
+};
+
 export const DownloadProgress = () => {
 	const { state } = useDownload();
 	const { game } = useGame();
@@ -22,9 +67,11 @@ export const DownloadProgress = () => {
 		isPaused,
 		isDownloading,
 		isAssembling,
+		isCheckingFiles,
 		isVerifying,
 		isFetchingManifest,
 		isCalculatingDownloads,
+		isApplyingPreinstall,
 		isError,
 		isFinished,
 		isSettingUpProton,
@@ -33,11 +80,14 @@ export const DownloadProgress = () => {
 	const isActive =
 		isDownloading ||
 		isAssembling ||
+		isCheckingFiles ||
 		isVerifying ||
 		isFetchingManifest ||
 		isCalculatingDownloads ||
 		isPaused ||
-		isSettingUpProton;
+		isSettingUpProton ||
+		isApplyingPreinstall ||
+		state.downloadingGame !== null;
 	if (!isActive && !isError && !isFinished) return null;
 	if (isFinished) return null;
 
@@ -94,15 +144,23 @@ export const DownloadProgress = () => {
 			state.totalFiles > 0 ? (state.scannedFiles / state.totalFiles) * 100 : 0;
 		const calcPct =
 			state.totalFiles > 0 ? (state.checkedFiles / state.totalFiles) * 100 : 0;
+		const applyPct =
+			state.totalFiles > 0
+				? (state.assembledFiles / state.totalFiles) * 100
+				: 0;
+		const checkingPct =
+			state.totalFiles > 0 ? (state.checkedFiles / state.totalFiles) * 100 : 0;
 		return {
 			downloadPct,
 			assemblePct,
+			checkingPct,
 			speedMB,
 			etaStr,
 			downloadedGB,
 			totalGB,
 			verifyPct,
 			calcPct,
+			applyPct,
 		};
 	}, [
 		state.downloadedBytes,
@@ -115,21 +173,47 @@ export const DownloadProgress = () => {
 		state.checkedFiles,
 	]);
 
-	const titleText = isPaused
-		? "Download Paused"
-		: isSettingUpProton
-			? "Setting Up Environment..."
-			: isVerifying
-				? "Verifying Files..."
-				: isCalculatingDownloads
-					? "Calculating File Downloads..."
-					: isFetchingManifest
-						? "Fetching Manifest..."
-						: state.downloadingGame !== null
-							? `Downloading ${variantToGameName[state.downloadingGame]}...`
-							: "Downloading...";
+	const downloadComplete =
+		state.downloadTotal > 0 && state.downloadedBytes >= state.downloadTotal;
+	const verificationComplete =
+		state.totalFiles > 0 && state.checkedFiles >= state.totalFiles;
+	const assemblyComplete =
+		state.totalFiles > 0 && state.assembledFiles >= state.totalFiles;
 
-	const canPause = isDownloading || isPaused;
+	const downloadInProgress = isDownloading && !downloadComplete;
+	const verifyingInProgress =
+		(isCheckingFiles && !verificationComplete) ||
+		(isVerifying && state.scannedFiles < state.totalFiles);
+	const assemblingInProgress = isAssembling && !assemblyComplete;
+
+	const gameName = state.downloadingGame
+		? variantToGameName[state.downloadingGame]
+		: "";
+
+	const titleText = resolveTitleText({
+		isApplyingPreinstall,
+		isPaused,
+		isSettingUpProton,
+		downloadInProgress,
+		verifyingInProgress,
+		assemblingInProgress,
+		downloadType: state.downloadType,
+		gameName,
+	});
+
+	const canPause = (isDownloading || isPaused) && !isVerifying;
+
+	const showDownloadBar =
+		isDownloading ||
+		isPaused ||
+		isVerifying ||
+		isCheckingFiles ||
+		(isAssembling && !isDownloading && !isPaused);
+	const downloadBarFinished =
+		!isDownloading &&
+		!isPaused &&
+		(isVerifying || isCheckingFiles || isAssembling);
+	const downloadBarPct = downloadBarFinished ? 100 : derived.downloadPct;
 
 	return (
 		<div class="mr-10 flex h-auto w-[65%] flex-col items-start justify-start gap-y-3 rounded-lg bg-black/50 px-4 py-5 align-bottom">
@@ -170,6 +254,20 @@ export const DownloadProgress = () => {
 					<Progressbar progress={protonSetupPct} game={game} />
 				</div>
 			)}
+			{!isDownloading &&
+				!isPaused &&
+				!isAssembling &&
+				!isCheckingFiles &&
+				!isVerifying &&
+				!isCalculatingDownloads &&
+				!isSettingUpProton &&
+				!isApplyingPreinstall &&
+				!showDownloadBar &&
+				state.downloadingGame !== null && (
+					<div class="flex min-w-full flex-col gap-y-1 text-left">
+						<h2 class="ml-1 text-sm text-white">Preparing...</h2>
+					</div>
+				)}
 			{isCalculatingDownloads && state.totalFiles > 0 && (
 				<div class="flex min-w-full flex-col gap-y-1 text-left">
 					<h2 class="ml-1 text-sm text-white">
@@ -180,25 +278,44 @@ export const DownloadProgress = () => {
 					<Progressbar progress={derived.calcPct} game={game} />
 				</div>
 			)}
-			{(isDownloading || isPaused) && state.downloadTotal > 0 && (
+			{showDownloadBar && (
 				<div class="flex min-w-full flex-col gap-y-1 text-left">
 					<h2 class="ml-1 text-sm text-white">
-						Downloaded {derived.downloadedGB}GB of {derived.totalGB}GB (
-						{derived.downloadPct.toFixed(2)}%)
-						{derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}
-						{derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}
+						{downloadBarFinished
+							? "Download finished"
+							: state.downloadTotal > 0
+								? derived.downloadPct >= 100
+									? `Download finished - ${derived.totalGB}GB`
+									: `Downloaded ${derived.downloadedGB}GB of ${derived.totalGB}GB (${derived.downloadPct.toFixed(2)}%)${derived.speedMB > 0 ? ` - ${derived.speedMB.toFixed(2)}MB/s` : ""}${derived.etaStr ? ` - ETA: ${derived.etaStr}` : ""}`
+								: isFetchingManifest
+									? "Fetching manifest..."
+									: isCalculatingDownloads
+										? "Calculating downloads..."
+										: "Starting..."}
 					</h2>
-					<Progressbar progress={derived.downloadPct} game={game} />
+					<Progressbar progress={downloadBarPct} game={game} />
 				</div>
 			)}
-			{isAssembling && state.totalFiles > 0 && (
+			{isAssembling &&
+				state.totalFiles > 0 &&
+				state.checkedFiles >= state.totalFiles && (
+					<div class="flex min-w-full flex-col gap-y-1 text-left">
+						<h2 class="ml-1 text-sm text-white">
+							Assembled {formatNumber(state.assembledFiles)} of{" "}
+							{formatNumber(state.totalFiles)} chunks (
+							{derived.assemblePct.toFixed(2)}%)
+						</h2>
+						<Progressbar progress={derived.assemblePct} game={game} />
+					</div>
+				)}
+			{isCheckingFiles && state.totalFiles > 0 && (
 				<div class="flex min-w-full flex-col gap-y-1 text-left">
 					<h2 class="ml-1 text-sm text-white">
-						Assembled {formatNumber(state.assembledFiles)} of{" "}
-						{formatNumber(state.totalFiles)} chunks (
-						{derived.assemblePct.toFixed(2)}%)
+						Verified {formatNumber(state.checkedFiles)} of{" "}
+						{formatNumber(state.totalFiles)} files (
+						{derived.checkingPct.toFixed(2)}%)
 					</h2>
-					<Progressbar progress={derived.assemblePct} game={game} />
+					<Progressbar progress={derived.checkingPct} game={game} />
 				</div>
 			)}
 			{isVerifying && (
@@ -209,6 +326,16 @@ export const DownloadProgress = () => {
 						{formatNumber(state.errorCount)} errors found
 					</h2>
 					<Progressbar progress={derived.verifyPct} game={game} />
+				</div>
+			)}
+			{isApplyingPreinstall && state.totalFiles > 0 && (
+				<div class="flex min-w-full flex-col gap-y-1 text-left">
+					<h2 class="ml-1 text-sm text-white">
+						Applied {formatNumber(state.assembledFiles)} of{" "}
+						{formatNumber(state.totalFiles)} files (
+						{derived.applyPct.toFixed(2)}%)
+					</h2>
+					<Progressbar progress={derived.applyPct} game={game} />
 				</div>
 			)}
 			{state.warningMessage && (

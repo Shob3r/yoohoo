@@ -3,9 +3,13 @@ use std::io::{Cursor, Read, SeekFrom, Write};
 
 use super::compression::get_clip_stream;
 use super::parser::BinaryExtensions;
-use super::{HeaderInfo, SeekableRead};
+use super::{BufferPool, HeaderInfo, SeekableRead};
 
-const MAX_STEP_SIZE: usize = 16 * 1024 * 1024; // 16MB max step size
+const MAX_STEP_SIZE: usize = 16 * 1024 * 1024;
+const IO_BUF_SIZE: usize = 256 * 1024;
+
+static WORK_BUF_POOL: BufferPool = BufferPool::new(1);
+static STEP_BUF_POOL: BufferPool = BufferPool::new(1);
 
 pub(crate) struct PatchSF {
     header_info: HeaderInfo,
@@ -23,13 +27,26 @@ impl PatchSF {
         patch_path: &str,
         on_progress: Option<&dyn Fn(u64)>,
     ) -> std::io::Result<()> {
+        let padding: u64 = match self.header_info.comp_mode {
+            super::CompressionMode::Zlib => 1,
+            _ => 0,
+        };
         let sci = &self.header_info.single_chunk_info;
+        let diff_start =
+            sci.diff_data_pos
+                .checked_add(padding as i64)
+                .ok_or_else(|| std::io::Error::other("diff_data_pos overflow"))? as u64;
+        let diff_comp = if sci.compressed_size > 0 {
+            (sci.compressed_size as u64).saturating_sub(padding)
+        } else {
+            sci.compressed_size as u64
+        };
         let (mut diff, _) = get_clip_stream(
             File::open(patch_path)?,
             self.header_info.comp_mode,
-            sci.diff_data_pos as u64,
+            diff_start,
             sci.uncompressed_size as u64,
-            sci.compressed_size as u64,
+            diff_comp,
             false,
         )?;
         if self.header_info.chunk_info.cover_count < 0 {
@@ -43,32 +60,25 @@ impl PatchSF {
         }
         let cover_count = self.header_info.chunk_info.cover_count as u64;
         let new_data_size = self.header_info.new_data_size as u64;
-        let step_mem_size = (self.header_info.step_mem_size as usize).min(MAX_STEP_SIZE);
-        let total_size = step_mem_size * 2;
-        // Both halves of the work buffer are fully written via read_exact
-        // before any byte is read from them. We skip the zero-init that
-        // `vec![0; n]` would perform. The clippy `uninit_vec` lint is
-        // silenced because we have a documented fill-before-read invariant
-        // established in `patch_loop`.
-        // Safety: every index 0..total_size is populated by read_exact before
-        // being read in patch_loop.
-        #[allow(clippy::uninit_vec)]
-        let mut work_buf = Vec::with_capacity(total_size);
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            work_buf.set_len(total_size);
+        let mut io_buf = WORK_BUF_POOL.take(IO_BUF_SIZE);
+        if io_buf.capacity() < IO_BUF_SIZE {
+            io_buf = Vec::with_capacity(IO_BUF_SIZE);
         }
-        let (step_buf, io_buf) = work_buf.split_at_mut(step_mem_size);
-        patch_loop(
+        unsafe { io_buf.set_len(IO_BUF_SIZE) };
+        let mut step_buf = STEP_BUF_POOL.take(0);
+        let result = patch_loop(
             &mut diff,
             input_stream,
             output_stream,
             cover_count,
             new_data_size,
-            step_buf,
-            io_buf,
+            &mut step_buf,
+            &mut io_buf,
             on_progress,
-        )
+        );
+        WORK_BUF_POOL.return_buf(io_buf);
+        STEP_BUF_POOL.return_buf_shrunken(step_buf, IO_BUF_SIZE);
+        result
     }
 }
 
@@ -79,7 +89,7 @@ fn patch_loop(
     out: &mut dyn Write,
     mut cover_count: u64,
     new_data_size: u64,
-    step_buf: &mut [u8],
+    step_buf: &mut Vec<u8>,
     io_buf: &mut [u8],
     on_progress: Option<&dyn Fn(u64)>,
 ) -> std::io::Result<()> {
@@ -104,11 +114,10 @@ fn patch_loop(
                 "patch step size exceeds maximum allowed",
             ));
         }
-        if step_end > step_buf.len() {
-            return Err(std::io::Error::other(
-                "patch step size exceeds allocated buffer capacity",
-            ));
+        if step_buf.capacity() < step_end {
+            step_buf.reserve_exact(step_end - step_buf.capacity());
         }
+        unsafe { step_buf.set_len(step_end) };
         diff.read_exact(&mut step_buf[..step_end])?;
 
         let (covers_slice, rle_slice) = step_buf[..step_end].split_at(buf_cover_size);
@@ -245,10 +254,7 @@ impl<'a> Rle0Decoder<'a> {
                 let to_read = self.lenv.min(rem);
                 let src = &self.buf[self.pos..self.pos + to_read];
                 let dst = &mut data[dp..dp + to_read];
-                // Iter-zip form enables LLVM autovectorization (vpaddb) on
-                // x86_64 hosts with AVX2. Functionally identical to the
-                // explicit index loop but typically 4–8× faster on large
-                // patches.
+                // Iter-zip form enables LLVM autovectorization (vpaddb).
                 for (d, s) in dst.iter_mut().zip(src.iter()) {
                     *d = d.wrapping_add(*s);
                 }
@@ -648,7 +654,7 @@ mod tests {
         // then varint encode 0 for buf_rle_size.
         // 16777217 in 7-bit groups from MSB: 8, 0, 0, 1
         // Encoding: 0x88 0x80 0x80 0x01 (with continuation bits on first 3)
-        // 0 → byte: 0x00
+        // 0 -> byte: 0x00
         // Total diff data: 5 bytes
         let diff_data: Vec<u8> = vec![0x88, 0x80, 0x80, 0x01, 0x00];
         std::fs::write(&patch_path, &diff_data).unwrap();
@@ -721,55 +727,6 @@ mod tests {
         assert!(result.is_err(), "should fail with insufficient diff data");
     }
 
-    /// When step_end exceeds the allocated step_buf capacity (but is still
-    /// below MAX_STEP_SIZE), the buffer capacity check should fire.
-    #[test]
-    fn patch_sf_step_end_exceeds_buffer_capacity() {
-        let dir = tempfile::tempdir().unwrap();
-        let patch_path = dir.path().join("patch.hdiff");
-
-        // buf_cover_size = 200, buf_rle_size = 0
-        // step_end = 200 < MAX_STEP_SIZE (16MB)
-        // But step_mem_size = 100, so step_buf.len() = 100
-        // 200 > 100 → should trigger "exceeds allocated buffer capacity"
-        // 200 varint: 200 = 128 + 72 = (1 << 7) | 72
-        // Encoding: 0x81 (0x80 | 1, continuation), 0x48 (72, no continuation)
-        let diff_data: Vec<u8> = vec![
-            0x81, 0x48, // buf_cover_size = 200
-            0x00, // buf_rle_size = 0
-        ];
-        std::fs::write(&patch_path, &diff_data).unwrap();
-
-        let header = HeaderInfo {
-            single_chunk_info: DiffSingleChunkInfo {
-                diff_data_pos: 0,
-                uncompressed_size: diff_data.len() as i64,
-                compressed_size: 0,
-            },
-            comp_mode: CompressionMode::Nocomp,
-            chunk_info: DiffChunkInfo {
-                cover_count: 1,
-                ..Default::default()
-            },
-            new_data_size: 0,
-            step_mem_size: 100, // small buffer; step_end=200 > 100
-            ..Default::default()
-        };
-        let patcher = PatchSF::new(header);
-        let mut input = Cursor::new(Vec::new());
-        let mut output = Cursor::new(Vec::new());
-        let result = patcher.patch(&mut input, &mut output, patch_path.to_str().unwrap(), None);
-        assert!(
-            result.is_err(),
-            "should fail when step_end > step_buf capacity"
-        );
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("exceeds allocated"),
-            "error should mention buffer capacity, got: {msg}"
-        );
-    }
-
     /// When step_end exceeds both MAX_STEP_SIZE and step_buf capacity, the
     /// MAX_STEP_SIZE check fires first since it is checked before buffer
     /// capacity. This variant uses two medium-sized values that sum past
@@ -780,9 +737,9 @@ mod tests {
         let patch_path = dir.path().join("patch.hdiff");
 
         // buf_cover_size = 16777217 (MAX_STEP_SIZE + 1)
-        // 16777217 → 7-bit groups: 8, 0, 0, 1 → 0x88 0x80 0x80 0x01
+        // 16777217 -> 7-bit groups: 8, 0, 0, 1 -> 0x88 0x80 0x80 0x01
         // buf_rle_size = 16777216 (MAX_STEP_SIZE)
-        // 16777216 → 7-bit groups: 8, 0, 0, 0 → 0x88 0x80 0x80 0x00
+        // 16777216 -> 7-bit groups: 8, 0, 0, 0 -> 0x88 0x80 0x80 0x00
         // step_end = 16777217 + 16777216 = 33554433 >> MAX_STEP_SIZE
         let diff_data: Vec<u8> = vec![
             0x88, 0x80, 0x80, 0x01, // buf_cover_size = 16777217

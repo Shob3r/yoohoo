@@ -9,16 +9,21 @@ import type {
 	Variants,
 } from "../types";
 
+export type DownloadType = "install" | "update" | "preinstall";
+
 export interface DownloadState {
 	isPaused: boolean;
 	isDownloading: boolean;
 	isAssembling: boolean;
+	isCheckingFiles: boolean;
 	isVerifying: boolean;
 	isFetchingManifest: boolean;
 	isCalculatingDownloads: boolean;
 	isInstallingPlugins: boolean;
+	isApplyingPreinstall: boolean;
 	isError: boolean;
 	isFinished: boolean;
+	downloadType: DownloadType;
 	downloadingGame: Variants | null;
 	downloadedBytes: number;
 	downloadTotal: number;
@@ -45,6 +50,7 @@ export interface DownloadState {
 interface DownloadContextType {
 	state: DownloadState;
 	setDownloadingGame: (game: Variants | null) => void;
+	setDownloadType: (type: DownloadType) => void;
 	setResumable: (info: ResumeInfo | null) => void;
 	setProtonSetupProgress: (event: ProtonSetupProgress) => void;
 }
@@ -53,12 +59,15 @@ const initialState: DownloadState = {
 	isPaused: false,
 	isDownloading: false,
 	isAssembling: false,
+	isCheckingFiles: false,
 	isVerifying: false,
 	isFetchingManifest: false,
 	isCalculatingDownloads: false,
 	isInstallingPlugins: false,
+	isApplyingPreinstall: false,
 	isError: false,
 	isFinished: false,
+	downloadType: "install",
 	downloadingGame: null,
 	downloadedBytes: 0,
 	downloadTotal: 0,
@@ -85,6 +94,7 @@ const initialState: DownloadState = {
 export const DownloadContext = createContext<DownloadContextType>({
 	state: initialState,
 	setDownloadingGame: () => {},
+	setDownloadType: () => {},
 	setResumable: () => {},
 	setProtonSetupProgress: () => {},
 });
@@ -102,11 +112,20 @@ export const DownloadProvider = ({
 		setState((prev) => ({ ...prev, downloadingGame: game }));
 	};
 
+	const setDownloadType = (type: DownloadType) => {
+		setState((prev) => ({ ...prev, downloadType: type }));
+	};
+
 	const setResumable = (info: ResumeInfo | null) => {
 		setState((prev) => ({
 			...prev,
 			isResumable: info !== null,
 			resumeInfo: info,
+			downloadType: info
+				? info.downloadType === "fresh"
+					? "install"
+					: info.downloadType
+				: prev.downloadType,
 		}));
 	};
 
@@ -132,6 +151,7 @@ export const DownloadProvider = ({
 							isPaused: false,
 							isDownloading: false,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isError: false,
 							isFinished: false,
@@ -150,13 +170,14 @@ export const DownloadProvider = ({
 							isPaused: false,
 							isDownloading: false,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isError: false,
 							isFinished: false,
 							downloadingGame:
 								prev.downloadingGame ?? downloadingGameRef.current,
-							checkedFiles: payload.checked_files,
-							totalFiles: payload.total_files,
+							checkedFiles: payload.checkedFiles,
+							totalFiles: payload.totalFiles,
 						};
 					case "downloading":
 						return {
@@ -165,19 +186,20 @@ export const DownloadProvider = ({
 							isPaused: false,
 							isFetchingManifest: false,
 							isCalculatingDownloads: false,
+							isVerifying: false,
 							downloadingGame:
 								prev.downloadingGame ?? downloadingGameRef.current,
-							downloadedBytes: payload.downloaded_bytes,
-							downloadTotal: payload.total_bytes,
-							speedBps: payload.speed_bps,
-							etaSeconds: payload.eta_seconds,
+							downloadedBytes: payload.downloadedBytes,
+							downloadTotal: payload.totalBytes,
+							speedBps: payload.speedBps,
+							etaSeconds: payload.etaSeconds,
 						};
 					case "paused":
 						return {
 							...prev,
 							isPaused: true,
-							downloadedBytes: payload.downloaded_bytes,
-							downloadTotal: payload.total_bytes,
+							downloadedBytes: payload.downloadedBytes,
+							downloadTotal: payload.totalBytes,
 							speedBps: 0,
 							etaSeconds: 0,
 						};
@@ -186,32 +208,42 @@ export const DownloadProvider = ({
 							...prev,
 							isAssembling: true,
 							isFetchingManifest: false,
-							assembledFiles: payload.assembled_files,
-							totalFiles: payload.total_files,
+							assembledFiles: payload.assembledFiles,
+							totalFiles: payload.totalFiles,
+						};
+					case "checkingFiles":
+						return {
+							...prev,
+							isCheckingFiles: true,
+							isFetchingManifest: false,
+							checkedFiles: payload.checkedFiles,
+							totalFiles: payload.totalFiles,
 						};
 					case "verifying":
 						return {
 							...prev,
 							isVerifying: true,
 							isPaused: false,
-							isDownloading: false,
 							isAssembling: false,
 							isFetchingManifest: false,
+							isCalculatingDownloads: false,
 							isError: false,
 							isFinished: false,
-							scannedFiles: payload.scanned_files,
-							totalFiles: payload.total_files,
-							errorCount: payload.error_count,
+							scannedFiles: payload.scannedFiles,
+							totalFiles: payload.totalFiles,
+							errorCount: payload.errorCount,
 						};
 					case "warning":
 						return {
 							...prev,
+							isCheckingFiles: false,
 							warningMessage: payload.message,
 						};
 					case "error":
 						return {
 							...prev,
 							isError: true,
+							isCheckingFiles: false,
 							isPaused: false,
 							isDownloading: false,
 							isAssembling: false,
@@ -226,10 +258,11 @@ export const DownloadProvider = ({
 							isInstallingPlugins: true,
 							isDownloading: false,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isFetchingManifest: false,
-							pluginName: payload.current_plugin,
-							pluginProgress: `Installing plugins: ${payload.current_plugin} (${payload.total_plugins})`,
+							pluginName: payload.currentPlugin,
+							pluginProgress: `Installing plugins: ${payload.currentPlugin} (${payload.totalPlugins})`,
 						};
 					case "downloadingPlugin":
 						return {
@@ -237,17 +270,34 @@ export const DownloadProvider = ({
 							isInstallingPlugins: true,
 							isDownloading: true,
 							isAssembling: false,
+							isCheckingFiles: false,
 							isVerifying: false,
 							isFetchingManifest: false,
 							pluginName: payload.name,
-							downloadedBytes: payload.downloaded_bytes,
-							downloadTotal: payload.total_bytes,
+							downloadedBytes: payload.downloadedBytes,
+							downloadTotal: payload.totalBytes,
 							pluginProgress: `Downloading plugin: ${payload.name}`,
+						};
+					case "applyingPreinstall":
+						return {
+							...prev,
+							isApplyingPreinstall: true,
+							isDownloading: false,
+							isAssembling: false,
+							isCheckingFiles: false,
+							isVerifying: false,
+							isFetchingManifest: false,
+							isPaused: false,
+							isError: false,
+							isFinished: false,
+							assembledFiles: payload.appliedFiles,
+							totalFiles: payload.totalFiles,
 						};
 					case "finished":
 						return {
 							...initialState,
 							isFinished: true,
+							downloadingGame: prev.downloadingGame,
 						};
 				}
 			});
@@ -306,6 +356,7 @@ export const DownloadProvider = ({
 			value={{
 				state,
 				setDownloadingGame,
+				setDownloadType,
 				setResumable,
 				setProtonSetupProgress,
 			}}
