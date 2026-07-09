@@ -1,15 +1,23 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use dashmap::DashMap;
+
+pub use dashmap::DashMap as VerificationCache;
+
+pub(crate) const VERIFICATION_CACHE_MAX_ENTRIES: usize = 5_000;
+
+#[cfg(test)]
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use tauri_plugin_log::log;
 
 use super::VERIFICATION_CACHE_FILE;
+use super::assembly_opt::md5_hex_eq;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationEntry {
@@ -26,9 +34,7 @@ struct VerificationCacheSerializable {
 pub fn load_verification_cache(game_dir: &Path) -> DashMap<String, VerificationEntry> {
     let cache_path = game_dir.join(VERIFICATION_CACHE_FILE);
 
-    // Clean up any leftover .tmp files from a previous crash (the
-    // atomic-write pattern in save_verification_cache writes to a .tmp
-    // before rename; if the process crashed during rename, the .tmp lingers).
+    // Clean up leftover .tmp files from a previous crash.
     if let Some(parent) = cache_path.parent()
         && let Ok(entries) = parent.read_dir()
     {
@@ -52,10 +58,8 @@ pub fn load_verification_cache(game_dir: &Path) -> DashMap<String, VerificationE
             files: HashMap::new(),
         },
     };
-    // Size cap: if cache is excessively large, evict oldest entries rather than
-    // clearing everything. Trims down to half the maximum to avoid immediate
-    // re-trimming. Collect keys to remove BEFORE consuming serializable.files.
-    const MAX_CACHE_ENTRIES: usize = 200_000;
+    // Trim cache to half the max if it exceeds the limit.
+    const MAX_CACHE_ENTRIES: usize = VERIFICATION_CACHE_MAX_ENTRIES;
     let trim_keys: Vec<String> = if serializable.files.len() > MAX_CACHE_ENTRIES {
         let count = serializable.files.len();
         let to_trim: Vec<_> = serializable
@@ -86,11 +90,7 @@ pub fn load_verification_cache(game_dir: &Path) -> DashMap<String, VerificationE
         log::debug!("Trimmed verification cache to {cache_len} entries");
     }
 
-    // Stale entries (where the file no longer exists on disk) are not eagerly
-    // pruned here because doing so would require an O(n) filesystem stat storm on
-    // startup. Instead, stale entries are naturally handled lazily during the next
-    // `check_file_md5_cached` call, where `path.metadata()` returns `NotFound` for
-    // missing files, causing a cache miss and re-validation.
+    // Stale entries are pruned lazily during the next check_file_md5_cached call.
 
     cache
 }
@@ -126,46 +126,82 @@ pub fn check_file_md5_cached(
     game_dir: &Path,
     cache: &DashMap<String, VerificationEntry>,
 ) -> io::Result<bool> {
-    let cache_key = path
-        .strip_prefix(game_dir)
-        .unwrap_or(path)
-        .display()
-        .to_string();
+    let relative = path.strip_prefix(game_dir).unwrap_or(path);
+    let cache_key = relative.to_string_lossy();
+    check_file_md5_with_cache_key(path, expected_size, expected_md5, &cache_key, cache)
+}
+
+pub fn check_file_md5_cached_with_size(
+    path: &Path,
+    expected_size: u64,
+    expected_md5: &str,
+    game_dir: &Path,
+    cache: &DashMap<String, VerificationEntry>,
+) -> io::Result<(bool, Option<u64>)> {
+    let relative = path.strip_prefix(game_dir).unwrap_or(path);
+    let cache_key = relative.to_string_lossy();
+    check_file_md5_with_cache_key_and_size(path, expected_size, expected_md5, &cache_key, cache)
+}
+
+pub fn check_file_md5_with_cache_key(
+    path: &Path,
+    expected_size: u64,
+    expected_md5: &str,
+    cache_key: &str,
+    cache: &DashMap<String, VerificationEntry>,
+) -> io::Result<bool> {
+    check_file_md5_with_cache_key_and_size(path, expected_size, expected_md5, cache_key, cache)
+        .map(|(ok, _)| ok)
+}
+
+pub fn check_file_md5_with_cache_key_and_size(
+    path: &Path,
+    expected_size: u64,
+    expected_md5: &str,
+    cache_key: &str,
+    cache: &DashMap<String, VerificationEntry>,
+) -> io::Result<(bool, Option<u64>)> {
     let metadata = match path.metadata() {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // File deleted - evict stale entry if present
-            cache.remove(&cache_key);
-            return Ok(false);
+            cache.remove(cache_key);
+            return Ok((false, None));
         }
         Err(err) => return Err(err),
     };
+    let actual_size = metadata.len();
     let mtime = metadata
         .modified()?
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    if let Some(entry) = cache.get(&cache_key)
+    if let Some(entry) = cache.get(cache_key)
         && entry.size == expected_size
         && entry.md5 == expected_md5
-        && entry.mtime_secs == mtime
     {
-        return Ok(true);
+        if entry.mtime_secs == mtime {
+            return Ok((true, Some(actual_size)));
+        }
+        if actual_size == expected_size {
+            return Ok((true, Some(actual_size)));
+        }
     }
 
-    if metadata.len() != expected_size {
-        // Size mismatch - evict stale entry
-        cache.remove(&cache_key);
-        return Ok(false);
+    if actual_size != expected_size {
+        cache.remove(cache_key);
+        return Ok((false, Some(actual_size)));
     }
 
-    let actual = file_md5_hex(path)?;
-    let matches = actual == expected_md5;
+    let actual = file_md5_digest(path)?;
+    let matches = md5_hex_eq(&actual, expected_md5);
 
     if matches {
+        if cache.len() >= VERIFICATION_CACHE_MAX_ENTRIES {
+            return Ok((true, Some(actual_size)));
+        }
         cache.insert(
-            cache_key,
+            cache_key.to_string(),
             VerificationEntry {
                 size: expected_size,
                 md5: expected_md5.to_string(),
@@ -173,25 +209,46 @@ pub fn check_file_md5_cached(
             },
         );
     } else {
-        // MD5 mismatch - evict stale entry to avoid repeated computation
-        cache.remove(&cache_key);
+        cache.remove(cache_key);
     }
 
-    Ok(matches)
+    Ok((matches, Some(actual_size)))
 }
 
-pub(crate) fn file_md5_hex(path: &Path) -> io::Result<String> {
+pub fn file_md5_digest(path: &Path) -> io::Result<[u8; 16]> {
     let file = File::open(path)?;
     let len = file.metadata()?.len();
     if len == 0 {
-        let mut hasher = Md5::new();
-        hasher.update(b"");
-        return Ok(hex::encode(hasher.finalize()));
+        return Ok([
+            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8,
+            0x42, 0x7e,
+        ]);
     }
-    let mmap = unsafe { memmap2::Mmap::map(&file)? };
-    let mut hasher = Md5::new();
-    hasher.update(&mmap[..]);
-    Ok(hex::encode(hasher.finalize()))
+
+    let fd = file.as_raw_fd();
+    super::assembly_opt::posix_advise(fd, 0, len, libc::POSIX_FADV_SEQUENTIAL);
+
+    let mut hasher =
+        super::assembly_opt::take_md5().map_err(|e| io::Error::other(e.to_string()))?;
+    let mut reader = io::BufReader::with_capacity(256 * 1024, file);
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            break;
+        }
+        hasher
+            .update(buf)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let n = buf.len();
+        reader.consume(n);
+    }
+    super::assembly_opt::posix_advise(fd, 0, len, libc::POSIX_FADV_DONTNEED);
+
+    let digest = hasher
+        .finish()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    super::assembly_opt::return_md5(hasher);
+    Ok(digest)
 }
 
 #[cfg(test)]
@@ -220,7 +277,7 @@ mod tests {
     #[test]
     fn save_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        // Create actual files so load_verification_cache doesn't prune them as stale
+        // Create actual files for the cache.
         let game_dir = dir.path().join("game");
         fs::create_dir_all(&game_dir).unwrap();
         let f1 = game_dir.join("file1");
@@ -561,5 +618,40 @@ mod tests {
         let content = fs::read_to_string(&cache_path).unwrap();
         assert!(content.contains("f"));
         assert!(content.contains("42"));
+    }
+
+    /// Insertion is skipped once the cache reaches
+    /// `VERIFICATION_CACHE_MAX_ENTRIES`, bounding RSS at runtime. The
+    /// verified file still returns `true`.
+    #[test]
+    fn check_file_md5_cached_skips_insert_at_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().to_path_buf();
+        let file_path = game_dir.join("capped.dat");
+        fs::write(&file_path, b"capped").unwrap();
+        let md5 = {
+            let mut hasher = Md5::new();
+            hasher.update(b"capped");
+            hex::encode(hasher.finalize())
+        };
+        let cache: DashMap<String, VerificationEntry> = DashMap::new();
+        for i in 0..VERIFICATION_CACHE_MAX_ENTRIES {
+            cache.insert(
+                format!("fill_{i}"),
+                VerificationEntry {
+                    size: 0,
+                    md5: String::new(),
+                    mtime_secs: 0,
+                },
+            );
+        }
+        assert_eq!(cache.len(), VERIFICATION_CACHE_MAX_ENTRIES);
+        let result = check_file_md5_cached(&file_path, 6, &md5, &game_dir, &cache).unwrap();
+        assert!(result, "verification still passes at capacity");
+        assert_eq!(
+            cache.len(),
+            VERIFICATION_CACHE_MAX_ENTRIES,
+            "cache must not grow past the cap"
+        );
     }
 }

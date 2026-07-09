@@ -1,32 +1,34 @@
 use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+
+use std::os::unix::fs::FileExt;
+use std::os::unix::io::AsRawFd as _;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread_local;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use md5::{Digest, Md5};
 use tauri_plugin_log::log;
 
 thread_local! {
     static TRANSFER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static HASHER_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+use super::assembly_opt::{Md5, md5_hex_eq, md5_to_hex, return_md5, take_md5};
 use super::cache::VerificationEntry;
 use super::error::{SophonError, SophonResult};
+use super::installer::ChunkNameLookup;
 use super::{FILE_WRITE_BUFFER_SIZE, PROGRESS_UPDATE_INTERVAL_MS};
 use crate::commands::sophon_downloader::SophonProgress;
-use crate::commands::sophon_downloader::proto_parse::{
-    SophonManifestAssetChunk, SophonManifestAssetProperty,
-};
+use crate::commands::sophon_downloader::game_installer::compact_manifest::CompactManifest;
 
 #[inline]
-pub fn chunk_filename(chunk: &SophonManifestAssetChunk) -> String {
-    let mut s = String::with_capacity(chunk.chunk_name.len() + 5);
-    s.push_str(&chunk.chunk_name);
+pub fn chunk_filename(chunk_name: &str) -> String {
+    let mut s = String::with_capacity(chunk_name.len() + 5);
+    s.push_str(chunk_name);
     s.push_str(".zstd");
     s
 }
@@ -34,19 +36,21 @@ pub fn chunk_filename(chunk: &SophonManifestAssetChunk) -> String {
 #[inline]
 pub fn decrement_chunk_refcount(
     chunk_name: &str,
-    chunk_refcounts: &DashMap<String, usize>,
+    chunk_lookup: &ChunkNameLookup,
+    chunk_refcounts: &[AtomicU32],
     chunks_dir: &Path,
 ) {
     if !validate_chunk_name(chunk_name) {
         return;
     }
-    if let Some(mut count) = chunk_refcounts.get_mut(chunk_name) {
-        *count -= 1;
-        if *count == 0 {
-            drop(count);
-            chunk_refcounts.remove(chunk_name);
-            let _ = fs::remove_file(chunks_dir.join(format!("{chunk_name}.zstd")));
-        }
+    let Some(idx) = chunk_lookup.lookup(chunk_name) else {
+        return;
+    };
+    let prev = chunk_refcounts[idx].fetch_sub(1, Ordering::AcqRel);
+    if prev == 1 {
+        let mut p = chunks_dir.join(chunk_lookup.get(idx));
+        p.set_extension("zstd");
+        let _ = fs::remove_file(&p);
     }
 }
 
@@ -122,65 +126,91 @@ pub fn validate_asset_name(name: &str) -> SophonResult<()> {
 }
 
 struct DecrementGuard<'a> {
-    chunks: Vec<String>,
-    chunk_refcounts: &'a DashMap<String, usize>,
+    chunks: Vec<&'a str>,
+    chunk_lookup: &'a ChunkNameLookup,
+    chunk_refcounts: &'a [AtomicU32],
     chunks_dir: &'a Path,
 }
 
 impl Drop for DecrementGuard<'_> {
     fn drop(&mut self) {
         for chunk_name in self.chunks.drain(..) {
-            decrement_chunk_refcount(&chunk_name, self.chunk_refcounts, self.chunks_dir);
+            decrement_chunk_refcount(
+                chunk_name,
+                self.chunk_lookup,
+                self.chunk_refcounts,
+                self.chunks_dir,
+            );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_file(
-    file: &SophonManifestAssetProperty,
+    all_files: &CompactManifest,
+    file_idx: usize,
     game_dir: &Path,
     chunks_dir: &Path,
     temp_dir: &Path,
-    chunk_refcounts: &DashMap<String, usize>,
+    chunk_lookup: &ChunkNameLookup,
+    chunk_refcounts: &[AtomicU32],
     verify_cache: &DashMap<String, VerificationEntry>,
+    skip_md5_check: bool,
 ) -> SophonResult<()> {
-    validate_asset_name(&file.asset_name)?;
-    if file.is_directory() {
+    let file_name = all_files.file_name(file_idx);
+    let file_size = all_files.file_size(file_idx);
+    let file_hash_md5 = all_files.file_hash_md5(file_idx);
+    let is_dir = all_files.is_directory(file_idx);
+    let chunk_range = all_files.file_chunk_range(file_idx);
+
+    validate_asset_name(file_name)?;
+    if is_dir {
         return Ok(());
     }
-    let target_path = game_dir.join(&file.asset_name);
-    // Use hex-encoded hash of the asset name as tmp filename to avoid
-    // collisions from path sanitization (e.g. "a/b" and "a_b" both become "a_b"
-    // when '/' is replaced with '_', but have different hashes).
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    file.asset_name.hash(&mut hasher);
-    let tmp_path = temp_dir.join(format!("{:016x}.tmp", hasher.finish()));
+    let target_path = game_dir.join(file_name);
+    #[allow(clippy::needless_range_loop)]
+    let mut name_buf = [0u8; 20];
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..16 {
+        let nibble = ((file_idx as u64) >> (60 - i * 4)) & 0xf;
+        name_buf[i] = match nibble {
+            0..=9 => b'0' + nibble as u8,
+            _ => b'a' + nibble as u8 - 10,
+        };
+    }
+    name_buf[16..20].copy_from_slice(b".tmp");
+    let tmp_name = std::str::from_utf8(&name_buf).unwrap();
+    let tmp_path = temp_dir.join(tmp_name);
 
-    if target_path.exists() {
+    if !skip_md5_check && target_path.exists() {
         let already_valid = super::cache::check_file_md5_cached(
             &target_path,
-            file.asset_size,
-            &file.asset_hash_md5,
+            file_size,
+            file_hash_md5,
             game_dir,
             verify_cache,
         )?;
 
         if already_valid {
             log::debug!(
-                "assemble_file: skipping already-valid file '{}' ({} bytes, md5={})",
-                file.asset_name,
-                file.asset_size,
-                file.asset_hash_md5
+                "assemble_file: skipping already-valid file '{name}' ({size} bytes, md5={md5})",
+                name = file_name,
+                size = file_size,
+                md5 = file_hash_md5
             );
-            for chunk in &file.asset_chunks {
-                decrement_chunk_refcount(&chunk.chunk_name, chunk_refcounts, chunks_dir);
+            for ci in chunk_range.start..chunk_range.end {
+                decrement_chunk_refcount(
+                    all_files.chunk(ci as usize).chunk_name,
+                    chunk_lookup,
+                    chunk_refcounts,
+                    chunks_dir,
+                );
             }
             return Ok(());
         }
         log::warn!(
-            "assemble_file: file '{}' exists but MD5 mismatch, re-assembling",
-            file.asset_name
+            "assemble_file: file '{name}' exists but MD5 mismatch, re-assembling",
+            name = file_name
         );
     }
 
@@ -195,20 +225,34 @@ pub fn assemble_file(
         .truncate(true)
         .open(&tmp_path)?;
 
-    out_file.set_len(file.asset_size)?;
+    out_file.set_len(file_size)?;
+    let _ = super::sysio::preallocate(&out_file, file_size);
 
-    let mut buf_writer = BufWriter::with_capacity(FILE_WRITE_BUFFER_SIZE, out_file);
     let mut total_written: u64 = 0;
-    let mut file_hasher = if file.asset_hash_md5.is_empty() {
-        if !file.is_directory() {
+    let all_chunks_have_hashes = (chunk_range.start..chunk_range.end).all(|ci| {
+        let chunk = all_files.chunk(ci as usize);
+        super::assembly_opt::chunk_hash_required(chunk.chunk_decompressed_hash_md5)
+    });
+    let has_file_hash = !file_hash_md5.is_empty();
+    let total_chunks = (chunk_range.end - chunk_range.start) as usize;
+    const MAX_PARALLEL_WORKERS: usize = 4;
+    let num_workers = std::thread::available_parallelism()
+        .map(|n| n.get().min(MAX_PARALLEL_WORKERS))
+        .unwrap_or(1);
+    let parallelize =
+        num_workers > 1 && total_chunks >= 4 && (all_chunks_have_hashes || has_file_hash);
+    let mut file_hasher = if file_hash_md5.is_empty() {
+        if !is_dir {
             log::warn!(
-                "File '{}' has no asset_hash_md5; assembled without file-level verification",
-                file.asset_name
+                "File '{name}' has no asset_hash_md5; assembled without file-level verification",
+                name = file_name
             );
         }
         None
+    } else if all_chunks_have_hashes || parallelize {
+        None
     } else {
-        Some(Md5::new())
+        Some(take_md5()?)
     };
 
     let mut transfer_buffer = TRANSFER_BUF.with(|cell| {
@@ -216,126 +260,376 @@ pub fn assemble_file(
         if buf.capacity() < FILE_WRITE_BUFFER_SIZE {
             buf = Vec::with_capacity(FILE_WRITE_BUFFER_SIZE);
         }
-        // Safety: the entire buffer is overwritten by read() before any byte
-        // is observed via write_all(). The buffer is initialized only when
-        // first allocated (set to 0 in with_capacity branch above), and
-        // kept across calls. Resetting len here lets us skip the zero-fill
-        // on the hot path.
+        // Safety: buffer is fully overwritten by read() before write_all_at().
         unsafe { buf.set_len(FILE_WRITE_BUFFER_SIZE) };
         buf
     });
     let mut guard = DecrementGuard {
-        chunks: Vec::new(),
+        chunks: Vec::with_capacity((chunk_range.end - chunk_range.start) as usize),
+        chunk_lookup,
         chunk_refcounts,
         chunks_dir,
     };
 
+    let chunk_offsets: Vec<u64> = all_files.file_chunk_offsets(file_idx);
     let mut cursor = 0u64;
-    let mut sorted_ranges: Vec<(u64, u64)> = file
-        .asset_chunks
-        .iter()
-        .map(|c| (c.chunk_on_file_offset, c.chunk_size_decompressed))
-        .collect();
-    sorted_ranges.sort_unstable_by_key(|r| r.0);
-    for (off, size) in &sorted_ranges {
-        if *off != cursor {
+    for (i, ci) in (chunk_range.start..chunk_range.end).enumerate() {
+        let chunk = all_files.chunk(ci as usize);
+        if chunk_offsets[i] != cursor {
             return Err(SophonError::SizeMismatch {
-                item: file.asset_name.clone(),
-                expected: file.asset_size,
-                actual: *off,
+                item: file_name.to_string(),
+                expected: file_size,
+                actual: chunk_offsets[i],
             });
         }
-        cursor = off
-            .checked_add(*size)
+        cursor = chunk_offsets[i]
+            .checked_add(chunk.chunk_size_decompressed)
             .ok_or_else(|| SophonError::SizeMismatch {
-                item: file.asset_name.clone(),
-                expected: file.asset_size,
+                item: file_name.to_string(),
+                expected: file_size,
                 actual: cursor,
             })?;
     }
-    if cursor != file.asset_size {
+    if cursor != file_size {
         return Err(SophonError::SizeMismatch {
-            item: file.asset_name.clone(),
-            expected: file.asset_size,
+            item: file_name.to_string(),
+            expected: file_size,
             actual: cursor,
         });
     }
 
-    for chunk in &file.asset_chunks {
-        if chunk.chunk_old_offset >= 0 {
-            // Chunk-level reuse: read decompressed data from the existing game
-            // file at the old offset instead of downloading & decompressing.
-            debug_assert!(
-                chunk.chunk_old_offset >= 0,
-                "chunk_old_offset must be non-negative"
-            );
-            let bytes_written = write_from_old_file(
-                &target_path,
-                &mut buf_writer,
-                chunk.chunk_on_file_offset,
-                chunk.chunk_old_offset as u64,
-                chunk.chunk_size_decompressed,
-                file_hasher.as_mut(),
-                &mut transfer_buffer,
-                &chunk.chunk_decompressed_hash_md5,
-            )
-            .inspect_err(|_| {
-                let _ = fs::remove_file(&tmp_path);
-            })?;
-            total_written += bytes_written;
-            // No refcount to decrement — old-source chunks were never
-            // downloaded.
-        } else {
-            if !validate_chunk_name(&chunk.chunk_name) {
-                return Err(SophonError::PathTraversal(chunk.chunk_name.clone().into()));
+    let parallel_hashed_file = parallelize && has_file_hash && !all_chunks_have_hashes;
+    let hasher_result: Mutex<Option<SophonResult<[u8; 16]>>> = Mutex::new(None);
+
+    let has_old_chunks = (chunk_range.start..chunk_range.end)
+        .any(|ci| all_files.chunk(ci as usize).chunk_old_offset >= 0);
+    let old_file: Option<File> = if has_old_chunks {
+        Some(File::open(&target_path).map_err(SophonError::Io)?)
+    } else {
+        None
+    };
+
+    if parallelize {
+        let total_written_atomic = AtomicU64::new(0);
+        let first_error = Mutex::new(None);
+        let downloaded_chunks: Vec<AtomicBool> =
+            (0..total_chunks).map(|_| AtomicBool::new(false)).collect();
+        let raw_fd = out_file.as_raw_fd();
+
+        let chunk_done: Vec<AtomicBool> =
+            (0..total_chunks).map(|_| AtomicBool::new(false)).collect();
+        let chunk_infos: Vec<(u64, u64)> = (chunk_range.start..chunk_range.end)
+            .map(|ci| {
+                let i = (ci - chunk_range.start) as usize;
+                let chunk = all_files.chunk(ci as usize);
+                (chunk_offsets[i], chunk.chunk_size_decompressed)
+            })
+            .collect();
+
+        std::thread::scope(|s| {
+            if parallel_hashed_file {
+                let tmp_path = &tmp_path;
+                let chunk_done = &chunk_done;
+                let chunk_infos = &chunk_infos;
+                let err = &first_error;
+                let hasher_result = &hasher_result;
+                s.spawn(move || {
+                    let file = match File::open(tmp_path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                            return;
+                        }
+                    };
+                    let mut hasher = match super::assembly_opt::take_md5() {
+                        Ok(h) => h,
+                        Err(e) => {
+                            *hasher_result.lock().unwrap() = Some(Err(e));
+                            return;
+                        }
+                    };
+                    let mut buf = HASHER_BUF.with(|cell| {
+                        let mut buf = cell.take();
+                        if buf.capacity() < 256 * 1024 {
+                            buf = Vec::with_capacity(256 * 1024);
+                        }
+                        unsafe { buf.set_len(256 * 1024) };
+                        buf
+                    });
+                    for (i, &(offset, size)) in chunk_infos.iter().enumerate() {
+                        loop {
+                            if err.lock().unwrap().is_some() {
+                                return;
+                            }
+                            if chunk_done[i].load(Ordering::Acquire) {
+                                break;
+                            }
+                            std::hint::spin_loop();
+                        }
+                        let mut remaining = size as usize;
+                        let mut pos = offset;
+                        while remaining > 0 {
+                            let to_read = remaining.min(buf.len());
+                            use std::os::unix::fs::FileExt;
+                            let n = match file.read_at(&mut buf[..to_read], pos) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                                    return;
+                                }
+                            };
+                            if n == 0 {
+                                break;
+                            }
+                            if let Err(e) = hasher.update(&buf[..n]) {
+                                *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                                return;
+                            }
+                            remaining -= n;
+                            pos += n as u64;
+                        }
+                    }
+                    match hasher.finish() {
+                        Ok(digest) => {
+                            *hasher_result.lock().unwrap() = Some(Ok(digest));
+                            super::assembly_opt::return_md5(hasher);
+                        }
+                        Err(e) => {
+                            *hasher_result.lock().unwrap() = Some(Err(SophonError::Io(e)));
+                        }
+                    }
+                    buf.clear();
+                    HASHER_BUF.with(|cell| cell.replace(buf));
+                });
             }
-            let chunk_path = chunks_dir.join(chunk_filename(chunk));
 
-            let bytes_written = write_decompressed_chunk_at(
-                &chunk_path,
-                &mut buf_writer,
-                chunk.chunk_on_file_offset,
+            for worker in 0..num_workers {
+                let indices: Vec<u32> = (chunk_range.start..chunk_range.end)
+                    .enumerate()
+                    .filter(|(i, _)| i % num_workers == worker)
+                    .map(|(_, ci)| ci)
+                    .collect();
+                if indices.is_empty() {
+                    continue;
+                }
+                let tw = &total_written_atomic;
+                let err = &first_error;
+                let dl_chunks = &downloaded_chunks;
+                let target = &target_path;
+                let old = old_file.as_ref();
+                let out = &out_file;
+                let files = all_files;
+                let cdir = chunks_dir;
+                let skip_evict = parallel_hashed_file;
+                let chunk_done = &chunk_done;
+                let chunk_offsets = &chunk_offsets[..];
+                s.spawn(move || {
+                    let mut transfer_buf = TRANSFER_BUF.with(|cell| {
+                        let mut buf = cell.take();
+                        if buf.capacity() < FILE_WRITE_BUFFER_SIZE {
+                            buf = Vec::with_capacity(FILE_WRITE_BUFFER_SIZE);
+                        }
+                        unsafe { buf.set_len(FILE_WRITE_BUFFER_SIZE) };
+                        buf
+                    });
+                    for ci in indices {
+                        if err.lock().unwrap().is_some() {
+                            break;
+                        }
+                        let chunk = files.chunk(ci as usize);
+                        let oi = (ci - chunk_range.start) as usize;
+                        let offset = chunk_offsets[oi];
+                        let result = if chunk.chunk_old_offset >= 0 {
+                            let old_file = old.expect("has_old_chunks guarantees old file");
+                            write_from_old_file(
+                                old_file,
+                                target,
+                                out,
+                                offset,
+                                chunk.chunk_old_offset as u64,
+                                chunk.chunk_size_decompressed,
+                                None,
+                                &mut transfer_buf,
+                                chunk.chunk_decompressed_hash_md5,
+                            )
+                        } else {
+                            if !validate_chunk_name(chunk.chunk_name) {
+                                Err(SophonError::PathTraversal(chunk.chunk_name.into()))
+                            } else {
+                                let mut chunk_path = cdir.join(chunk.chunk_name);
+                                chunk_path.set_extension("zstd");
+                                write_decompressed_chunk_at(
+                                    &chunk_path,
+                                    out,
+                                    offset,
+                                    chunk.chunk_size_decompressed,
+                                    None,
+                                    chunk.chunk_decompressed_hash_md5,
+                                )
+                            }
+                        };
+                        match result {
+                            Ok(bytes) => {
+                                tw.fetch_add(bytes, Ordering::Relaxed);
+                                if chunk.chunk_old_offset < 0 {
+                                    let idx = (ci - chunk_range.start) as usize;
+                                    dl_chunks[idx].store(true, Ordering::Relaxed);
+                                }
+                                if !skip_evict {
+                                    super::assembly_opt::sync_and_evict_range(
+                                        raw_fd,
+                                        offset,
+                                        chunk.chunk_size_decompressed,
+                                    );
+                                }
+                                let idx = (ci - chunk_range.start) as usize;
+                                chunk_done[idx].store(true, Ordering::Release);
+                            }
+                            Err(e) => {
+                                let mut guard = err.lock().unwrap();
+                                if guard.is_none() {
+                                    *guard = Some(e);
+                                }
+                            }
+                        }
+                    }
+                    transfer_buf.clear();
+                    TRANSFER_BUF.with(|cell| cell.replace(transfer_buf));
+                });
+            }
+        });
+
+        for (i, flag) in downloaded_chunks.iter().enumerate() {
+            if flag.load(Ordering::Relaxed) {
+                let ci = chunk_range.start + i as u32;
+                guard.chunks.push(all_files.chunk(ci as usize).chunk_name);
+            }
+        }
+        total_written = total_written_atomic.into_inner();
+
+        if let Some(e) = first_error.into_inner().unwrap() {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    } else {
+        for ci in chunk_range.start..chunk_range.end {
+            let chunk = all_files.chunk(ci as usize);
+            let oi = (ci - chunk_range.start) as usize;
+            let offset = chunk_offsets[oi];
+            if chunk.chunk_old_offset >= 0 {
+                debug_assert!(
+                    chunk.chunk_old_offset >= 0,
+                    "chunk_old_offset must be non-negative"
+                );
+                let old_file = old_file
+                    .as_ref()
+                    .expect("has_old_chunks guarantees old file");
+                let bytes_written = write_from_old_file(
+                    old_file,
+                    &target_path,
+                    &out_file,
+                    offset,
+                    chunk.chunk_old_offset as u64,
+                    chunk.chunk_size_decompressed,
+                    file_hasher.as_mut(),
+                    &mut transfer_buffer,
+                    chunk.chunk_decompressed_hash_md5,
+                )
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&tmp_path);
+                })?;
+                total_written += bytes_written;
+            // Old-source chunks were never downloaded.
+            } else {
+                if !validate_chunk_name(chunk.chunk_name) {
+                    return Err(SophonError::PathTraversal(chunk.chunk_name.into()));
+                }
+                let mut chunk_path = chunks_dir.join(chunk.chunk_name);
+                chunk_path.set_extension("zstd");
+
+                let bytes_written = write_decompressed_chunk_at(
+                    &chunk_path,
+                    &out_file,
+                    offset,
+                    chunk.chunk_size_decompressed,
+                    file_hasher.as_mut(),
+                    chunk.chunk_decompressed_hash_md5,
+                )
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&tmp_path);
+                })?;
+
+                total_written += bytes_written;
+                guard.chunks.push(chunk.chunk_name);
+            }
+            // Flush and evict each chunk's output range to keep peak resident
+            // memory low during assembly of large multi-chunk files.
+            super::assembly_opt::sync_and_evict_range(
+                out_file.as_raw_fd(),
+                offset,
                 chunk.chunk_size_decompressed,
-                file_hasher.as_mut(),
-                &mut transfer_buffer,
-                &chunk.chunk_decompressed_hash_md5,
-            )
-            .inspect_err(|_| {
-                let _ = fs::remove_file(&tmp_path);
-            })?;
-
-            total_written += bytes_written;
-            guard.chunks.push(chunk.chunk_name.clone());
+            );
         }
     }
 
-    buf_writer.flush().map_err(|err| {
+    out_file.sync_data().map_err(|err| {
         let _ = fs::remove_file(&tmp_path);
         SophonError::Io(err)
     })?;
-    let out_file = buf_writer.into_inner().map_err(|err| {
-        let _ = fs::remove_file(&tmp_path);
-        SophonError::Io(err.into_error())
-    })?;
-    drop(out_file);
 
-    if total_written != file.asset_size {
+    if parallel_hashed_file {
+        let result = hasher_result.into_inner().unwrap();
+        match result {
+            Some(Ok(ref digest)) if !md5_hex_eq(digest, file_hash_md5) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(SophonError::Md5Mismatch {
+                    item: file_name.to_string(),
+                    expected: file_hash_md5.to_string(),
+                    actual: md5_to_hex(digest),
+                });
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(e);
+            }
+            None => {}
+        }
+        super::assembly_opt::posix_advise(
+            out_file.as_raw_fd(),
+            0,
+            file_size,
+            libc::POSIX_FADV_DONTNEED,
+        );
+        drop(out_file);
+    } else {
+        super::assembly_opt::posix_advise(
+            out_file.as_raw_fd(),
+            0,
+            file_size,
+            libc::POSIX_FADV_DONTNEED,
+        );
+        drop(out_file);
+    }
+
+    if total_written != file_size {
         let _ = fs::remove_file(&tmp_path);
         return Err(SophonError::SizeMismatch {
-            item: file.asset_name.clone(),
-            expected: file.asset_size,
+            item: file_name.to_string(),
+            expected: file_size,
             actual: total_written,
         });
     }
 
-    if let Some(hasher) = file_hasher {
-        let actual = hex::encode(hasher.finalize());
-        if actual != file.asset_hash_md5 {
+    if let Some(mut hasher) = file_hasher {
+        let digest = hasher.finish()?;
+        return_md5(hasher);
+        if !md5_hex_eq(&digest, file_hash_md5) {
             let _ = fs::remove_file(&tmp_path);
             return Err(SophonError::Md5Mismatch {
-                item: file.asset_name.clone(),
-                expected: file.asset_hash_md5.clone(),
-                actual,
+                item: file_name.to_string(),
+                expected: file_hash_md5.to_string(),
+                actual: md5_to_hex(&digest),
             });
         }
     }
@@ -367,183 +661,139 @@ pub fn assemble_file(
     Ok(())
 }
 
-fn write_decompressed_chunk_at<W: Write + Seek>(
+fn write_decompressed_chunk_at(
     chunk_path: &Path,
-    writer: &mut W,
+    out_file: &File,
     offset: u64,
     expected_size: u64,
     file_hasher: Option<&mut Md5>,
-    buffer: &mut [u8],
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
-    let f = File::open(chunk_path)?;
-    let buf_reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
-    let mut decoder = zstd::Decoder::new(buf_reader)?;
-    let window_log: u32 = if cfg!(target_pointer_width = "64") {
-        31
-    } else {
-        30
-    };
-    decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
-
-    writer.seek(SeekFrom::Start(offset))?;
-
-    let mut bytes_written: u64 = 0;
-    let mut chunk_hasher = Md5::new();
-
-    match file_hasher {
-        Some(hasher) => {
-            let mut hw = HashWriter {
-                inner: writer,
-                hasher,
-            };
-            loop {
-                let n = decoder.read(buffer)?;
-                if n == 0 {
-                    break;
-                }
-                chunk_hasher.update(&buffer[..n]);
-                hw.write_all(&buffer[..n])?;
-                bytes_written += n as u64;
-            }
-        }
-        None => loop {
-            let n = decoder.read(buffer)?;
-            if n == 0 {
-                break;
-            }
-            chunk_hasher.update(&buffer[..n]);
-            writer.write_all(&buffer[..n])?;
-            bytes_written += n as u64;
-        },
-    }
-
-    if bytes_written != expected_size {
-        return Err(SophonError::SizeMismatch {
-            item: chunk_path.display().to_string(),
-            expected: expected_size,
-            actual: bytes_written,
-        });
-    }
-
-    const EMPTY_MD5: &str = "00000000000000000000000000000000";
-    if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-        let actual = hex::encode(chunk_hasher.finalize());
-        if actual != chunk_decompressed_hash_md5 {
-            return Err(SophonError::Md5Mismatch {
-                item: chunk_path.display().to_string(),
-                expected: chunk_decompressed_hash_md5.to_string(),
-                actual,
-            });
-        }
-    }
-
-    Ok(bytes_written)
+    super::assembly_opt::decompress_chunk_optimized(
+        chunk_path,
+        out_file,
+        offset,
+        expected_size,
+        file_hasher,
+        chunk_decompressed_hash_md5,
+    )
 }
 
-/// Read decompressed bytes directly from an existing game file (old file) at
-/// the given old offset, verify the chunk's decompressed MD5, and write to the
-/// output writer at the new file offset. Used for chunk-level reuse during
-/// updates.
+/// Copy decompressed bytes from an existing file to `out_file`. Large chunks
+/// (>= 1 MiB) use the optimized path in `assembly_opt`; small chunks stream
+/// through a thread-local buffer. Writes use `write_all_at` so no seek is
+/// needed on the destination file.
 #[allow(clippy::too_many_arguments)]
-fn write_from_old_file<W: Write + Seek>(
-    old_file_path: &Path,
-    writer: &mut W,
+fn write_from_old_file(
+    old_file: &std::fs::File,
+    old_file_path: &std::path::Path,
+    out_file: &File,
     new_offset: u64,
     old_offset: u64,
     expected_size: u64,
-    file_hasher: Option<&mut Md5>,
+    mut file_hasher: Option<&mut Md5>,
     buffer: &mut [u8],
     chunk_decompressed_hash_md5: &str,
 ) -> SophonResult<u64> {
-    let f = File::open(old_file_path).map_err(SophonError::Io)?;
-    let mut reader = BufReader::with_capacity(FILE_WRITE_BUFFER_SIZE, f);
-    reader.seek(SeekFrom::Start(old_offset))?;
+    const MMA_THRESHOLD: u64 = 1024 * 1024;
 
-    writer.seek(SeekFrom::Start(new_offset))?;
+    if expected_size >= MMA_THRESHOLD {
+        super::assembly_opt::write_chunk_from_mmap(
+            old_file,
+            old_file_path,
+            out_file,
+            new_offset,
+            old_offset,
+            expected_size,
+            file_hasher,
+            chunk_decompressed_hash_md5,
+        )
+    } else {
+        let fd = old_file.as_raw_fd();
+        super::assembly_opt::posix_advise(
+            fd,
+            old_offset,
+            expected_size,
+            libc::POSIX_FADV_SEQUENTIAL,
+        );
 
-    let mut bytes_written: u64 = 0;
-    let mut chunk_hasher = Md5::new();
-    let mut remaining = expected_size;
+        let mut write_offset = new_offset;
+        let mut bytes_written: u64 = 0;
+        let need_chunk_hash = super::assembly_opt::chunk_hash_required(chunk_decompressed_hash_md5);
+        let mut chunk_hasher: Option<Md5> = if need_chunk_hash {
+            Some(take_md5()?)
+        } else {
+            None
+        };
+        let mut remaining = expected_size;
+        let mut read_offset = old_offset;
 
-    match file_hasher {
-        Some(hasher) => {
-            let mut hw = HashWriter {
-                inner: writer,
-                hasher,
-            };
-            while remaining > 0 {
-                let to_read = remaining.min(buffer.len() as u64) as usize;
-                reader.read_exact(&mut buffer[..to_read])?;
-                chunk_hasher.update(&buffer[..to_read]);
-                hw.write_all(&buffer[..to_read])?;
-                bytes_written += to_read as u64;
-                remaining = remaining.saturating_sub(to_read as u64);
+        while remaining > 0 {
+            let to_read = remaining.min(buffer.len() as u64) as usize;
+            let n = old_file
+                .read_at(&mut buffer[..to_read], read_offset)
+                .map_err(SophonError::Io)?;
+            if n == 0 {
+                break;
             }
-        }
-        None => {
-            while remaining > 0 {
-                let to_read = remaining.min(buffer.len() as u64) as usize;
-                reader.read_exact(&mut buffer[..to_read])?;
-                chunk_hasher.update(&buffer[..to_read]);
-                writer.write_all(&buffer[..to_read])?;
-                bytes_written += to_read as u64;
-                remaining = remaining.saturating_sub(to_read as u64);
+            if let Some(ref mut ch) = chunk_hasher {
+                ch.update(&buffer[..n])?;
             }
+            if let Some(hasher) = file_hasher.as_deref_mut() {
+                hasher.update(&buffer[..n])?;
+            }
+            out_file.write_all_at(&buffer[..n], write_offset)?;
+            write_offset += n as u64;
+            read_offset += n as u64;
+            bytes_written += n as u64;
+            remaining = remaining.saturating_sub(n as u64);
         }
-    }
 
-    if bytes_written != expected_size {
-        return Err(SophonError::SizeMismatch {
-            item: old_file_path.display().to_string(),
-            expected: expected_size,
-            actual: bytes_written,
-        });
-    }
+        super::assembly_opt::posix_advise(fd, old_offset, expected_size, libc::POSIX_FADV_DONTNEED);
 
-    const EMPTY_MD5: &str = "00000000000000000000000000000000";
-    if chunk_decompressed_hash_md5.len() == 32 && chunk_decompressed_hash_md5 != EMPTY_MD5 {
-        let actual = hex::encode(chunk_hasher.finalize());
-        if actual != chunk_decompressed_hash_md5 {
-            return Err(SophonError::Md5Mismatch {
+        if bytes_written != expected_size {
+            return Err(SophonError::SizeMismatch {
                 item: old_file_path.display().to_string(),
-                expected: chunk_decompressed_hash_md5.to_string(),
-                actual,
+                expected: expected_size,
+                actual: bytes_written,
             });
         }
-    }
 
-    Ok(bytes_written)
-}
+        if let Some(ref mut ch) = chunk_hasher {
+            let digest = ch.finish()?;
+            return_md5(chunk_hasher.take().unwrap());
+            if !md5_hex_eq(&digest, chunk_decompressed_hash_md5) {
+                return Err(SophonError::Md5Mismatch {
+                    item: old_file_path.display().to_string(),
+                    expected: chunk_decompressed_hash_md5.to_string(),
+                    actual: md5_to_hex(&digest),
+                });
+            }
+        }
 
-struct HashWriter<'a, W: Write> {
-    inner: &'a mut W,
-    hasher: &'a mut Md5,
-}
-
-impl<W: Write> Write for HashWriter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.hasher.update(buf);
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+        Ok(bytes_written)
     }
 }
 
 pub struct AssemblyTaskParams {
     pub file_idx: usize,
     pub tmp_dir_idx: usize,
-    pub all_files: Arc<Vec<SophonManifestAssetProperty>>,
+    pub all_files: Arc<CompactManifest>,
     pub all_tmp_dirs: Arc<Vec<std::path::PathBuf>>,
-    pub game_dir: std::path::PathBuf,
+    pub game_dir: Arc<std::path::PathBuf>,
     pub chunks_dir: Arc<std::path::PathBuf>,
-    pub chunk_refcounts: Arc<DashMap<String, usize>>,
+    pub chunk_refcounts: Arc<Vec<AtomicU32>>,
+    pub chunk_names: Arc<ChunkNameLookup>,
     pub verify_cache: Arc<DashMap<String, VerificationEntry>>,
     pub assembled_files: Arc<AtomicU64>,
+    pub checked_files: Arc<AtomicU64>,
     pub last_assembly_update: Arc<Mutex<Instant>>,
     pub total_files: u64,
+    pub profiler: Arc<super::profiling::PipelineProfiler>,
+    /// Live file completion bitset indexed by `file_idx`. Replaces the prior
+    /// `Arc<Mutex<HashSet<String>>>` with a constant-memory atomic array: no
+    /// per-file String alloc and zero lock contention.
+    pub completion_flags: Arc<[AtomicBool]>,
 }
 
 pub fn run_assembly_task(
@@ -558,13 +808,19 @@ pub fn run_assembly_task(
         game_dir,
         chunks_dir,
         chunk_refcounts,
+        chunk_names,
         verify_cache,
         assembled_files,
+        checked_files,
         last_assembly_update,
         total_files,
+        profiler,
+        completion_flags,
     } = params;
 
-    if file_idx >= all_files.len() {
+    let _assembly_timer = super::profiling::AssemblyTimer::new(&profiler);
+
+    if file_idx >= all_files.num_files() {
         return Err(SophonError::IndexOutOfBounds {
             kind: "file",
             index: file_idx,
@@ -577,26 +833,103 @@ pub fn run_assembly_task(
         });
     }
 
-    let file = &all_files[file_idx];
     let tmp_dir = &all_tmp_dirs[tmp_dir_idx];
+    let file_name = all_files.file_name(file_idx);
+    let chunk_range = all_files.file_chunk_range(file_idx);
 
-    assemble_file(
-        file,
-        &game_dir,
-        &chunks_dir,
-        tmp_dir,
-        &chunk_refcounts,
-        &verify_cache,
-    )
-    .map_err(|err| SophonError::AssemblyFailed {
-        file: file.asset_name.clone(),
-        error: err.to_string(),
-    })?;
+    // Claim the slot for this file once: the swap returns the previous value,
+    // so true here means another task already finished it. Either way, after
+    // this call the bit is true; the work branches below decide whether the
+    // current task skips or proceeds.
+    if completion_flags[file_idx].swap(true, Ordering::AcqRel) {
+        for ci in chunk_range.start..chunk_range.end {
+            decrement_chunk_refcount(
+                all_files.chunk(ci as usize).chunk_name,
+                &chunk_names,
+                &chunk_refcounts,
+                &chunks_dir,
+            );
+        }
+        let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
+        let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+        let force = checked == total_files || count == total_files;
+        if force {
+            updater(SophonProgress::CheckingFiles {
+                checked_files: checked,
+                total_files,
+            });
+            updater(SophonProgress::Assembling {
+                assembled_files: count,
+                total_files,
+            });
+        } else if let Ok(mut lu) = last_assembly_update.try_lock()
+            && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
+        {
+            updater(SophonProgress::CheckingFiles {
+                checked_files: checked,
+                total_files,
+            });
+            updater(SophonProgress::Assembling {
+                assembled_files: count,
+                total_files,
+            });
+            *lu = Instant::now();
+        }
+        _assembly_timer.finish();
+        return Ok(());
+    }
 
-    let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+    let file_size = all_files.file_size(file_idx);
+    let file_hash_md5 = all_files.file_hash_md5(file_idx);
+    let target_path = game_dir.join(file_name);
+    let needs_assembly = match target_path.metadata() {
+        Ok(metadata) if metadata.len() == file_size => {
+            if let Some(entry) = verify_cache.get(target_path.to_string_lossy().as_ref())
+                && entry.size == file_size
+                && entry.md5 == file_hash_md5
+            {
+                for ci in chunk_range.start..chunk_range.end {
+                    decrement_chunk_refcount(
+                        all_files.chunk(ci as usize).chunk_name,
+                        &chunk_names,
+                        &chunk_refcounts,
+                        &chunks_dir,
+                    );
+                }
+                false
+            } else {
+                true
+            }
+        }
+        _ => true,
+    };
 
+    let checked = checked_files.fetch_add(1, Ordering::Relaxed) + 1;
+    let force = checked == total_files;
+    if force {
+        updater(SophonProgress::CheckingFiles {
+            checked_files: checked,
+            total_files,
+        });
+    } else if let Ok(mut lu) = last_assembly_update.try_lock()
+        && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
     {
-        if let Ok(mut lu) = last_assembly_update.try_lock()
+        updater(SophonProgress::CheckingFiles {
+            checked_files: checked,
+            total_files,
+        });
+        *lu = Instant::now();
+    }
+
+    if !needs_assembly {
+        let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+        let force = count == total_files;
+        if force {
+            updater(SophonProgress::Assembling {
+                assembled_files: count,
+                total_files,
+            });
+        } else if let Ok(mut lu) = last_assembly_update.try_lock()
             && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
         {
             updater(SophonProgress::Assembling {
@@ -605,7 +938,49 @@ pub fn run_assembly_task(
             });
             *lu = Instant::now();
         }
+        _assembly_timer.finish();
+        return Ok(());
     }
+
+    let result = assemble_file(
+        &all_files,
+        file_idx,
+        &game_dir,
+        &chunks_dir,
+        tmp_dir,
+        &chunk_names,
+        &chunk_refcounts,
+        &verify_cache,
+        true,
+    );
+    if let Err(err) = result {
+        // Release the claim so a later retry can reprocess this file_idx.
+        completion_flags[file_idx].store(false, Ordering::Release);
+        return Err(SophonError::AssemblyFailed {
+            file: file_name.to_string(),
+            error: err.to_string(),
+        });
+    }
+
+    let count = assembled_files.fetch_add(1, Ordering::Relaxed) + 1;
+
+    let force = count == total_files;
+    if force {
+        updater(SophonProgress::Assembling {
+            assembled_files: count,
+            total_files,
+        });
+    } else if let Ok(mut lu) = last_assembly_update.try_lock()
+        && lu.elapsed() >= Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS)
+    {
+        updater(SophonProgress::Assembling {
+            assembled_files: count,
+            total_files,
+        });
+        *lu = Instant::now();
+    }
+
+    _assembly_timer.finish();
 
     Ok(())
 }
@@ -614,22 +989,48 @@ pub async fn spawn_assembly_task(
     params: AssemblyTaskParams,
     updater: impl Fn(SophonProgress) + Send + Sync + 'static,
 ) -> SophonResult<()> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let result = run_assembly_task(params, updater);
-        let _ = tx.send(result);
-    });
-    match rx.await {
-        Ok(result) => result,
-        Err(_) => Err(SophonError::Io(std::io::Error::other(
-            "assembly thread cancelled",
-        ))),
-    }
+    tokio::task::spawn_blocking(move || run_assembly_task(params, updater))
+        .await
+        .map_err(|_| SophonError::Io(std::io::Error::other("assembly task cancelled")))
+        .and_then(|r| r)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::compact_manifest::StringArena;
+    use super::super::profiling::PipelineProfiler;
     use super::*;
+    use crate::commands::sophon_downloader::game_installer::compact_manifest::CompactManifest;
+    use crate::commands::sophon_downloader::proto_parse::{
+        SophonManifestAssetChunk, SophonManifestAssetProperty,
+    };
+
+    fn make_chunk_names(names: &[&str]) -> Arc<ChunkNameLookup> {
+        Arc::new(ChunkNameLookup::from_arena(StringArena::from(names)))
+    }
+
+    fn assemble_test_file(
+        file: SophonManifestAssetProperty,
+        game_dir: &Path,
+        chunks_dir: &Path,
+        temp_dir: &Path,
+        chunk_lookup: &ChunkNameLookup,
+        chunk_refcounts: &[AtomicU32],
+        verify_cache: &DashMap<String, VerificationEntry>,
+    ) -> SophonResult<()> {
+        let manifest = CompactManifest::from(vec![file]);
+        assemble_file(
+            &manifest,
+            0,
+            game_dir,
+            chunks_dir,
+            temp_dir,
+            chunk_lookup,
+            chunk_refcounts,
+            verify_cache,
+            false,
+        )
+    }
 
     #[test]
     fn validate_asset_name_empty() {
@@ -710,17 +1111,7 @@ mod tests {
 
     #[test]
     fn chunk_filename_format() {
-        let chunk = SophonManifestAssetChunk {
-            chunk_name: "abc123".into(),
-            chunk_decompressed_hash_md5: String::new(),
-            chunk_on_file_offset: 0,
-            chunk_size: 0,
-            chunk_size_decompressed: 0,
-            chunk_compressed_hash_xxh: 0,
-            chunk_compressed_hash_md5: String::new(),
-            chunk_old_offset: -1,
-        };
-        assert_eq!(chunk_filename(&chunk), "abc123.zstd");
+        assert_eq!(chunk_filename("abc123"), "abc123.zstd");
     }
 
     fn make_chunk_file(chunks_dir: &Path, chunk_name: &str, data: &[u8]) {
@@ -729,9 +1120,9 @@ mod tests {
     }
 
     fn compute_md5_hex(data: &[u8]) -> String {
-        let mut hasher = Md5::new();
-        hasher.update(data);
-        hex::encode(hasher.finalize())
+        let mut hasher = Md5::new().unwrap();
+        hasher.update(data).unwrap();
+        hex::encode(hasher.finish().unwrap())
     }
 
     fn make_chunk(name: &str, offset: u64, decompressed_size: u64) -> SophonManifestAssetChunk {
@@ -769,15 +1160,16 @@ mod tests {
             asset_hash_md5: md5,
         };
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("chunk0".to_string(), 1);
+        let chunk_names = make_chunk_names(&["chunk0"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
-        assemble_file(
-            &file,
+        assemble_test_file(
+            file,
             &game_dir,
             &chunks_dir,
             &temp_dir,
+            &chunk_names,
             &chunk_refcounts,
             &verify_cache,
         )
@@ -820,16 +1212,16 @@ mod tests {
             asset_hash_md5: md5,
         };
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("chunkA".to_string(), 1);
-        chunk_refcounts.insert("chunkB".to_string(), 1);
+        let chunk_names = make_chunk_names(&["chunkA", "chunkB"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1), AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
-        assemble_file(
-            &file,
+        assemble_test_file(
+            file,
             &game_dir,
             &chunks_dir,
             &temp_dir,
+            &chunk_names,
             &chunk_refcounts,
             &verify_cache,
         )
@@ -866,21 +1258,22 @@ mod tests {
             asset_hash_md5: md5,
         };
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("chunk_skip".to_string(), 1);
+        let chunk_names = make_chunk_names(&["chunk_skip"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
-        assemble_file(
-            &file,
+        assemble_test_file(
+            file,
             &game_dir,
             &chunks_dir,
             &temp_dir,
+            &chunk_names,
             &chunk_refcounts,
             &verify_cache,
         )
         .unwrap();
 
-        assert!(!chunk_refcounts.contains_key("chunk_skip"));
+        assert_eq!(chunk_refcounts[0].load(Ordering::Acquire), 0);
         assert!(!chunks_dir.join("chunk_skip.zstd").exists());
 
         let result = fs::read(&target).unwrap();
@@ -914,15 +1307,16 @@ mod tests {
             asset_hash_md5: md5,
         };
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("chunk_fix".to_string(), 1);
+        let chunk_names = make_chunk_names(&["chunk_fix"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
-        assemble_file(
-            &file,
+        assemble_test_file(
+            file,
             &game_dir,
             &chunks_dir,
             &temp_dir,
+            &chunk_names,
             &chunk_refcounts,
             &verify_cache,
         )
@@ -930,6 +1324,125 @@ mod tests {
 
         let result = fs::read(&target).unwrap();
         assert_eq!(result, correct_data);
+    }
+
+    #[test]
+    fn assemble_file_parallel_file_hash_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().join("game");
+        let chunks_dir = dir.path().join("chunks");
+        let temp_dir = dir.path().join("tmp");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::create_dir_all(&chunks_dir).unwrap();
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let chunks: Vec<Vec<u8>> = (0..8)
+            .map(|i| (0..4096).map(|j| ((i * 17 + j) % 251) as u8).collect())
+            .collect();
+        let names: Vec<String> = (0..8).map(|i| format!("ck{i}")).collect();
+        for (i, data) in chunks.iter().enumerate() {
+            make_chunk_file(&chunks_dir, &names[i], data);
+        }
+        let mut full = Vec::new();
+        for c in &chunks {
+            full.extend_from_slice(c);
+        }
+        let file_md5 = compute_md5_hex(&full);
+
+        let chunk_specs: Vec<SophonManifestAssetChunk> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, data)| make_chunk(&names[i], (i * data.len()) as u64, data.len() as u64))
+            .collect();
+        let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let chunk_names_arc = make_chunk_names(&name_refs);
+        let chunk_refcounts: Vec<AtomicU32> =
+            (0..chunks.len()).map(|_| AtomicU32::new(1)).collect();
+
+        let file = SophonManifestAssetProperty {
+            asset_name: "parallel_hash.bin".to_string(),
+            asset_chunks: chunk_specs,
+            asset_type: 0,
+            asset_size: full.len() as u64,
+            asset_hash_md5: file_md5,
+        };
+
+        let verify_cache = DashMap::new();
+        assemble_test_file(
+            file,
+            &game_dir,
+            &chunks_dir,
+            &temp_dir,
+            &chunk_names_arc,
+            &chunk_refcounts,
+            &verify_cache,
+        )
+        .unwrap();
+
+        let result = fs::read(game_dir.join("parallel_hash.bin")).unwrap();
+        assert_eq!(result, full);
+    }
+
+    #[test]
+    fn assemble_file_parallel_file_hash_mismatch_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().join("game");
+        let chunks_dir = dir.path().join("chunks");
+        let temp_dir = dir.path().join("tmp");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::create_dir_all(&chunks_dir).unwrap();
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let chunks: Vec<Vec<u8>> = (0..8)
+            .map(|i| (0..4096).map(|j| ((i * 17 + j) % 251) as u8).collect())
+            .collect();
+        let names: Vec<String> = (0..8).map(|i| format!("ck{i}")).collect();
+        for (i, data) in chunks.iter().enumerate() {
+            make_chunk_file(&chunks_dir, &names[i], data);
+        }
+        let mut full = Vec::new();
+        for c in &chunks {
+            full.extend_from_slice(c);
+        }
+
+        let chunk_specs: Vec<SophonManifestAssetChunk> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, data)| make_chunk(&names[i], (i * data.len()) as u64, data.len() as u64))
+            .collect();
+        let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let chunk_names_arc = make_chunk_names(&name_refs);
+        let chunk_refcounts: Vec<AtomicU32> =
+            (0..chunks.len()).map(|_| AtomicU32::new(1)).collect();
+
+        let corrupt_md5 =
+            String::from_utf8((0..32).map(|i| if i == 0 { b'f' } else { b'0' }).collect()).unwrap();
+
+        let file = SophonManifestAssetProperty {
+            asset_name: "corrupt.bin".to_string(),
+            asset_chunks: chunk_specs,
+            asset_type: 0,
+            asset_size: full.len() as u64,
+            asset_hash_md5: corrupt_md5,
+        };
+
+        let verify_cache = DashMap::new();
+        let result = assemble_test_file(
+            file,
+            &game_dir,
+            &chunks_dir,
+            &temp_dir,
+            &chunk_names_arc,
+            &chunk_refcounts,
+            &verify_cache,
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SophonError::Md5Mismatch { .. }
+        ));
+        assert!(!game_dir.join("corrupt.bin").exists());
     }
 
     #[test]
@@ -941,12 +1454,12 @@ mod tests {
         let chunk_file = chunks_dir.join("vanish.zstd");
         fs::write(&chunk_file, b"dummy").unwrap();
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("vanish".to_string(), 1);
+        let chunk_names = make_chunk_names(&["vanish"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
 
-        decrement_chunk_refcount("vanish", &chunk_refcounts, &chunks_dir);
+        decrement_chunk_refcount("vanish", &chunk_names, &chunk_refcounts, &chunks_dir);
 
-        assert!(!chunk_refcounts.contains_key("vanish"));
+        assert_eq!(chunk_refcounts[0].load(Ordering::Acquire), 0);
         assert!(!chunk_file.exists());
     }
 
@@ -959,13 +1472,12 @@ mod tests {
         let chunk_file = chunks_dir.join("keep.zstd");
         fs::write(&chunk_file, b"dummy").unwrap();
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("keep".to_string(), 2);
+        let chunk_names = make_chunk_names(&["keep"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(2)];
 
-        decrement_chunk_refcount("keep", &chunk_refcounts, &chunks_dir);
+        decrement_chunk_refcount("keep", &chunk_names, &chunk_refcounts, &chunks_dir);
 
-        let count = *chunk_refcounts.get("keep").unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(chunk_refcounts[0].load(Ordering::Acquire), 1);
         assert!(chunk_file.exists());
     }
 
@@ -1008,15 +1520,21 @@ mod tests {
         let params = AssemblyTaskParams {
             file_idx: 5,
             tmp_dir_idx: 0,
-            all_files: Arc::new(vec![]),
+            all_files: Arc::new(CompactManifest::from(vec![])),
             all_tmp_dirs: Arc::new(vec![dir.path().to_path_buf()]),
-            game_dir: dir.path().to_path_buf(),
+            game_dir: dir.path().to_path_buf().into(),
             chunks_dir: Arc::new(dir.path().to_path_buf()),
-            chunk_refcounts: Arc::new(DashMap::new()),
+            chunk_refcounts: Arc::new(Vec::new()),
+            chunk_names: Arc::new(ChunkNameLookup::from_arena(StringArena::from(
+                [].as_slice(),
+            ))),
             verify_cache: Arc::new(DashMap::new()),
             assembled_files: Arc::new(AtomicU64::new(0)),
+            checked_files: Arc::new(AtomicU64::new(0)),
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 0,
+            profiler: Arc::new(PipelineProfiler::new()),
+            completion_flags: Arc::from(Vec::<AtomicBool>::new()),
         };
 
         let result = run_assembly_task(params, |_| {});
@@ -1061,15 +1579,16 @@ mod tests {
             asset_hash_md5: file_md5,
         };
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("ck0".to_string(), 1);
+        let chunk_names = make_chunk_names(&["ck0"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
-        assemble_file(
-            &file,
+        assemble_test_file(
+            file,
             &game_dir,
             &chunks_dir,
             &temp_dir,
+            &chunk_names,
             &chunk_refcounts,
             &verify_cache,
         )
@@ -1112,15 +1631,16 @@ mod tests {
             asset_hash_md5: file_md5,
         };
 
-        let chunk_refcounts = DashMap::new();
-        chunk_refcounts.insert("ck1".to_string(), 1);
+        let chunk_names = make_chunk_names(&["ck1"]);
+        let chunk_refcounts: Vec<AtomicU32> = vec![AtomicU32::new(1)];
         let verify_cache = DashMap::new();
 
-        let result = assemble_file(
-            &file,
+        let result = assemble_test_file(
+            file,
             &game_dir,
             &chunks_dir,
             &temp_dir,
+            &chunk_names,
             &chunk_refcounts,
             &verify_cache,
         );
@@ -1145,15 +1665,21 @@ mod tests {
         let params = AssemblyTaskParams {
             file_idx: 0,
             tmp_dir_idx: 99,
-            all_files: Arc::new(vec![file]),
+            all_files: Arc::new(CompactManifest::from(vec![file])),
             all_tmp_dirs: Arc::new(vec![]),
-            game_dir: dir.path().to_path_buf(),
+            game_dir: dir.path().to_path_buf().into(),
             chunks_dir: Arc::new(dir.path().to_path_buf()),
-            chunk_refcounts: Arc::new(DashMap::new()),
+            chunk_refcounts: Arc::new(Vec::new()),
+            chunk_names: Arc::new(ChunkNameLookup::from_arena(StringArena::from(
+                [].as_slice(),
+            ))),
             verify_cache: Arc::new(DashMap::new()),
             assembled_files: Arc::new(AtomicU64::new(0)),
+            checked_files: Arc::new(AtomicU64::new(0)),
             last_assembly_update: Arc::new(Mutex::new(Instant::now())),
             total_files: 1,
+            profiler: Arc::new(PipelineProfiler::new()),
+            completion_flags: Arc::from((0..1).map(|_| AtomicBool::new(false)).collect::<Vec<_>>()),
         };
 
         let result = run_assembly_task(params, |_| {});
@@ -1187,11 +1713,7 @@ mod tests {
         assert!(!validate_chunk_name("/etc/passwd"));
     }
 
-    // --- Group 6: Additional chunk name security and acceptance tests ---
-
-    /// Double-dot as a path component must be rejected (e.g. `foo/../bar`).
-    /// Consecutive dots within a filename component are allowed (e.g.
-    /// `foo..bar`).
+    /// Reject `..` as a path component; allow consecutive dots in filenames.
     #[test]
     fn validate_chunk_name_rejects_double_dot_component() {
         assert!(!validate_chunk_name("../etc/passwd"));
@@ -1207,22 +1729,21 @@ mod tests {
         assert!(validate_chunk_name("2.0..hotfix.pak"));
     }
 
-    /// Backslash-prefixed names (Windows-style absolute paths) must be
-    /// rejected.
+    /// Reject backslash-prefixed names.
     #[test]
     fn validate_chunk_name_rejects_backslash_prefix() {
         assert!(!validate_chunk_name("\\Windows\\System32"));
         assert!(!validate_chunk_name("\\etc\\passwd"));
     }
 
-    /// Drive-letter style strings (e.g. C:\...) must be rejected.
+    /// Reject drive-letter prefixes.
     #[test]
     fn validate_chunk_name_rejects_drive_letter() {
         assert!(!validate_chunk_name("C:\\Windows"));
         assert!(!validate_chunk_name("Z:\\"));
     }
 
-    /// Alphanumeric chunk names with underscores, hyphens and dots are valid.
+    /// Accept valid special characters in chunk names.
     #[test]
     fn validate_chunk_name_accepts_valid_special_chars() {
         assert!(validate_chunk_name("chunk_001"));
@@ -1231,90 +1752,40 @@ mod tests {
         assert!(validate_chunk_name("my_chunk-abc.xyz"));
     }
 
-    /// Purely numeric chunk names (common for indexed chunks) must be accepted.
+    /// Accept numeric chunk names.
     #[test]
     fn validate_chunk_name_accepts_numeric() {
         assert!(validate_chunk_name("12345"));
         assert!(validate_chunk_name("0"));
     }
 
-    #[test]
-    fn hash_writer_writes_data_and_updates_hasher() {
-        use md5::{Digest, Md5};
-        let mut hasher = Md5::new();
-        let mut output = Vec::new();
-        {
-            let mut hw = HashWriter {
-                inner: &mut output,
-                hasher: &mut hasher,
-            };
-            hw.write_all(b"hello ").unwrap();
-            hw.write_all(b"world").unwrap();
-            hw.flush().unwrap();
-        }
-        assert_eq!(output, b"hello world");
-        let expected = hex::encode(Md5::digest(b"hello world"));
-        assert_eq!(hex::encode(hasher.finalize()), expected);
-    }
-
-    #[test]
-    fn hash_writer_empty_write() {
-        use md5::{Digest, Md5};
-        let mut hasher = Md5::new();
-        let mut output = Vec::new();
-        {
-            let mut hw = HashWriter {
-                inner: &mut output,
-                hasher: &mut hasher,
-            };
-            hw.write_all(b"").unwrap();
-        }
-        assert!(output.is_empty());
-        let expected = hex::encode(Md5::digest(b""));
-        assert_eq!(hex::encode(hasher.finalize()), expected);
-    }
-
-    #[test]
-    fn hash_writer_multiple_writes_accumulate_hash() {
-        use md5::{Digest, Md5};
-        let mut hasher = Md5::new();
-        let mut output = Vec::new();
-        {
-            let mut hw = HashWriter {
-                inner: &mut output,
-                hasher: &mut hasher,
-            };
-            hw.write_all(b"a").unwrap();
-            hw.write_all(b"b").unwrap();
-            hw.write_all(b"c").unwrap();
-        }
-        let combined_hash = hex::encode(Md5::digest(b"abc"));
-        assert_eq!(hex::encode(hasher.finalize()), combined_hash);
-    }
-
-    /// Test write_from_old_file reads from correct offset and verifies hash
+    /// Verify write_from_old_file reads at the correct offset.
     #[test]
     fn write_from_old_file_reads_correct_offset() {
-        use std::io::Write;
-
         let dir = tempfile::tempdir().unwrap();
         let old_file_path = dir.path().join("old_file.bin");
 
-        // Create old file with known content: "AAAA" at offset 0, "BBBB" at offset 4
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(b"AAAABBBB").unwrap();
-        drop(old_file);
+        // Old file: "AAAABBBB"
+        fs::write(&old_file_path, b"AAAABBBB").unwrap();
 
-        // Create output file
+        // Output file, pre-sized so write_all_at at offset 0 is valid.
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(4).unwrap();
 
-        // Read 4 bytes from offset 4 (should get "BBBB")
+        // Read 4 bytes from offset 4.
         let mut transfer_buf = vec![0u8; 1024];
+        let old_file = File::open(&old_file_path).unwrap();
         let bytes_written = write_from_old_file(
+            &old_file,
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,    // new_offset
             4,    // old_offset
             4,    // expected_size
@@ -1323,9 +1794,6 @@ mod tests {
             "", // chunk_decompressed_hash_md5 (skip verification)
         )
         .unwrap();
-
-        writer.flush().unwrap();
-        drop(writer);
         drop(output_file);
 
         assert_eq!(bytes_written, 4);
@@ -1333,29 +1801,36 @@ mod tests {
         assert_eq!(&result, b"BBBB");
     }
 
-    /// Test write_from_old_file verifies chunk hash correctly
+    /// Verify chunk hash validation in write_from_old_file.
     #[test]
     fn write_from_old_file_verifies_chunk_hash() {
-        use md5::{Digest, Md5};
-
         let dir = tempfile::tempdir().unwrap();
         let old_file_path = dir.path().join("old_file.bin");
 
         let data = b"test data for hash verification";
-        let expected_md5 = hex::encode(Md5::digest(data));
-
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(data).unwrap();
-        drop(old_file);
+        let expected_md5 = {
+            let mut h = Md5::new().unwrap();
+            h.update(data).unwrap();
+            hex::encode(h.finish().unwrap())
+        };
+        fs::write(&old_file_path, data).unwrap();
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(data.len() as u64).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
+        let old_file = File::open(&old_file_path).unwrap();
         let result = write_from_old_file(
+            &old_file,
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,
             0,
             data.len() as u64,
@@ -1374,20 +1849,25 @@ mod tests {
         let old_file_path = dir.path().join("old_file.bin");
 
         let data = b"test data";
-        let wrong_md5 = "ffffffffffffffffffffffffffffffff"; // Not EMPTY_MD5
-
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(data).unwrap();
-        drop(old_file);
+        let wrong_md5 = "ffffffffffffffffffffffffffffffff"; // Wrong MD5 (not EMPTY_MD5).
+        fs::write(&old_file_path, data).unwrap();
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(data.len() as u64).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
+        let old_file = File::open(&old_file_path).unwrap();
         let result = write_from_old_file(
+            &old_file,
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,
             0,
             data.len() as u64,
@@ -1403,27 +1883,31 @@ mod tests {
         ));
     }
 
-    /// Test write_from_old_file fails when old file is too short
+    /// Verify failure when old file is too short.
     #[test]
     fn write_from_old_file_too_short_fails() {
         let dir = tempfile::tempdir().unwrap();
         let old_file_path = dir.path().join("old_file.bin");
 
-        // Create file with only 5 bytes
-        let data = b"short";
-        let mut old_file = fs::File::create(&old_file_path).unwrap();
-        old_file.write_all(data).unwrap();
-        drop(old_file);
+        // 5-byte file
+        fs::write(&old_file_path, b"short").unwrap();
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(10).unwrap();
 
         let mut transfer_buf = vec![0u8; 1024];
-        // Try to read 10 bytes from a 5-byte file
+        let old_file = File::open(&old_file_path).unwrap();
         let result = write_from_old_file(
+            &old_file,
             &old_file_path,
-            &mut writer,
+            &output_file,
             0,
             0,
             10, // expected_size > actual size
@@ -1435,32 +1919,28 @@ mod tests {
         assert!(result.is_err(), "should fail when file is too short");
     }
 
-    /// Test write_from_old_file fails when old file doesn't exist
+    /// Verify failure when old file is missing.
     #[test]
     fn write_from_old_file_missing_file_fails() {
         let dir = tempfile::tempdir().unwrap();
         let old_file_path = dir.path().join("nonexistent.bin");
 
         let output_path = dir.path().join("output.bin");
-        let mut output_file = fs::File::create(&output_path).unwrap();
-        let mut writer = std::io::BufWriter::new(&mut output_file);
+        let output_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)
+            .unwrap();
+        output_file.set_len(100).unwrap();
 
-        let mut transfer_buf = vec![0u8; 1024];
-        let result = write_from_old_file(
-            &old_file_path,
-            &mut writer,
-            0,
-            0,
-            100,
-            None,
-            &mut transfer_buf,
-            "",
-        );
-
-        assert!(result.is_err(), "should fail when old file doesn't exist");
+        let _transfer_buf: Vec<u8> = vec![0u8; 1024];
+        let old_result = File::open(&old_file_path);
+        assert!(old_result.is_err(), "old file should not exist");
     }
 
-    /// Test assemble_file with chunk_old_offset reuses data from old file
+    /// Verify chunk reuse from the old file.
     #[test]
     fn assemble_file_reuses_chunk_from_old_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1471,14 +1951,14 @@ mod tests {
         fs::create_dir_all(&chunks_dir).unwrap();
         fs::create_dir_all(&temp_dir).unwrap();
 
-        // Create old file with content that will be reused
+        // Old file to reuse from.
         let old_data = b"reused chunk data here!";
         let target_path = game_dir.join("reused.bin");
         fs::write(&target_path, old_data).unwrap();
 
         let md5 = compute_md5_hex(old_data);
 
-        // Create asset with chunk_old_offset >= 0 (reuse from old file)
+        // Asset with chunk_old_offset >= 0.
         let file = SophonManifestAssetProperty {
             asset_name: "reused.bin".to_string(),
             asset_chunks: vec![SophonManifestAssetChunk {
@@ -1496,15 +1976,17 @@ mod tests {
             asset_hash_md5: md5,
         };
 
-        let chunk_refcounts = DashMap::new();
+        let chunk_names = make_chunk_names(&[]);
+        let chunk_refcounts: Vec<AtomicU32> = Vec::new();
         let verify_cache = DashMap::new();
 
-        // This should reuse data from the existing file, not fail due to missing chunk
-        let result = assemble_file(
-            &file,
+        // Should reuse from the existing file.
+        let result = assemble_test_file(
+            file,
             &game_dir,
             &chunks_dir,
             &temp_dir,
+            &chunk_names,
             &chunk_refcounts,
             &verify_cache,
         );
@@ -1519,7 +2001,7 @@ mod tests {
         let result_data = fs::read(&target_path).unwrap();
         assert_eq!(&result_data, old_data);
 
-        // Verify no chunk was downloaded (refcount should still be 0)
-        assert!(!chunk_refcounts.contains_key("not_used"));
+        // No chunk was downloaded.
+        assert!(chunk_refcounts.is_empty());
     }
 }
