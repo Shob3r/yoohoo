@@ -34,7 +34,7 @@ Generating flatpak installers will require a bit of extra setup. You'll want to 
 You also want to install the flatpak Platforms/SDKs/Extensions that Elysiae Uses:
 
 ```sh
-flatpak install org.gnome.{Platform,Sdk}//49 -y
+flatpak install org.gnome.{Platform,Sdk}//50 -y
 flatpak install org.freedesktop.Sdk.Extension.{node24,rust-stable}//25.08 -y
 ```
 
