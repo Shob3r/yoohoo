@@ -57,6 +57,7 @@ const updateSettingsData = async () => {
 };
 
 const migrateSettings = async (data: Settings) => {
+	// Start at the next data version, continue until the current data version is reached
 	for (let i = data.version + 1; i <= CURRENT_DATA_VERSION; i++) {
 		switch (data.version) {
 			case 2: {
