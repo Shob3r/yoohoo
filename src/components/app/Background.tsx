@@ -1,8 +1,8 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useApi } from "../../hooks/useApi";
-import { useBackground } from "../../hooks/useBackground";
+import { useAedes } from "../../hooks/useAedes";
 import { useGame } from "../../hooks/useGame";
+import { Variants } from "../../types";
 
 const BackgroundVideo = ({ src }: { src: string | null }) => {
 	const ref = useRef<HTMLVideoElement>(null);
@@ -74,16 +74,20 @@ const BackgroundMedia = ({
 
 export const Background = () => {
 	const { game } = useGame();
-	const { graphics } = useApi();
-	const { backgroundSrc, backgroundIsVideo } = useBackground();
+	const { resolvedAssets } = useAedes();
 
-	if (!backgroundSrc || !graphics) return null;
-	const { backgroundVideoOverlay } = graphics[game];
+	if (!resolvedAssets) return null;
+	const backgroundVideoOverlay = resolvedAssets[game].overlay;
 
 	return (
 		<div class="absolute inset-0 overflow-hidden">
-			<BackgroundMedia src={backgroundSrc} isVideo={backgroundIsVideo} />
-			<BackgroundMedia src={backgroundVideoOverlay} isVideo={false} />
+			<BackgroundMedia
+				src={resolvedAssets[game].backgrounds[0].image}
+				isVideo={false}
+			/>
+			{game !== Variants.HK4E ? (
+				<BackgroundMedia src={backgroundVideoOverlay} isVideo={false} />
+			) : null}
 		</div>
 	);
 };
