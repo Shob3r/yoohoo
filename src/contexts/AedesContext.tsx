@@ -3,34 +3,66 @@ import { fetch } from "@tauri-apps/plugin-http";
 import { type ComponentChildren, createContext } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useGame } from "../hooks/useGame";
-import { exists, mkdir, readDir, remove } from "../lib/Fs";
+import { convertFileSrc, exists, mkdir, readDir, remove } from "../lib/Fs";
 import { getOption, setOption } from "../lib/Settings";
+import { gameCodeToVariant } from "../lib/VariantConverter";
 import { downloadFileNoProgress } from "../lib/Web";
-import type { AedesAssetPaths } from "../types";
+import type { AedesAssetPaths, GameCodes, Variants } from "../types";
 
 interface AedesContextType {
-	cachedData: AedesAssetPaths | null;
+	cachedPaths: AedesAssetPaths | null;
+	resolvedAssets: AedesAssetPaths | null;
 	isLoading: boolean;
 	error: string | null;
 }
 
 export const AedesContext = createContext<AedesContextType>({
-	cachedData: null,
+	cachedPaths: null,
+	resolvedAssets: null,
 	isLoading: true,
 	error: null,
 });
 
 const AEDES_ASSETS_BASE = "https://aedes.elysiae.app/";
 
-/**
- * @author @Shob3r
- * @param source
- * @param compareTo
- * @returns elements in `compareTo` that are not present in `source`
- */
-const getMissingItems = <T = unknown>(source: T[], compareTo: T[]): T[] => {
-	const compareToSet = new Set(compareTo);
-	return source.filter((item) => !compareToSet.has(item));
+const toCachePath = (path: string): string => {
+	const parts = path.split("/");
+	const [, assetType, gameCode, ...rest] = parts;
+	return ["cache", gameCode, assetType, ...rest].join("/");
+};
+
+const resolveAssets = async (
+	data: AedesAssetPaths,
+): Promise<AedesAssetPaths> => {
+	const resolved = {} as AedesAssetPaths;
+	const entries = Object.entries(data) as [
+		GameCodes,
+		AedesAssetPaths[Variants],
+	][];
+	await Promise.all(
+		entries.map(async ([gameCode, paths]) => {
+			const variant = gameCodeToVariant[gameCode];
+			const [icon, overlay, backgrounds] = await Promise.all([
+				convertFileSrc(toCachePath(paths.icon)),
+				convertFileSrc(toCachePath(paths.overlay)),
+				Promise.all(
+					paths.backgrounds.map(async (bg) => ({
+						image: await convertFileSrc(toCachePath(bg.image)),
+						video: bg.video
+							? await convertFileSrc(toCachePath(bg.video))
+							: null,
+					})),
+				),
+			]);
+			resolved[variant] = { icon, overlay, backgrounds };
+		}),
+	);
+	return resolved;
+};
+
+const basenameOf = (path: string): string => {
+	const parts = path.split("/");
+	return parts[parts.length - 1] ?? path;
 };
 
 export const AedesProvider = ({
@@ -38,7 +70,10 @@ export const AedesProvider = ({
 }: {
 	children: ComponentChildren;
 }) => {
-	const [cache, setCache] = useState<AedesAssetPaths | null>(null);
+	const [fsCache, setCache] = useState<AedesAssetPaths | null>(null);
+	const [resolvedCache, setResolvedCache] = useState<AedesAssetPaths | null>(
+		null,
+	);
 	const [isLoading, setIsLoading] = useState<boolean>(true);
 	const [error, setError] = useState<string | null>(null);
 
@@ -85,10 +120,10 @@ export const AedesProvider = ({
 				// Get local paths:
 				// Iterate through each directory and subdirectory in the appdata cache folder to find file paths that exist on disk
 				await Promise.all(
-					["bg", "overlay", "icon"].map(
+					["bh3", "hk4e", "hkrpg", "nap"].map(
 						async (gameCode) =>
 							await Promise.all(
-								["bh3", "hk4e", "hkrpg", "nap"].map(async (assetType) => {
+								["bg", "overlay", "icon"].map(async (assetType) => {
 									const dir = await join("cache", gameCode, assetType);
 									if (await exists(dir)) {
 										const files = await readDir(dir);
@@ -104,24 +139,29 @@ export const AedesProvider = ({
 					),
 				);
 
-				// Get download/remove arrays
-				const toDownload: string[] = getMissingItems<string>(endpointPaths, localPaths);
-				const toDelete: string[] = getMissingItems<string>(localPaths, endpointPaths);
+				// Get download/remove arrays (compared by basename so prefix
+				// and gameCode/assetType ordering differences don't break the diff)
+				const localBasenames = new Set(localPaths.map(basenameOf));
+				const endpointBasenames = new Set(endpointPaths.map(basenameOf));
+				const toDownload: string[] = endpointPaths.filter(
+					(path) => !localBasenames.has(basenameOf(path)),
+				);
+				const toDelete: string[] = localPaths.filter(
+					(path) => !endpointBasenames.has(basenameOf(path)),
+				);
 
 				// Download new files
 				await Promise.all(
 					toDownload.map(async (path) => {
 						const url = `${AEDES_ASSETS_BASE}/${path}`;
-
-						// Cache is a much more identifiable name for an asset cache directory, but assets makes more sense when storing assets on en endpoint
-						const cachePath = path.replaceAll("assets", "cache"); 
-						await downloadFileNoProgress(url, cachePath);
+						await downloadFileNoProgress(url, toCachePath(path));
 					}),
 				);
 
 				// Update cache tracker
-				if (JSON.stringify(cache) !== JSON.stringify(data)) {
+				if (JSON.stringify(fsCache) !== JSON.stringify(data)) {
 					setCache(data);
+					setResolvedCache(await resolveAssets(data));
 					await setOption<AedesAssetPaths>("cachedBackgrounds", data);
 				}
 
@@ -135,7 +175,7 @@ export const AedesProvider = ({
 				);
 			} catch (err) {
 				setError(err instanceof Error ? err.message : String(err));
-				console.error(error);
+				console.error(err);
 			} finally {
 				setIsLoading(false);
 			}
@@ -144,15 +184,25 @@ export const AedesProvider = ({
 
 	// Initial cache setting
 	useEffect(() => {
-		getOption<AedesAssetPaths>("cachedBackgrounds").then((res) => {
-			setCache(res as AedesAssetPaths);
-		});
+		(async () => {
+			const res = (await getOption<AedesAssetPaths>("cachedBackgrounds")) as
+				| AedesAssetPaths
+				| undefined;
+			if (res) {
+				setCache(res);
+				setResolvedCache(await resolveAssets(res));
+
+				console.log(res);
+				console.log(resolvedCache);
+			}
+		})();
 	}, []);
 
 	return (
 		<AedesContext.Provider
 			value={{
-				cachedData: cache,
+				cachedPaths: fsCache,
+				resolvedAssets: resolvedCache,
 				isLoading: isLoading,
 				error: error,
 			}}
