@@ -15,14 +15,12 @@ import SettingsModal from "./components/app/SettingsModal.tsx";
 import Sidebar from "./components/app/Sidebar.tsx";
 import Button from "./components/Button.tsx";
 import Titlebar from "./components/Titlebar.tsx";
-import { ApiProvider } from "./contexts/ApiContext.tsx";
-import { BackgroundProvider } from "./contexts/BackgroundContext.tsx";
+import { AedesProvider } from "./contexts/AedesContext.tsx";
 import { DownloadProvider } from "./contexts/DownloadContext.tsx";
 import { GameProvider } from "./contexts/GameContext.tsx";
-import { useApi } from "./hooks/useApi.ts";
+import { useAedes } from "./hooks/useAedes.ts";
 import { useGame } from "./hooks/useGame.ts";
 import { startListening } from "./lib/DeepLink.ts";
-import { createDesktopShortcut } from "./lib/Desktop.ts";
 import { type ModalHandle, Variants } from "./types";
 
 const textTheme = cva(null, {
@@ -49,13 +47,12 @@ const bgTheme = cva("h-full w-full overflow-hidden", {
 
 const App = () => {
 	const { game } = useGame();
-	const { graphics, isLoading, error, refetch } = useApi();
+	const { resolvedAssets, isLoading, error } = useAedes();
 	const settingsModal = useRef<ModalHandle>(null);
 
 	useEffect(() => {
 		restoreStateCurrent(StateFlags.ALL);
 		startListening();
-		createDesktopShortcut(Variants.HKRPG); // temporary, remove before pr merge
 	}, []);
 
 	return (
@@ -70,7 +67,8 @@ const App = () => {
 			<div class={bgTheme({ game: game })}>
 				<div class="relative h-full w-full">
 					{error ? (
-						<div class="absolute inset-0 flex items-center justify-center">
+						{
+							/*<div class="absolute inset-0 flex items-center justify-center">
 							<div class="flex flex-col items-center gap-3 text-center">
 								<p class="text-sm opacity-70">{error}</p>
 								<Button
@@ -82,8 +80,9 @@ const App = () => {
 									Retry
 								</Button>
 							</div>
-						</div>
-					) : isLoading ? null : graphics ? (
+						</div>*/
+						}
+					) : isLoading ? null : resolvedAssets ? (
 						<Background />
 					) : null}
 				</div>
@@ -111,13 +110,11 @@ const App = () => {
 export default function AppWrapper() {
 	return (
 		<GameProvider>
-			<ApiProvider>
+			<AedesProvider>
 				<DownloadProvider>
-					<BackgroundProvider>
-						<App />
-					</BackgroundProvider>
+					<App />
 				</DownloadProvider>
-			</ApiProvider>
+			</AedesProvider>
 		</GameProvider>
 	);
 }

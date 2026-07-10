@@ -1,12 +1,18 @@
+import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { type Settings, Variants } from "../types";
+import { type CachedBackgroundPaths, type Settings, Variants } from "../types";
 import { readTextFile, writeTextFile } from "./Fs";
-import { invoke } from "@tauri-apps/api/core";
 
 let store: Store | undefined;
 const SETTINGS_PATH = "settings.json";
-const CURRENT_DATA_VERSION = 1;
+const CURRENT_DATA_VERSION = 2;
+
+const defaultCachedData: CachedBackgroundPaths = {
+	backgrounds: [{ image: "", video: "" }],
+	icon: "",
+	overlay: "",
+};
 
 const loadStore = async (): Promise<Store> => {
 	await updateSettingsData();
@@ -26,7 +32,8 @@ const updateSettingsData = async () => {
 	const updatedSettingsData: Settings = {
 		version: settingsData.version ?? CURRENT_DATA_VERSION,
 		isFirstLaunch: settingsData.isFirstLaunch ?? true,
-		lastUsedVersion: settingsData.lastUsedVersion ?? await invoke<string>("elysiae_version"),
+		lastUsedVersion:
+			settingsData.lastUsedVersion ?? (await invoke<string>("elysiae_version")),
 		selectedGame: settingsData.selectedGame ?? "hk4e",
 		voLanguage: settingsData.voLanguage ?? "en",
 		blockNotifications: settingsData.blockNotifications ?? false,
@@ -38,10 +45,10 @@ const updateSettingsData = async () => {
 			jadeite: null,
 		},
 		cachedBackgrounds: settingsData.cachedBackgrounds ?? {
-			[Variants.BH3]: [],
-			[Variants.HK4E]: [],
-			[Variants.HKRPG]: [],
-			[Variants.NAP]: [],
+			[Variants.BH3]: defaultCachedData,
+			[Variants.HK4E]: defaultCachedData,
+			[Variants.HKRPG]: defaultCachedData,
+			[Variants.NAP]: defaultCachedData,
 		},
 	};
 
@@ -50,11 +57,17 @@ const updateSettingsData = async () => {
 };
 
 const migrateSettings = async (data: Settings) => {
-	for (let i = data.version; i < CURRENT_DATA_VERSION; i++) {
-		switch (
-			data.version
-			// unused as no migration is needed right now
-		) {
+	for (let i = data.version + 1; i <= CURRENT_DATA_VERSION; i++) {
+		switch (data.version) {
+			case 2: {
+				data.cachedBackgrounds = {
+					[Variants.BH3]: defaultCachedData,
+					[Variants.HK4E]: defaultCachedData,
+					[Variants.HKRPG]: defaultCachedData,
+					[Variants.NAP]: defaultCachedData,
+				};
+				break;
+			}
 		}
 	}
 };
