@@ -313,3 +313,19 @@ export type Option = DropdownOption | BooleanOption;
 export type CachedBackgrounds = {
 	[key in Variants]: string[];
 };
+
+
+// This looks really silly. The cached Background data type is how the settings file will store cached background data from now on. It is identical to what each "game category" of the endpoint looks like 
+
+export type AedesAssetPaths = {
+	[key in Variants]: CachedBackgroundPaths; 
+};
+
+export type CachedBackgroundPaths = {
+	backgrounds: {
+		image: string;
+		video: string | null;
+	}[];
+	icon: string;
+	overlay: string;
+};
