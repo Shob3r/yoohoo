@@ -1,18 +1,18 @@
 import { motion } from "motion/react";
-import { useApi } from "../../hooks/useApi";
+import { useAedes } from "../../hooks/useAedes";
 import { useGame } from "../../hooks/useGame";
 
 export const Sidebar = () => {
 	const { game, setGame } = useGame();
-	const { branding } = useApi();
+	const { resolvedAssets } = useAedes();
 
 	return (
 		<motion.div
 			style={{ translateX: "-20%" }}
 			class="absolute top-0 right-0 bottom-0 z-20 flex h-auto max-h-100 flex-col items-center justify-center gap-y-4 self-center overflow-y-scroll rounded-xl bg-black/80 p-4"
 		>
-			{branding &&
-				Object.entries(branding).map(([key, data]) => (
+			{resolvedAssets &&
+				Object.entries(resolvedAssets).map(([key, data]) => (
 					<button
 						type="button"
 						key={key}
