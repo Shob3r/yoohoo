@@ -130,6 +130,7 @@ export type Settings = {
 	autoUpdate: boolean;
 	autoPreload: boolean;
 	installedComponents: InstalledComponentsData;
+	// Elysiae does not just cache backgrounds now, but the naming scheme is kept to maintain compatibility with older versions of the app
 	cachedBackgrounds: AedesAssetPaths;
 };
 
