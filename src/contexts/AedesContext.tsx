@@ -83,7 +83,7 @@ export const AedesProvider = ({
 
 	const { game } = useGame();
 
-	/**
+	/*
 	 * Implementation method:
 	 * On Launch:
 	 *  1. fetch cached path data from settings file, set cache variable to that
@@ -96,6 +96,7 @@ export const AedesProvider = ({
 	 *  5. Delete all files found in step 2
 	 *  backgrounds images/videos, game overlays, and game icons are all stored in their own folder in appDataDir().
 	 */
+
 	const fetchData = async () => {
 		if (abortRef.current) {
 			abortRef.current.abort();
@@ -201,7 +202,7 @@ export const AedesProvider = ({
 		return () => {
 			abortRef.current?.abort();
 		};
-	}, [game]);
+	}, [game]); // Runs each time the game state switches to fetch new background assets if they are updated while Elysiae is being used
 
 	// Initial cache setting
 	useEffect(() => {
