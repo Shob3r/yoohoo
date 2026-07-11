@@ -8,9 +8,9 @@ pub mod commands;
 use crate::commands::sophon_downloader::ActiveDownload;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[tauri::cef_entry_point]
 pub fn run() {
     apply_nvidia_wayland_workaround();
-    apply_webkit_memory_improvements();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -22,7 +22,7 @@ pub fn run() {
     tauri::async_runtime::set(runtime.handle().clone());
     std::mem::forget(runtime);
 
-    tauri::Builder::default()
+    tauri::Builder::<tauri::Cef>::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 window.unminimize().ok();
@@ -54,6 +54,7 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
+                .level_for("cef", tauri_plugin_log::log::LevelFilter::Warn)
                 .build(),
         )
         .plugin(tauri_plugin_os::init())
@@ -96,21 +97,11 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-fn apply_webkit_memory_improvements() {
-    unsafe {
-        std::env::set_var("WEBKIT_FORCE_MEMORY_PRESSURE_SYSTEM", "critical");
-        std::env::set_var("WEBKIT_CACHE_MODEL", "document_viewer");
-    }
-}
-
 fn apply_nvidia_wayland_workaround() {
     if is_nvidia() && is_wayland() {
         println!("Elysiae: Applying NVIDIA Wayland Workaround");
         unsafe {
             std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
-            std::env::set_var("WEBKIT_DISABLE_GPU_COMPOSITING", "1");
-            std::env::set_var("WEBKIT_DISABLE_VAAPI", "1");
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         };
     }
 }
@@ -140,7 +131,7 @@ fn elysiae_version() -> String {
 }
 
 #[cfg(debug_assertions)]
-fn disable_shortcuts() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+fn disable_shortcuts() -> tauri::plugin::TauriPlugin<tauri::Cef> {
     use tauri_plugin_prevent_default::Flags;
 
     tauri_plugin_prevent_default::Builder::new()
@@ -149,7 +140,7 @@ fn disable_shortcuts() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 }
 
 #[cfg(not(debug_assertions))]
-fn disable_shortcuts() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+fn disable_shortcuts() -> tauri::plugin::TauriPlugin<tauri::Cef> {
     use tauri_plugin_prevent_default::Flags;
 
     tauri_plugin_prevent_default::Builder::new()

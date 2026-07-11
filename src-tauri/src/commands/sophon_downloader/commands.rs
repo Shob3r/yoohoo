@@ -39,7 +39,7 @@ struct StateMeta {
 /// file count; before then, the saver simply skips. Saves serialize file
 /// completion as `Vec<usize>` indices — the new resume-state format.
 fn make_state_saver(
-    app: &AppHandle,
+    app: &AppHandle<tauri::Cef>,
     state: &DownloadState,
     completion_state: Arc<OnceLock<Arc<[AtomicBool]>>>,
 ) -> game_installer::StateSaver {
@@ -123,7 +123,7 @@ pub async fn sophon_download_version(
     vo_lang: String,
     output_path: String,
     tag: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
     active: State<'_, ActiveDownload>,
 ) -> Result<(), String> {
@@ -241,7 +241,7 @@ pub async fn sophon_download(
     game_id: String,
     vo_lang: String,
     output_path: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
     active: State<'_, ActiveDownload>,
 ) -> Result<(), String> {
@@ -346,7 +346,7 @@ pub async fn sophon_update(
     game_id: String,
     vo_lang: String,
     output_path: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
     active: State<'_, ActiveDownload>,
 ) -> Result<(), String> {
@@ -460,7 +460,7 @@ pub async fn sophon_preinstall(
     game_id: String,
     vo_lang: String,
     output_path: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
     active: State<'_, ActiveDownload>,
 ) -> Result<(), String> {
@@ -532,7 +532,7 @@ pub async fn sophon_preinstall(
 pub async fn sophon_apply_preinstall(
     preinstall_tag: String,
     output_path: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
 ) -> Result<(), String> {
     // Reject path traversal in preinstall_tag before using it in file paths.
@@ -569,7 +569,7 @@ pub async fn sophon_apply_preinstall(
 /// Resume an interrupted download using the saved state.
 #[command]
 pub async fn sophon_resume_download(
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
     active: State<'_, ActiveDownload>,
 ) -> Result<(), String> {
@@ -772,13 +772,13 @@ pub async fn sophon_resume_download(
 
 /// Checks if there is a downloadable state to resume.
 #[command]
-pub async fn sophon_has_resume_state(app_handle: AppHandle) -> bool {
+pub async fn sophon_has_resume_state(app_handle: AppHandle<tauri::Cef>) -> bool {
     load_download_state(&app_handle).is_some()
 }
 
 /// Returns details about the resumable download state, if any.
 #[command]
-pub async fn sophon_get_resume_info(app_handle: AppHandle) -> Option<ResumeInfo> {
+pub async fn sophon_get_resume_info(app_handle: AppHandle<tauri::Cef>) -> Option<ResumeInfo> {
     load_download_state(&app_handle).map(|s| ResumeInfo {
         game_id: s.game_id,
         download_type: s.download_type,
@@ -818,7 +818,7 @@ pub async fn sophon_check_update(
     game_id: String,
     vo_lang: String,
     output_path: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
 ) -> Result<UpdateInfo, String> {
     let game_dir = app_handle
@@ -839,7 +839,7 @@ pub async fn sophon_verify_integrity(
     game_id: String,
     vo_lang: String,
     output_path: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
     client: State<'_, HttpClient>,
 ) -> Result<(), String> {
     let game_dir = app_handle
@@ -857,14 +857,14 @@ pub async fn sophon_verify_integrity(
     )
 }
 
-fn emit(app: &AppHandle, progress: SophonProgress) {
+fn emit(app: &AppHandle<tauri::Cef>, progress: SophonProgress) {
     if let Err(err) = app.emit("sophon://progress", progress) {
         log::error!("Failed to emit progress event: {err}");
     }
 }
 
 /// Emits a structured error event across the Tauri IPC boundary.
-fn emit_error(app: &AppHandle, error: &SophonError) {
+fn emit_error(app: &AppHandle<tauri::Cef>, error: &SophonError) {
     let _ = app.emit("sophon://error", CommandError::from(error));
     emit(
         app,
@@ -876,7 +876,10 @@ fn emit_error(app: &AppHandle, error: &SophonError) {
 
 /// Handle the final install result. Success and cancellation both return
 /// `Ok(())`; other errors are emitted and returned as `Err(string)`.
-fn install_result(result: Result<(), SophonError>, app: &AppHandle) -> Result<(), String> {
+fn install_result(
+    result: Result<(), SophonError>,
+    app: &AppHandle<tauri::Cef>,
+) -> Result<(), String> {
     match result {
         Ok(()) => Ok(()),
         Err(SophonError::Cancelled) => Ok(()),
@@ -889,7 +892,10 @@ fn install_result(result: Result<(), SophonError>, app: &AppHandle) -> Result<()
 
 /// Map `SophonResult<T>` to `Result<T, String>` and emit a structured error
 /// event.
-fn map_sophon_error<T>(result: Result<T, SophonError>, app: &AppHandle) -> Result<T, String> {
+fn map_sophon_error<T>(
+    result: Result<T, SophonError>,
+    app: &AppHandle<tauri::Cef>,
+) -> Result<T, String> {
     result.map_err(|err| {
         emit_error(app, &err);
         err.to_string()

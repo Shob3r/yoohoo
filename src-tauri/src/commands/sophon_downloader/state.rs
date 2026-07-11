@@ -13,7 +13,7 @@ use crate::commands::sophon_downloader::types::DownloadState;
 
 const DOWNLOAD_STATE_FILE: &str = ".sophon_download_state";
 
-pub(crate) fn download_state_path(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn download_state_path(app: &AppHandle<tauri::Cef>) -> Option<PathBuf> {
     app.path()
         .app_data_dir()
         .map_err(|err| {
@@ -25,7 +25,10 @@ pub(crate) fn download_state_path(app: &AppHandle) -> Option<PathBuf> {
 }
 
 /// Atomically persist download state (write to unique .tmp, then rename).
-pub fn save_download_state(app: &AppHandle, state: &DownloadState) -> Result<(), String> {
+pub fn save_download_state(
+    app: &AppHandle<tauri::Cef>,
+    state: &DownloadState,
+) -> Result<(), String> {
     let Some(path) = download_state_path(app) else {
         let msg = "Failed to resolve download state path".to_string();
         log::error!("{msg}");
@@ -66,7 +69,7 @@ pub fn save_download_state(app: &AppHandle, state: &DownloadState) -> Result<(),
     }
 }
 
-pub fn load_download_state(app: &AppHandle) -> Option<DownloadState> {
+pub fn load_download_state(app: &AppHandle<tauri::Cef>) -> Option<DownloadState> {
     let path = download_state_path(app)?;
     load_download_state_from(&path)
 }
@@ -122,7 +125,7 @@ fn preserve_corrupted_state(path: &Path, parse_err: &serde_json::Error) -> Optio
     None
 }
 
-pub fn clear_download_state(app: &AppHandle) {
+pub fn clear_download_state(app: &AppHandle<tauri::Cef>) {
     let Some(path) = download_state_path(app) else {
         log::warn!("Failed to resolve download state path during clear");
         return;
@@ -132,7 +135,7 @@ pub fn clear_download_state(app: &AppHandle) {
 
 /// Delete the chunks directory. Returns `true` if removed, `false` if not
 /// found. Errors are logged but not propagated (best-effort cleanup).
-pub fn delete_chunks_dir(app: &AppHandle, output_path: &str) -> bool {
+pub fn delete_chunks_dir(app: &AppHandle<tauri::Cef>, output_path: &str) -> bool {
     let game_dir = match app.path().resolve(output_path, BaseDirectory::AppData) {
         Ok(p) => p,
         Err(err) => {

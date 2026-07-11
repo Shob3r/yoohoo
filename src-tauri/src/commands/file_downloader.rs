@@ -16,7 +16,7 @@ pub async fn download_file(
     url: String,
     dest: String,
     uuid: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
 ) -> Result<(), String> {
     let client = Client::builder().build().map_err(|err| err.to_string())?;
     let full_path = app_handle

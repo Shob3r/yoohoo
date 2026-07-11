@@ -11,7 +11,7 @@ use zstd::Decoder as Zstd;
 pub async fn extract_file(
     archive: String,
     dest: String,
-    app_handle: AppHandle,
+    app_handle: AppHandle<tauri::Cef>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let full_path = app_handle
@@ -63,7 +63,7 @@ pub async fn extract_file(
 }
 
 #[command]
-pub fn get_dir_size(path: String, app_handle: AppHandle) -> Result<u64, String> {
+pub fn get_dir_size(path: String, app_handle: AppHandle<tauri::Cef>) -> Result<u64, String> {
     let full_path = app_handle
         .path()
         .resolve(&path, BaseDirectory::AppData)
