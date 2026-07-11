@@ -1,7 +1,7 @@
 import { join } from "@tauri-apps/api/path";
 import { fetch } from "@tauri-apps/plugin-http";
 import { type ComponentChildren, createContext } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { useGame } from "../hooks/useGame";
 import { convertFileSrc, exists, mkdir, readDir, remove } from "../lib/Fs";
 import { getOption, setOption } from "../lib/Settings";
@@ -14,6 +14,7 @@ interface AedesContextType {
 	resolvedAssets: AedesAssetPaths | null;
 	isLoading: boolean;
 	error: string | null;
+	refetch: () => Promise<void>;
 }
 
 export const AedesContext = createContext<AedesContextType>({
@@ -21,6 +22,7 @@ export const AedesContext = createContext<AedesContextType>({
 	resolvedAssets: null,
 	isLoading: true,
 	error: null,
+	refetch: async () => {},
 });
 
 const AEDES_ASSETS_BASE = "https://aedes.elysiae.app/";
@@ -76,6 +78,8 @@ export const AedesProvider = ({
 	);
 	const [isLoading, setIsLoading] = useState<boolean>(true);
 	const [error, setError] = useState<string | null>(null);
+	const abortRef = useRef<AbortController | null>(null);
+	const fetchCountRef = useRef(0);
 
 	const { game } = useGame();
 
@@ -92,94 +96,111 @@ export const AedesProvider = ({
 	 *  5. Delete all files found in step 2
 	 *  backgrounds images/videos, game overlays, and game icons are all stored in their own folder in appDataDir().
 	 */
+	const fetchData = async () => {
+		if (abortRef.current) {
+			abortRef.current.abort();
+		}
+		const controller = new AbortController();
+		abortRef.current = controller;
+		const fetchId = ++fetchCountRef.current;
 
-	useEffect(() => {
-		(async () => {
-			setIsLoading(true);
-			try {
-				const data: AedesAssetPaths = await (
-					await fetch(`${AEDES_ASSETS_BASE}/assets/assetData.json`)
-				).json();
+		setIsLoading(true);
+		setError(null);
 
-				const endpointPaths: string[] = [];
-				const localPaths: string[] = [];
+		try {
+			const data: AedesAssetPaths = await (
+				await fetch(`${AEDES_ASSETS_BASE}/assets/assetData.json`)
+			).json();
 
-				// Get Web paths
-				for (const [_, paths] of Object.entries(data)) {
-					endpointPaths.push(paths.icon);
-					endpointPaths.push(paths.overlay);
-					paths.backgrounds.forEach((bg) => {
-						const toPush = [bg.image];
-						if (bg.video) {
-							toPush.push(bg.video);
-						}
-						endpointPaths.push(...toPush);
-					});
-				}
+			const endpointPaths: string[] = [];
+			const localPaths: string[] = [];
 
-				// Get local paths:
-				// Iterate through each directory and subdirectory in the appdata cache folder to find file paths that exist on disk
-				await Promise.all(
-					["bh3", "hk4e", "hkrpg", "nap"].map(
-						async (gameCode) =>
-							await Promise.all(
-								["bg", "overlay", "icon"].map(async (assetType) => {
-									const dir = await join("cache", gameCode, assetType);
-									if (await exists(dir)) {
-										const files = await readDir(dir);
-										for (const file of files) {
-											const path = await join(dir, file.name);
-											localPaths.push(path);
-										}
-									} else {
-										await mkdir(dir);
+			// Get Web paths
+			for (const [_, paths] of Object.entries(data)) {
+				endpointPaths.push(paths.icon);
+				endpointPaths.push(paths.overlay);
+				paths.backgrounds.forEach((bg) => {
+					const toPush = [bg.image];
+					if (bg.video) {
+						toPush.push(bg.video);
+					}
+					endpointPaths.push(...toPush);
+				});
+			}
+
+			// Get local paths:
+			// Iterate through each directory and subdirectory in the appdata cache folder to find file paths that exist on disk
+			await Promise.all(
+				["bh3", "hk4e", "hkrpg", "nap"].map(
+					async (gameCode) =>
+						await Promise.all(
+							["bg", "overlay", "icon"].map(async (assetType) => {
+								const dir = await join("cache", gameCode, assetType);
+								if (await exists(dir)) {
+									const files = await readDir(dir);
+									for (const file of files) {
+										const path = await join(dir, file.name);
+										localPaths.push(path);
 									}
-								}),
-							),
-					),
-				);
+								} else {
+									await mkdir(dir);
+								}
+							}),
+						),
+				),
+			);
 
-				// Get download/remove arrays (compared by basename so prefix
-				// and gameCode/assetType ordering differences don't break the diff)
-				const localBasenames = new Set(localPaths.map(basenameOf));
-				const endpointBasenames = new Set(endpointPaths.map(basenameOf));
-				const toDownload: string[] = endpointPaths.filter(
-					(path) => !localBasenames.has(basenameOf(path)),
-				);
-				const toDelete: string[] = localPaths.filter(
-					(path) => !endpointBasenames.has(basenameOf(path)),
-				);
+			// Get download/remove arrays (compared by basename so prefix
+			// and gameCode/assetType ordering differences don't break the diff)
+			const localBasenames = new Set(localPaths.map(basenameOf));
+			const endpointBasenames = new Set(endpointPaths.map(basenameOf));
+			const toDownload: string[] = endpointPaths.filter(
+				(path) => !localBasenames.has(basenameOf(path)),
+			);
+			const toDelete: string[] = localPaths.filter(
+				(path) => !endpointBasenames.has(basenameOf(path)),
+			);
 
-				// Download new files
-				await Promise.all(
-					toDownload.map(async (path) => {
-						const url = `${AEDES_ASSETS_BASE}/${path}`;
-						await downloadFileNoProgress(url, toCachePath(path));
-					}),
-				);
+			// Download new files
+			await Promise.all(
+				toDownload.map(async (path) => {
+					const url = `${AEDES_ASSETS_BASE}/${path}`;
+					await downloadFileNoProgress(url, toCachePath(path));
+				}),
+			);
 
-				// Update cache tracker
-				if (JSON.stringify(fsCache) !== JSON.stringify(data)) {
+			// Update cache tracker
+			if (JSON.stringify(fsCache) !== JSON.stringify(data)) {
+				if (fetchId === fetchCountRef.current) {
 					setCache(data);
 					setResolvedCache(await resolveAssets(data));
 					await setOption<AedesAssetPaths>("cachedBackgrounds", data);
 				}
-
-				// Delete old local files
-				await Promise.all(
-					toDelete.map(async (path) => {
-						if (await exists(path)) {
-							await remove(path);
-						}
-					}),
-				);
-			} catch (err) {
-				setError(err instanceof Error ? err.message : String(err));
-				console.error(err);
-			} finally {
-				setIsLoading(false);
 			}
+
+			// Delete old local files
+			await Promise.all(
+				toDelete.map(async (path) => {
+					if (await exists(path)) {
+						await remove(path);
+					}
+				}),
+			);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+			console.error(err);
+		} finally {
+			setIsLoading(false);
+		}
+	};
+
+	useEffect(() => {
+		(async () => {
+			await fetchData();
 		})();
+		return () => {
+			abortRef.current?.abort();
+		};
 	}, [game]);
 
 	// Initial cache setting
@@ -205,6 +226,7 @@ export const AedesProvider = ({
 				resolvedAssets: resolvedCache,
 				isLoading: isLoading,
 				error: error,
+				refetch: fetchData,
 			}}
 		>
 			{children}
