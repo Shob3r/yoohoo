@@ -12,7 +12,7 @@ name = "elysiae_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+tauri-build = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef", features = [] }
 
 [dependencies]
 glib = "0.22.8"
@@ -28,7 +28,7 @@ tokio-util = "0.7.18"
 futures = "0.3.32"
 futures-util = "0.3.32"
 
-tauri = { version = "2.11.5", features = ["protocol-asset"] }
+tauri = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef", default-features = false, features = ["cef", "protocol-asset", "compression", "dynamic-acl"] }
 tauri-plugin-opener = "2.5.4"
 
 serde = { version = "1.0.228", features = ["derive"] }
@@ -127,3 +127,24 @@ strip = "symbols"
 [profile.dev]
 incremental = true
 panic = "abort"
+
+[patch.crates-io]
+tauri = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-runtime = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-runtime-cef = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-utils = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-build = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-macros = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-plugin = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-codegen = { git = "https://github.com/elysiae-project/tauri-cef", branch = "feat/cef" }
+tauri-plugin-deep-link = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-fs = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-http = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-log = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-notification = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-os = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-shell = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-store = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-opener = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
+tauri-plugin-window-state = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
