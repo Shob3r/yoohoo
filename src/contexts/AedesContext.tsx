@@ -159,7 +159,7 @@ export const AedesProvider = ({
 				(path) => !localBasenames.has(basenameOf(path)),
 			);
 			const toDelete: string[] = localPaths.filter(
-				(path) => !endpointBasenames.has(basenameOf(path)),
+				(path) => !endpointBasenames.has(basenameOf(path)) && !["bg.webp", "overlay.webp", "icon.png"].includes(basenameOf(path)),
 			);
 
 			// Download new files
