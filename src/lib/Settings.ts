@@ -1,17 +1,54 @@
 import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { type CachedBackgroundPaths, type Settings, Variants } from "../types";
+import { type Settings, Variants } from "../types";
 import { readTextFile, writeTextFile } from "./Fs";
 
 let store: Store | undefined;
 const SETTINGS_PATH = "settings.json";
 const CURRENT_DATA_VERSION = 2;
 
-const defaultCachedData: CachedBackgroundPaths = {
-	backgrounds: [{ image: "", video: "" }],
-	icon: "",
-	overlay: "",
+const defaultCachedData = {
+	[Variants.BH3]: {
+		backgrounds: [
+			{
+				image: "bh3/bg/bg.webp",
+				video: "",
+			},
+		],
+		icon: "bh3/icon/icon.png",
+		overlay: "bh3/overlay/overlay.png",
+	},
+	[Variants.HK4E]: {
+		backgrounds: [
+			{
+				image: "hk4e/bg/bg.webp",
+				video: "",
+			},
+		],
+		icon: "hk4e/icon/icon.png",
+		overlay: "hk4e/overlay/overlay.png",
+	},
+	[Variants.HKRPG]: {
+		backgrounds: [
+			{
+				image: "hkrpg/bg/bg.webp",
+				video: "",
+			},
+		],
+		icon: "hkrpg/icon/icon.png",
+		overlay: "hkrpg/overlay/overlay.png",
+	},
+	[Variants.NAP]: {
+		backgrounds: [
+			{
+				image: "nap/bg/bg.webp",
+				video: "",
+			},
+		],
+		icon: "nap/icon/icon.png",
+		overlay: "nap/overlay/overlay.png",
+	},
 };
 
 const loadStore = async (): Promise<Store> => {
@@ -44,12 +81,7 @@ const updateSettingsData = async () => {
 			proton: null,
 			jadeite: null,
 		},
-		cachedBackgrounds: settingsData.cachedBackgrounds ?? {
-			[Variants.BH3]: defaultCachedData,
-			[Variants.HK4E]: defaultCachedData,
-			[Variants.HKRPG]: defaultCachedData,
-			[Variants.NAP]: defaultCachedData,
-		},
+		cachedBackgrounds: settingsData.cachedBackgrounds ?? defaultCachedData,
 	};
 
 	await writeTextFile(SETTINGS_PATH, JSON.stringify(updatedSettingsData));
@@ -61,12 +93,7 @@ const migrateSettings = async (data: Settings) => {
 	for (let i = data.version + 1; i <= CURRENT_DATA_VERSION; i++) {
 		switch (data.version) {
 			case 2: {
-				data.cachedBackgrounds = {
-					[Variants.BH3]: defaultCachedData,
-					[Variants.HK4E]: defaultCachedData,
-					[Variants.HKRPG]: defaultCachedData,
-					[Variants.NAP]: defaultCachedData,
-				};
+				data.cachedBackgrounds = defaultCachedData;
 				break;
 			}
 		}
