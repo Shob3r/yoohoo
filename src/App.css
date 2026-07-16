@@ -134,7 +134,7 @@
 }
 
 * {
-	scrollbar-color: transparent;
+	scrollbar-width: none;
 	user-select: none;
 	-webkit-user-select: none;
 	-webkit-user-drag: none;
