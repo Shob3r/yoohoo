@@ -97,6 +97,12 @@ export const AedesProvider = ({
 		setError(null);
 
 		try {
+			const saved = await getOption<AedesAssetPaths>("cachedBackgrounds");
+			if (saved && fetchId === fetchCountRef.current) {
+				setCache(saved);
+				setResolvedCache(await resolveAssets(saved));
+			}
+
 			const data: AedesAssetPaths = await fetch(
 				`${AEDES_ASSETS_BASE}/assets/assetData.json`,
 			).then((r) => r.json());
@@ -141,9 +147,7 @@ export const AedesProvider = ({
 				(path) => !localBasenames.has(basenameOf(path)),
 			);
 			const toDelete: string[] = localPaths.filter(
-				(path) =>
-					!endpointBasenames.has(basenameOf(path)) &&
-					!["bg.webp", "overlay.webp", "icon.png"].includes(basenameOf(path)),
+				(path) => !endpointBasenames.has(basenameOf(path)),
 			);
 
 			// Download new files
@@ -155,12 +159,10 @@ export const AedesProvider = ({
 			);
 
 			// Update cache tracker
-			if (JSON.stringify(fsCache) !== JSON.stringify(data)) {
-				if (fetchId === fetchCountRef.current) {
-					setCache(data);
-					setResolvedCache(await resolveAssets(data));
-					await setOption<AedesAssetPaths>("cachedBackgrounds", data);
-				}
+			if (toDownload.length > 0 && fetchId === fetchCountRef.current) {
+				setCache(data);
+				setResolvedCache(await resolveAssets(data));
+				await setOption<AedesAssetPaths>("cachedBackgrounds", data);
 			}
 
 			// Delete old local files
@@ -183,29 +185,13 @@ export const AedesProvider = ({
 		fetchData();
 	}, []); // Runs each time the game state switches to fetch new background assets if they are updated while Elysiae is being used
 
-	// Initial cache setting
-	useEffect(() => {
-		(async () => {
-			const res = (await getOption<AedesAssetPaths>("cachedBackgrounds")) as
-				| AedesAssetPaths
-				| undefined;
-			if (res) {
-				setCache(res);
-				setResolvedCache(await resolveAssets(res));
-
-				console.log(res);
-				console.log(resolvedCache);
-			}
-		})();
-	}, []);
-
 	return (
 		<AedesContext.Provider
 			value={{
 				cachedPaths: fsCache,
 				resolvedAssets: resolvedCache,
 				isLoading: isLoading,
-				error: error
+				error: error,
 			}}
 		>
 			{children}

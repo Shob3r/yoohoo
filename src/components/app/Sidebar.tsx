@@ -1,6 +1,32 @@
 import { motion } from "motion/react";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { useAedes } from "../../hooks/useAedes";
 import { useGame } from "../../hooks/useGame";
+
+const SidebarIcon = ({ src }: { src: string }) => {
+	const [attempt, setAttempt] = useState(0);
+	const retries = useRef(0);
+
+	useEffect(() => {
+		retries.current = 0;
+		setAttempt(0);
+	}, [src]);
+
+	return (
+		<img
+			key={attempt}
+			class="absolute inset-0 rounded-lg transition"
+			src={src}
+			alt=""
+			onError={() => {
+				if (retries.current >= 5) return;
+				retries.current += 1;
+				setTimeout(() => setAttempt((a) => a + 1), 300);
+			}}
+		/>
+	);
+};
+
 
 export const Sidebar = () => {
 	const { game, setGame } = useGame();
@@ -22,11 +48,11 @@ export const Sidebar = () => {
 						}}
 						onClick={() => setGame(+key)}
 					>
-						<img
-							class={`absolute inset-0 rounded-lg transition`}
-							src={data.icon}
-							alt=""
-						/>
+						<section class="bg-black/80">
+							{data.icon && (
+								<SidebarIcon src={data.icon}/>
+							)}
+						</section>
 					</button>
 				))}
 		</motion.div>

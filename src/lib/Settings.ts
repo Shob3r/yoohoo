@@ -12,42 +12,42 @@ const defaultCachedData = {
 	[Variants.BH3]: {
 		backgrounds: [
 			{
-				image: "bh3/bg/bg.webp",
+				image: "",
 				video: "",
 			},
 		],
-		icon: "bh3/icon/icon.png",
-		overlay: "bh3/overlay/overlay.png",
+		icon: "",
+		overlay: "",
 	},
 	[Variants.HK4E]: {
 		backgrounds: [
 			{
-				image: "hk4e/bg/bg.webp",
+				image: "",
 				video: "",
 			},
 		],
-		icon: "hk4e/icon/icon.png",
-		overlay: "hk4e/overlay/overlay.png",
+		icon: "",
+		overlay: "",
 	},
 	[Variants.HKRPG]: {
 		backgrounds: [
 			{
-				image: "hkrpg/bg/bg.webp",
+				image: "",
 				video: "",
 			},
 		],
-		icon: "hkrpg/icon/icon.png",
-		overlay: "hkrpg/overlay/overlay.png",
+		icon: "",
+		overlay: "",
 	},
 	[Variants.NAP]: {
 		backgrounds: [
 			{
-				image: "nap/bg/bg.webp",
+				image: "",
 				video: "",
 			},
 		],
-		icon: "nap/icon/icon.png",
-		overlay: "nap/overlay/overlay.png",
+		icon: "",
+		overlay: "",
 	},
 };
 

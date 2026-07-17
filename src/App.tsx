@@ -64,10 +64,10 @@ const App = () => {
 			<PhotosensitivityModal />
 			<SettingsModal ref={settingsModal} />
 
-			<div class={bgTheme({ game: game })}>
-				<div class="relative h-full w-full">
-					{isLoading || error ? null : resolvedAssets ? <Background /> : null}
-				</div>
+			<section class={bgTheme({ game: game })}>
+				<section class="relative h-full w-full">
+					{error ? null : resolvedAssets ? <Background /> : null}
+				</section>
 				<section class="absolute inset-0 z-10 flex w-full flex-row items-end justify-end gap-x-3 px-15 py-10">
 					{/* Page content */}
 					<DownloadProgress />
@@ -84,7 +84,7 @@ const App = () => {
 					</Button>
 					<InstallerButton />
 				</section>
-			</div>
+			</section>
 		</main>
 	);
 };
