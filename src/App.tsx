@@ -47,13 +47,15 @@ const bgTheme = cva("h-full w-full overflow-hidden", {
 
 const App = () => {
 	const { game } = useGame();
-	const { resolvedAssets, error } = useAedes();
+	const { resolvedAssets, isLoading, error } = useAedes();
 	const settingsModal = useRef<ModalHandle>(null);
 
 	useEffect(() => {
 		restoreStateCurrent(StateFlags.ALL);
 		startListening();
 	}, []);
+
+	if (isLoading) return null;
 
 	return (
 		<main
