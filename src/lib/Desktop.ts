@@ -40,6 +40,8 @@ export const broadcastNotification = async (message: string) => {
  */
 export const createDesktopShortcut = async (game: Variants) => {
 	const gameName = variantToGameName[game];
+	// Sanitize filename — colons make the path parse as a URL (e.g. "Honkai: Star Rail")
+	const safeFileName = gameName.replace(/:/g, "");
 
 	// TODO: Start caching game icons and other image assets to allow icons to be set for the dekstop shortcuts here
 	const desktopEntry = `
@@ -52,11 +54,11 @@ export const createDesktopShortcut = async (game: Variants) => {
 		Categories=Game
 	`;
 
-	await writeTextFile(`${gameName}.desktop`, desktopEntry, {
+	await writeTextFile(`${safeFileName}.desktop`, desktopEntry, {
 		baseDir: BaseDirectory.Desktop,
 	});
 
-	await writeTextFile(`applications/${gameName}.desktop`, desktopEntry, {
+	await writeTextFile(`applications/${safeFileName}.desktop`, desktopEntry, {
 		baseDir: BaseDirectory.Data,
 	});
 };
