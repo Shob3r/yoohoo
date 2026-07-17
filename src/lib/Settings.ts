@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { type Settings, Variants } from "../types";
+import type { Settings } from "../types";
 import { readTextFile, writeTextFile } from "./Fs";
 
 let store: Store | undefined;
@@ -9,7 +9,7 @@ const SETTINGS_PATH = "settings.json";
 const CURRENT_DATA_VERSION = 2;
 
 const defaultCachedData = {
-	[Variants.BH3]: {
+	bh3: {
 		backgrounds: [
 			{
 				image: "",
@@ -19,7 +19,7 @@ const defaultCachedData = {
 		icon: "",
 		overlay: "",
 	},
-	[Variants.HK4E]: {
+	hk4e: {
 		backgrounds: [
 			{
 				image: "",
@@ -29,7 +29,7 @@ const defaultCachedData = {
 		icon: "",
 		overlay: "",
 	},
-	[Variants.HKRPG]: {
+	hkrpg: {
 		backgrounds: [
 			{
 				image: "",
@@ -39,7 +39,7 @@ const defaultCachedData = {
 		icon: "",
 		overlay: "",
 	},
-	[Variants.NAP]: {
+	nap: {
 		backgrounds: [
 			{
 				image: "",
