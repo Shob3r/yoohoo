@@ -1,7 +1,20 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 fn main() {
+    // CEF re-execs this binary as helper processes (renderer/GPU/plugin)
+    // identified by a `--type=` arg. Only tune jemalloc in the browser
+    // process — helpers are short-lived and don't need decay tuning.
+    if !std::env::args().any(|arg| arg.starts_with("--type=")) {
+        tune_jemalloc();
+    }
     elysiae_lib::run()
 }
 
