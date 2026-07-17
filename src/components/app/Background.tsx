@@ -2,13 +2,19 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useAedes } from "../../hooks/useAedes";
 import { useGame } from "../../hooks/useGame";
+// biome-ignore lint/correctness/noUnusedImports: Temporarily unused
 import { Variants } from "../../types";
 
 const BackgroundVideo = ({ src }: { src: string | null }) => {
 	const ref = useRef<HTMLVideoElement>(null);
 	const [visible, setVisible] = useState(false);
+	const [attempt, setAttempt] = useState(0);
+	const retries = useRef(0);
 
 	useEffect(() => {
+		retries.current = 0;
+		setAttempt(0);
+
 		setVisible(false);
 	}, [src]);
 
@@ -39,7 +45,20 @@ const BackgroundVideo = ({ src }: { src: string | null }) => {
 			animate={{ opacity: visible ? 1 : 0 }}
 			transition={{ duration: 0.4 }}
 		>
-			<video ref={ref} class="background" autoPlay muted playsInline loop />
+			<video
+				ref={ref}
+				key={attempt}
+				class="background"
+				autoPlay
+				muted
+				playsInline
+				loop
+				onError={() => {
+					if (retries.current >= 5) return;
+					retries.current += 1;
+					setTimeout(() => setAttempt((a) => a + 1), 300);
+				}}
+			/>
 		</motion.div>
 	);
 };
@@ -52,6 +71,13 @@ const BackgroundMedia = ({
 	isVideo: boolean;
 }) => {
 	if (!src) return null;
+	const [attempt, setAttempt] = useState(0);
+	const retries = useRef(0);
+
+	useEffect(() => {
+		retries.current = 0;
+		setAttempt(0);
+	}, [src]);
 
 	return (
 		<AnimatePresence mode="wait" initial={false}>
@@ -59,13 +85,19 @@ const BackgroundMedia = ({
 				<BackgroundVideo key={src} src={src} />
 			) : (
 				<motion.img
-					key={src}
+					key={attempt}
+					alt=""
 					src={src}
 					class="background"
 					initial={{ opacity: 0 }}
 					animate={{ opacity: 1 }}
 					exit={{ opacity: 0 }}
 					transition={{ duration: 0.4 }}
+					onError={() => {
+						if (retries.current >= 5) return;
+						retries.current += 1;
+						setTimeout(() => setAttempt((a) => a + 1), 300);
+					}}
 				/>
 			)}
 		</AnimatePresence>
@@ -77,7 +109,7 @@ export const Background = () => {
 	const { resolvedAssets } = useAedes();
 
 	if (!resolvedAssets) return null;
-	const backgroundVideoOverlay = resolvedAssets[game].overlay;
+	// const backgroundVideoOverlay = resolvedAssets[game].overlay;
 
 	return (
 		<div class="absolute inset-0 overflow-hidden">
@@ -85,9 +117,10 @@ export const Background = () => {
 				src={resolvedAssets[game].backgrounds[0].image}
 				isVideo={false}
 			/>
-			{game !== Variants.HK4E ? (
+			{/* Disabling for now because I've discovered that some other games can have some pre-baked overlays in some backgrounds sometimes. Will figure out later */}
+			{/*game !== Variants.HK4E ? (
 				<BackgroundMedia src={backgroundVideoOverlay} isVideo={false} />
-			) : null}
+			) : null*/}
 		</div>
 	);
 };
