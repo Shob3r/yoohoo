@@ -2,7 +2,6 @@ import { join } from "@tauri-apps/api/path";
 import { fetch } from "@tauri-apps/plugin-http";
 import { type ComponentChildren, createContext } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useGame } from "../hooks/useGame";
 import { convertFileSrc, exists, mkdir, readDir, remove } from "../lib/Fs";
 import { getOption, setOption } from "../lib/Settings";
 import { gameCodeToVariant } from "../lib/VariantConverter";
@@ -14,7 +13,6 @@ interface AedesContextType {
 	resolvedAssets: AedesAssetPaths | null;
 	isLoading: boolean;
 	error: string | null;
-	refetch: () => Promise<void>;
 }
 
 export const AedesContext = createContext<AedesContextType>({
@@ -22,7 +20,6 @@ export const AedesContext = createContext<AedesContextType>({
 	resolvedAssets: null,
 	isLoading: true,
 	error: null,
-	refetch: async () => {},
 });
 
 const AEDES_ASSETS_BASE = "https://aedes.elysiae.app/";
@@ -63,8 +60,7 @@ const resolveAssets = async (
 };
 
 const basenameOf = (path: string): string => {
-	const parts = path.split("/");
-	return parts[parts.length - 1] ?? path;
+	return path.split("/").pop() ?? path;
 };
 
 export const AedesProvider = ({
@@ -78,10 +74,7 @@ export const AedesProvider = ({
 	);
 	const [isLoading, setIsLoading] = useState<boolean>(true);
 	const [error, setError] = useState<string | null>(null);
-	const abortRef = useRef<AbortController | null>(null);
 	const fetchCountRef = useRef(0);
-
-	const { game } = useGame();
 
 	/*
 	 * Implementation method:
@@ -98,20 +91,15 @@ export const AedesProvider = ({
 	 */
 
 	const fetchData = async () => {
-		if (abortRef.current) {
-			abortRef.current.abort();
-		}
-		const controller = new AbortController();
-		abortRef.current = controller;
 		const fetchId = ++fetchCountRef.current;
 
 		setIsLoading(true);
 		setError(null);
 
 		try {
-			const data: AedesAssetPaths = await (
-				await fetch(`${AEDES_ASSETS_BASE}/assets/assetData.json`)
-			).json();
+			const data: AedesAssetPaths = await fetch(
+				`${AEDES_ASSETS_BASE}/assets/assetData.json`,
+			).then((r) => r.json());
 
 			const endpointPaths: string[] = [];
 			const localPaths: string[] = [];
@@ -121,33 +109,27 @@ export const AedesProvider = ({
 				endpointPaths.push(paths.icon);
 				endpointPaths.push(paths.overlay);
 				paths.backgrounds.forEach((bg) => {
-					const toPush = [bg.image];
-					if (bg.video) {
-						toPush.push(bg.video);
-					}
-					endpointPaths.push(...toPush);
+					endpointPaths.push(bg.image);
+					if (bg.video) endpointPaths.push(bg.video);
 				});
 			}
 
 			// Get local paths:
 			// Iterate through each directory and subdirectory in the appdata cache folder to find file paths that exist on disk
 			await Promise.all(
-				["bh3", "hk4e", "hkrpg", "nap"].map(
-					async (gameCode) =>
-						await Promise.all(
-							["bg", "overlay", "icon"].map(async (assetType) => {
-								const dir = await join("cache", gameCode, assetType);
-								if (await exists(dir)) {
-									const files = await readDir(dir);
-									for (const file of files) {
-										const path = await join(dir, file.name);
-										localPaths.push(path);
-									}
-								} else {
-									await mkdir(dir);
-								}
-							}),
-						),
+				["bh3", "hk4e", "hkrpg", "nap"].flatMap((gameCode) =>
+					["bg", "overlay", "icon"].map(async (assetType) => {
+						const dir = await join("cache", gameCode, assetType);
+						if (!(await exists(dir))) {
+							await mkdir(dir);
+							return;
+						}
+						const files = await readDir(dir);
+						const paths = await Promise.all(
+							files.map((file) => join(dir, file.name)),
+						);
+						localPaths.push(...paths);
+					}),
 				),
 			);
 
@@ -159,7 +141,9 @@ export const AedesProvider = ({
 				(path) => !localBasenames.has(basenameOf(path)),
 			);
 			const toDelete: string[] = localPaths.filter(
-				(path) => !endpointBasenames.has(basenameOf(path)) && !["bg.webp", "overlay.webp", "icon.png"].includes(basenameOf(path)),
+				(path) =>
+					!endpointBasenames.has(basenameOf(path)) &&
+					!["bg.webp", "overlay.webp", "icon.png"].includes(basenameOf(path)),
 			);
 
 			// Download new files
@@ -196,13 +180,8 @@ export const AedesProvider = ({
 	};
 
 	useEffect(() => {
-		(async () => {
-			await fetchData();
-		})();
-		return () => {
-			abortRef.current?.abort();
-		};
-	}, [game]); // Runs each time the game state switches to fetch new background assets if they are updated while Elysiae is being used
+		fetchData();
+	}, []); // Runs each time the game state switches to fetch new background assets if they are updated while Elysiae is being used
 
 	// Initial cache setting
 	useEffect(() => {
@@ -226,8 +205,7 @@ export const AedesProvider = ({
 				cachedPaths: fsCache,
 				resolvedAssets: resolvedCache,
 				isLoading: isLoading,
-				error: error,
-				refetch: fetchData,
+				error: error
 			}}
 		>
 			{children}

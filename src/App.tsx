@@ -47,7 +47,7 @@ const bgTheme = cva("h-full w-full overflow-hidden", {
 
 const App = () => {
 	const { game } = useGame();
-	const { resolvedAssets, isLoading, error, refetch } = useAedes();
+	const { resolvedAssets, isLoading, error } = useAedes();
 	const settingsModal = useRef<ModalHandle>(null);
 
 	useEffect(() => {
@@ -66,23 +66,7 @@ const App = () => {
 
 			<div class={bgTheme({ game: game })}>
 				<div class="relative h-full w-full">
-					{error ? (
-						<div class="absolute inset-0 flex items-center justify-center">
-							<div class="flex flex-col items-center gap-3 text-center">
-								<p class="text-sm opacity-70">{error}</p>
-								<Button
-									variant="secondary"
-									onClick={refetch}
-									width={6}
-									height={2.5}
-								>
-									Retry
-								</Button>
-							</div>
-						</div>
-					) : isLoading ? null : resolvedAssets ? (
-						<Background />
-					) : null}
+					{isLoading || error ? null : resolvedAssets ? <Background /> : null}
 				</div>
 				<section class="absolute inset-0 z-10 flex w-full flex-row items-end justify-end gap-x-3 px-15 py-10">
 					{/* Page content */}
