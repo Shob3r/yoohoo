@@ -6,11 +6,15 @@ import { convertFileSrc, exists, mkdir, readDir, remove } from "../lib/Fs";
 import { getOption, setOption } from "../lib/Settings";
 import { gameCodeToVariant } from "../lib/VariantConverter";
 import { downloadFileNoProgress } from "../lib/Web";
-import type { AedesAssetPaths, GameCodes, Variants } from "../types";
+import type {
+	AedesAssetPaths,
+	GameCodes,
+	ResolvedAssetPaths,
+} from "../types";
 
 interface AedesContextType {
 	cachedPaths: AedesAssetPaths | null;
-	resolvedAssets: AedesAssetPaths | null;
+	resolvedAssets: ResolvedAssetPaths | null;
 	isLoading: boolean;
 	error: string | null;
 }
@@ -32,11 +36,11 @@ const toCachePath = (path: string): string => {
 
 const resolveAssets = async (
 	data: AedesAssetPaths,
-): Promise<AedesAssetPaths> => {
-	const resolved = {} as AedesAssetPaths;
+): Promise<ResolvedAssetPaths> => {
+	const resolved = {} as ResolvedAssetPaths;
 	const entries = Object.entries(data) as [
 		GameCodes,
-		AedesAssetPaths[Variants],
+		AedesAssetPaths[GameCodes],
 	][];
 	await Promise.all(
 		entries.map(async ([gameCode, paths]) => {
@@ -69,7 +73,7 @@ export const AedesProvider = ({
 	children: ComponentChildren;
 }) => {
 	const [fsCache, setCache] = useState<AedesAssetPaths | null>(null);
-	const [resolvedCache, setResolvedCache] = useState<AedesAssetPaths | null>(
+	const [resolvedCache, setResolvedCache] = useState<ResolvedAssetPaths | null>(
 		null,
 	);
 	const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -100,7 +104,17 @@ export const AedesProvider = ({
 			const saved = await getOption<AedesAssetPaths>("cachedBackgrounds");
 			if (saved && fetchId === fetchCountRef.current) {
 				setCache(saved);
-				setResolvedCache(await resolveAssets(saved));
+				const hasAssetPaths = Object.values(saved).some(
+					(paths) =>
+						paths.icon !== "" ||
+						paths.overlay !== "" ||
+						paths.backgrounds.some(
+							(bg) => bg.image !== "" || (bg.video ?? "") !== "",
+						),
+				);
+				if (hasAssetPaths) {
+					setResolvedCache(await resolveAssets(saved));
+				}
 			}
 
 			const data: AedesAssetPaths = await fetch(
