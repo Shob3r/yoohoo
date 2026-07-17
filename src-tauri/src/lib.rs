@@ -23,6 +23,25 @@ pub fn run() {
     std::mem::forget(runtime);
 
     tauri::Builder::<tauri::Cef>::default()
+        .command_line_args([
+            ("--disable-extensions", None),
+            ("--disable-plugins", None),
+            ("--disable-printing", None),
+            ("--disable-component-update", None),
+            ("--disable-background-networking", None),
+            ("--disable-domain-reliability", None),
+            ("--disable-default-apps", None),
+            ("--disable-device-discovery-notifications", None),
+            ("--disable-field-trial-config", None),
+            ("--renderer-process-limit", Some("1")),
+            (
+                "--disable-features",
+                Some(
+                    "Translate,MediaRouter,OptimizationHints,PrivacySandboxSettings,BackForwardCache,MediaSessionService",
+                ),
+            ),
+            ("--js-flags", Some("--max-old-space-size=256")),
+        ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 window.unminimize().ok();
