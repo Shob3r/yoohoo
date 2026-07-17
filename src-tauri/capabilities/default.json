@@ -51,6 +51,9 @@
         },
         {
           "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DATA/applications/**"
         }
       ]
     },
