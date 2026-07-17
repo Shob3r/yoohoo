@@ -46,8 +46,7 @@
       "icons/icon.svg"
     ],
     "resources": {
-      "icons/icon.png": "appIcon.png",
-      "cache": "cache"
+      "icons/icon.png": "appIcon.png"
     },
     "active": true,
     "targets": "app"
