@@ -47,7 +47,7 @@ const bgTheme = cva("h-full w-full overflow-hidden", {
 
 const App = () => {
 	const { game } = useGame();
-	const { resolvedAssets, isLoading, error } = useAedes();
+	const { resolvedAssets, error } = useAedes();
 	const settingsModal = useRef<ModalHandle>(null);
 
 	useEffect(() => {
