@@ -1,9 +1,13 @@
 {
   "compilerOptions": {
     "useDefineForClassFields": true,
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "target": "es2025",
     "skipLibCheck": true,
-
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
@@ -12,16 +16,29 @@
     "jsx": "react-jsx",
     "jsxImportSource": "preact",
     "paths": {
-      "react": ["./node_modules/preact/compat/"],
-      "react/jsx-runtime": ["./node_modules/preact/jsx-runtime"],
-      "react-dom": ["./node_modules/preact/compat/"],
-      "react-dom/*": ["./node_modules/preact/compat/*"]
+      "react": [
+        "./node_modules/preact/compat/"
+      ],
+      "react/jsx-runtime": [
+        "./node_modules/preact/jsx-runtime"
+      ],
+      "react-dom": [
+        "./node_modules/preact/compat/"
+      ],
+      "react-dom/*": [
+        "./node_modules/preact/compat/*"
+      ]
     },
-
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": false
   },
-  "include": ["src"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    }
+  ]
 }
