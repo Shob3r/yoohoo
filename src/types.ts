@@ -158,6 +158,12 @@ export type Option = DropdownOption | BooleanOption;
 // This looks really silly. The cached Background data type is how the settings file will store cached background data from now on. It is identical to what each "game category" of the endpoint looks like
 
 export type AedesAssetPaths = {
+	[key in GameCodes]: CachedBackgroundPaths;
+};
+
+// The resolved cache is keyed by `Variants` because `resolveAssets` remaps each
+// GameCodes-string key to its numeric enum value via `gameCodeToVariant`.
+export type ResolvedAssetPaths = {
 	[key in Variants]: CachedBackgroundPaths;
 };
 
