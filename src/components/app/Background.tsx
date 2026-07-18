@@ -31,7 +31,7 @@ const BackgroundVideo = ({ src }: { src: string }) => {
 		<motion.div
 			class="absolute inset-0"
 			animate={{ opacity: ready ? 1 : 0 }}
-			transition={{ duration: 0.8, ease: "easeOut" }}
+			transition={{ duration: 0.4, ease: "easeOut" }}
 		>
 			<video ref={ref} src={src} class="background" muted playsInline loop />
 		</motion.div>
