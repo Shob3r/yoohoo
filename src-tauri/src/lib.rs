@@ -10,7 +10,7 @@ use crate::commands::sophon_downloader::ActiveDownload;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[tauri::cef_entry_point]
 pub fn run() {
-    apply_nvidia_wayland_workaround();
+    apply_nvidia_workaround();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -42,6 +42,7 @@ pub fn run() {
             ),
             ("--js-flags", Some("--max-old-space-size=256")),
         ])
+        .command_line_args(nvidia_gpu_backend_args())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 window.unminimize().ok();
@@ -116,13 +117,27 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-fn apply_nvidia_wayland_workaround() {
-    if is_nvidia() && is_wayland() {
-        println!("Elysiae: Applying NVIDIA Wayland Workaround");
+fn apply_nvidia_workaround() {
+    if is_nvidia() {
+        println!("Elysiae: Applying NVIDIA GPU Workaround");
         unsafe {
             std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
         };
     }
+}
+
+#[cfg(target_os = "linux")]
+fn nvidia_gpu_backend_args() -> Vec<(&'static str, Option<&'static str>)> {
+    if is_nvidia() {
+        vec![("--enable-features", Some("Vulkan"))]
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn nvidia_gpu_backend_args() -> Vec<(&'static str, Option<&'static str>)> {
+    Vec::new()
 }
 
 #[cfg(target_os = "linux")]
@@ -135,13 +150,6 @@ fn is_nvidia() -> bool {
     // If a NVIDIA graphics card is present, one of these two paths should exist
     std::path::Path::new("/proc/driver/nvidia/version").exists()
         || std::path::Path::new("/dev/nvidia0").exists()
-}
-
-fn is_wayland() -> bool {
-    std::env::var("WAYLAND_DISPLAY").is_ok()
-        || std::env::var("XDG_SESSION_TYPE")
-            .map(|v| v.to_lowercase() == "wayland")
-            .unwrap_or(false)
 }
 
 #[command]
