@@ -24,11 +24,41 @@ export const AedesContext = createContext<AedesContextType>({
 
 const AEDES_ASSETS_BASE = "https://aedes.elysiae.app/";
 const ASSET_DATA_URL = `${AEDES_ASSETS_BASE}/assets/assetData.json`;
+const GAME_CODES = ["bh3", "hk4e", "hkrpg", "nap"] as const;
+
+const normalize = (raw: unknown): AedesAssetPaths | null => {
+	if (!raw || typeof raw !== "object") return null;
+	const data = {} as AedesAssetPaths;
+	for (const code of GAME_CODES) {
+		const src = (raw as Record<string, unknown>)[code] as
+			| Record<string, unknown>
+			| undefined;
+		const bgs = Array.isArray(src?.backgrounds) ? src.backgrounds : [];
+		data[code] = {
+			icon: typeof src?.icon === "string" ? src.icon : "",
+			overlay: typeof src?.overlay === "string" ? src.overlay : "",
+			backgrounds: bgs.map((bg: unknown) => {
+				const b = bg as Record<string, unknown> | undefined;
+				return {
+					image: typeof b?.image === "string" ? b.image : "",
+					video: typeof b?.video === "string" ? b.video : null,
+				};
+			}),
+		};
+	}
+	return data;
+};
 
 const toCachePath = (path: string): string => {
+	if (!path) return "";
 	const parts = path.split("/");
 	const [, assetType, gameCode, ...rest] = parts;
 	return ["cache", gameCode, assetType, ...rest].join("/");
+};
+
+const resolvePath = async (path: string | null): Promise<string> => {
+	const cached = toCachePath(path ?? "");
+	return cached ? convertFileSrc(cached) : "";
 };
 
 const resolveAssets = async (
@@ -43,14 +73,12 @@ const resolveAssets = async (
 		entries.map(async ([gameCode, paths]) => {
 			const variant = gameCodeToVariant[gameCode];
 			const [icon, overlay, backgrounds] = await Promise.all([
-				convertFileSrc(toCachePath(paths.icon)),
-				convertFileSrc(toCachePath(paths.overlay)),
+				resolvePath(paths.icon),
+				resolvePath(paths.overlay),
 				Promise.all(
 					paths.backgrounds.map(async (bg) => ({
-						image: await convertFileSrc(toCachePath(bg.image)),
-						video: bg.video
-							? await convertFileSrc(toCachePath(bg.video))
-							: null,
+						image: await resolvePath(bg.image),
+						video: await resolvePath(bg.video),
 					})),
 				),
 			]);
@@ -62,12 +90,10 @@ const resolveAssets = async (
 
 const hasAnyAssets = (data: AedesAssetPaths): boolean =>
 	Object.values(data).some(
-		(paths) =>
-			paths.icon !== "" ||
-			paths.overlay !== "" ||
-			paths.backgrounds.some(
-				(bg) => bg.image !== "" || (bg.video ?? "") !== "",
-			),
+		(p) =>
+			p.icon !== "" ||
+			p.overlay !== "" ||
+			p.backgrounds.some((bg) => bg.image !== "" || bg.video !== null),
 	);
 
 const collectEndpointPaths = (data: AedesAssetPaths): string[] => {
@@ -86,8 +112,8 @@ const collectEndpointPaths = (data: AedesAssetPaths): string[] => {
 const collectLocalPaths = async (): Promise<string[]> => {
 	const paths: string[] = [];
 	await Promise.all(
-		["bh3", "hk4e", "hkrpg", "nap"].flatMap((gameCode) =>
-			["bg", "overlay", "icon"].map(async (assetType) => {
+		GAME_CODES.flatMap((gameCode) =>
+			(["bg", "overlay", "icon"] as const).map(async (assetType) => {
 				const dir = await join("cache", gameCode, assetType);
 				if (!(await exists(dir))) {
 					await mkdir(dir);
@@ -122,8 +148,10 @@ export const AedesProvider = ({
 		const init = async () => {
 			let hasData = false;
 
+			let saved: AedesAssetPaths | null = null;
 			try {
-				const saved = await getOption<AedesAssetPaths>("cachedBackgrounds");
+				const raw = await getOption("cachedBackgrounds");
+				saved = normalize(raw);
 				if (!abortRef.current && saved && hasAnyAssets(saved)) {
 					setCachedPaths(saved);
 					setResolvedAssets(await resolveAssets(saved));
@@ -137,10 +165,9 @@ export const AedesProvider = ({
 			setIsLoading(false);
 
 			try {
-				const data: AedesAssetPaths = await fetch(ASSET_DATA_URL).then((r) =>
-					r.json(),
-				);
-				if (abortRef.current) return;
+				const raw = await fetch(ASSET_DATA_URL).then((r) => r.json());
+				const data = normalize(raw);
+				if (!data || !hasAnyAssets(data) || abortRef.current) return;
 
 				const endpointPaths = collectEndpointPaths(data);
 				const expectedLocal = new Set(endpointPaths.map(toCachePath));
@@ -175,7 +202,7 @@ export const AedesProvider = ({
 					);
 				}
 
-				const changed = toDownload.length > 0 || toDelete.length > 0;
+				const changed = toDownload.length > 0 || toDelete.length > 0 || JSON.stringify(data) !== JSON.stringify(saved);
 				if (changed && !abortRef.current) {
 					setCachedPaths(data);
 					setResolvedAssets(await resolveAssets(data));
