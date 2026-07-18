@@ -1,11 +1,9 @@
 {
 	"$schema": "https://json.schemastore.org/tsconfig",
-	"stableTypeOrdering": true,
 	"compilerOptions": {
-		"target": "esnext",
 		"module": "nodenext",
-		"strict": true,
 		"moduleResolution": "nodenext",
+		"target": "es2025",
 		"types": [
 			"node"
 		]

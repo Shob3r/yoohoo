@@ -17,19 +17,7 @@
       "identifier": "http:default",
       "allow": [
         {
-          "url": "https://*.hoyoverse.com"
-        },
-        {
-          "url": "https://autopatch*.**"
-        },
-        {
-          "url": "https://api.github.com"
-        },
-        {
-          "url": "https://raw.githubusercontent.com"
-        },
-        {
-          "url": "https://assets.elysiae.app/**"
+          "url": "https://aedes.elysiae.app/**"
         }
       ]
     },

@@ -1,5 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
-import { join } from "@tauri-apps/api/path";
+import {
+	invoke,
+	convertFileSrc as tauriConvertFileSrc,
+} from "@tauri-apps/api/core";
+import { appDataDir, join } from "@tauri-apps/api/path";
+
 import {
 	BaseDirectory as BaseDir,
 	type DirEntry,
@@ -14,15 +18,19 @@ import {
 	writeTextFile as tauriWriteTextFile,
 } from "@tauri-apps/plugin-fs";
 import { error, info } from "@tauri-apps/plugin-log";
-import type { Variants } from "../types";
-import { variantToGameCode } from "./VariantConverter";
 
+/**
+ * Tauri's exists() function, with the base directory set to the app data directory
+ */
 export const exists = async (path: string): Promise<boolean> => {
 	return new Promise((resolve, reject) => {
 		tauriExists(path, { baseDir: BaseDir.AppData }).then(resolve).catch(reject);
 	});
 };
 
+/**
+ * Tauri's readFile() function, with the base directory set to the app data directory
+ */
 export const readFile = async (
 	path: string,
 ): Promise<Uint8Array<ArrayBuffer>> => {
@@ -33,6 +41,9 @@ export const readFile = async (
 	});
 };
 
+/**
+ * Tauri's readTextFile() function, with the base directory set to the app data directory
+ */
 export const readTextFile = async (path: string): Promise<string> => {
 	return new Promise((resolve, reject) => {
 		tauriReadTextFile(path, { baseDir: BaseDir.AppData })
@@ -41,6 +52,9 @@ export const readTextFile = async (path: string): Promise<string> => {
 	});
 };
 
+/**
+ * Tauri's writeFile() function, with the base directory set to the app data directory
+ */
 export const writeFile = async (
 	path: string,
 	contents:
@@ -56,6 +70,9 @@ export const writeFile = async (
 	});
 };
 
+/**
+ * Tauri's writeTextFile() function, with the base directory set to the app data directory
+ */
 export const writeTextFile = async (
 	path: string,
 	contents: string,
@@ -69,12 +86,18 @@ export const writeTextFile = async (
 	});
 };
 
+/**
+ * Tauri's remove() function configured for removing a single file, with the base directory set to the app data directory
+ */
 export const remove = async (path: string): Promise<void> => {
 	return new Promise((resolve, reject) => {
 		tauriRemove(path, { baseDir: BaseDir.AppData }).then(resolve).catch(reject);
 	});
 };
 
+/**
+ * Tauri's remove() function configured for removing a directory, with the base directory set to the app data directory
+ */
 export const removeDir = async (path: string): Promise<void> => {
 	return new Promise((resolve, reject) => {
 		tauriRemove(path, { recursive: true, baseDir: BaseDir.AppData })
@@ -83,6 +106,9 @@ export const removeDir = async (path: string): Promise<void> => {
 	});
 };
 
+/**
+ * Tauri's mkdir() function, with the base directory set to the app data directory
+ */
 export const mkdir = async (path: string): Promise<void> => {
 	return new Promise((resolve, reject) => {
 		tauriMkdir(path, { baseDir: BaseDir.AppData, recursive: true })
@@ -91,6 +117,9 @@ export const mkdir = async (path: string): Promise<void> => {
 	});
 };
 
+/**
+ * Tauri's rename() function, with the base directory set to the app data directory
+ */
 export const rename = async (
 	originalPath: string,
 	destPath: string,
@@ -105,6 +134,9 @@ export const rename = async (
 	});
 };
 
+/**
+ * Tauri's readDir() function, with the base directory set to the app data directory
+ */
 export const readDir = async (path: string): Promise<DirEntry[]> => {
 	return new Promise((resolve, reject) => {
 		tauriReadDir(path, { baseDir: BaseDir.AppData })
@@ -115,6 +147,11 @@ export const readDir = async (path: string): Promise<DirEntry[]> => {
 	});
 };
 
+/**
+ * Gets all file names in a path, relative to the app data directory
+ * @param path A valid path to a directory
+ * @returns List all files found in the `path` parameter
+ */
 export const getDirFileNames = async (path: string): Promise<string[]> => {
 	return new Promise((resolve, reject) => {
 		readDir(path)
@@ -125,6 +162,14 @@ export const getDirFileNames = async (path: string): Promise<string[]> => {
 			})
 			.catch(reject);
 	});
+};
+
+/**
+ * Tauri's convertFileSrc() function, with the base directory set to the app data directory
+ */
+export const convertFileSrc = async (relativePath: string) => {
+	const absolutePath = await join(await appDataDir(), relativePath);
+	return tauriConvertFileSrc(absolutePath);
 };
 
 /**
@@ -145,20 +190,4 @@ export const extractFile = async (
 	} else {
 		error(`extractFile: "${archivePath}" does not exist`);
 	}
-};
-
-export const getDirSize = async (game: Variants): Promise<number> => {
-	return new Promise((resolve, reject) => {
-		join("games", variantToGameCode[game])
-			.then((gameDir) => {
-				invoke("get_dir_size", {
-					path: gameDir,
-				})
-					.then((res) => {
-						resolve((res as number) / 1024 ** 3);
-					})
-					.catch(reject);
-			})
-			.catch(reject);
-	});
 };

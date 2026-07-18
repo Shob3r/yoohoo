@@ -1,89 +1,63 @@
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useApi } from "../../hooks/useApi";
-import { useBackground } from "../../hooks/useBackground";
+import { useAedes } from "../../hooks/useAedes";
 import { useGame } from "../../hooks/useGame";
 
-const BackgroundVideo = ({ src }: { src: string | null }) => {
+const BackgroundVideo = ({ src }: { src: string }) => {
 	const ref = useRef<HTMLVideoElement>(null);
-	const [visible, setVisible] = useState(false);
+	const [ready, setReady] = useState(false);
 
 	useEffect(() => {
-		setVisible(false);
+		setReady(false);
 	}, [src]);
 
 	useEffect(() => {
 		const el = ref.current;
-		if (!el || !src) return;
+		if (!el) return;
 
 		const onCanPlay = () => {
 			el.play().catch(() => {});
-			setVisible(true);
+			setReady(true);
 		};
 
 		el.addEventListener("canplay", onCanPlay);
-		el.src = src;
-		el.load();
-
 		return () => {
 			el.removeEventListener("canplay", onCanPlay);
 			el.pause();
-			el.removeAttribute("src");
-			el.load();
 		};
 	}, [src]);
 
 	return (
 		<motion.div
 			class="absolute inset-0"
-			animate={{ opacity: visible ? 1 : 0 }}
-			transition={{ duration: 0.4 }}
+			animate={{ opacity: ready ? 1 : 0 }}
+			transition={{ duration: 0.4, ease: "easeOut" }}
 		>
-			<video ref={ref} class="background" autoPlay muted playsInline loop />
+			<video ref={ref} src={src} class="background" muted playsInline loop />
 		</motion.div>
-	);
-};
-
-const BackgroundMedia = ({
-	src,
-	isVideo,
-}: {
-	src: string | null;
-	isVideo: boolean;
-}) => {
-	if (!src) return null;
-
-	return (
-		<AnimatePresence mode="wait" initial={false}>
-			{isVideo ? (
-				<BackgroundVideo key={src} src={src} />
-			) : (
-				<motion.img
-					key={src}
-					src={src}
-					class="background"
-					initial={{ opacity: 0 }}
-					animate={{ opacity: 1 }}
-					exit={{ opacity: 0 }}
-					transition={{ duration: 0.4 }}
-				/>
-			)}
-		</AnimatePresence>
 	);
 };
 
 export const Background = () => {
 	const { game } = useGame();
-	const { graphics } = useApi();
-	const { backgroundSrc, backgroundIsVideo } = useBackground();
+	const { resolvedAssets } = useAedes();
 
-	if (!backgroundSrc || !graphics) return null;
-	const { backgroundVideoOverlay } = graphics[game];
+	if (!resolvedAssets) return null;
+
+	const backgrounds = resolvedAssets[game].backgrounds;
+	const bg = backgrounds.find((b) => b.image && b.video) ?? backgrounds[0];
 
 	return (
 		<div class="absolute inset-0 overflow-hidden">
-			<BackgroundMedia src={backgroundSrc} isVideo={backgroundIsVideo} />
-			<BackgroundMedia src={backgroundVideoOverlay} isVideo={false} />
+			<motion.img
+				src={bg.image}
+				alt=""
+				class="background"
+				initial={{ opacity: 0 }}
+				animate={{ opacity: 1 }}
+				transition={{ duration: 0.3 }}
+			/>
+			{bg.video && <BackgroundVideo src={bg.video} />}
 		</div>
 	);
 };

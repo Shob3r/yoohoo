@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
@@ -8,10 +9,10 @@ import {
 	Trash,
 } from "lucide-preact";
 import { forwardRef, useEffect, useState } from "preact/compat";
-import { useApi } from "../../hooks/useApi";
+import { useAedes } from "../../hooks/useAedes";
 import { useDownload } from "../../hooks/useDownload";
 import { useGame } from "../../hooks/useGame";
-import { getDirSize, remove } from "../../lib/Fs";
+import { exists, remove } from "../../lib/Fs";
 import {
 	checkGameUpdate,
 	downloadUpdate,
@@ -37,6 +38,31 @@ import ToggleSwitch from "../ToggleSwitch";
 type GameOption = {
 	icon: LucideIcon;
 	action: (game: Variants) => Promise<void> | void;
+};
+
+/**
+ * Gets the size of an installed game (in Gigabytes)
+ */
+export const getGameSize = async (game: Variants): Promise<number> => {
+	return new Promise((resolve, reject) => {
+		join("games", variantToGameCode[game])
+			.then((gameDir) => {
+				exists(gameDir).then((gameInstalled) => {
+					if (gameInstalled) {
+						invoke("get_dir_size", {
+							path: gameDir,
+						})
+							.then((res) => {
+								resolve((res as number) / 1024 ** 3);
+							})
+							.catch(reject);
+					} else {
+						resolve(0);
+					}
+				});
+			})
+			.catch(reject);
+	});
 };
 
 const gameOptions: GameOption[] = [
@@ -207,7 +233,7 @@ const DiskSize = () => {
 	const [gameInstalled, setGameInstalled] = useState<boolean>(false);
 
 	useEffect(() => {
-		getDirSize(game)
+		getGameSize(game)
 			.then((res) => {
 				setGameInstalled(true);
 				setSize(`${res.toFixed(2)}GB`);
@@ -252,8 +278,8 @@ const GameManagerButton = ({ gameOption }: { gameOption: GameOption }) => {
 };
 
 export const SettingsModal = forwardRef<ModalHandle>((_, ref) => {
-	const { branding } = useApi();
 	const { game } = useGame();
+	const { resolvedAssets } = useAedes();
 
 	return (
 		<Modal ref={ref} width={750} height={450}>
@@ -265,7 +291,7 @@ export const SettingsModal = forwardRef<ModalHandle>((_, ref) => {
 							width={52}
 							height={52}
 							alt=""
-							src={branding?.[game].icon}
+							src={resolvedAssets?.[game].icon}
 						/>
 						<div class="flex flex-col text-left justify-center">
 							<h1>{variantToGameName[game]}</h1>

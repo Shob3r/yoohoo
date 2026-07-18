@@ -1,12 +1,55 @@
+import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { type Settings, Variants } from "../types";
+import type { Settings } from "../types";
 import { readTextFile, writeTextFile } from "./Fs";
-import { invoke } from "@tauri-apps/api/core";
 
 let store: Store | undefined;
 const SETTINGS_PATH = "settings.json";
-const CURRENT_DATA_VERSION = 1;
+const CURRENT_DATA_VERSION = 2;
+
+const defaultCachedData = {
+	bh3: {
+		backgrounds: [
+			{
+				image: "",
+				video: "",
+			},
+		],
+		icon: "",
+		overlay: "",
+	},
+	hk4e: {
+		backgrounds: [
+			{
+				image: "",
+				video: "",
+			},
+		],
+		icon: "",
+		overlay: "",
+	},
+	hkrpg: {
+		backgrounds: [
+			{
+				image: "",
+				video: "",
+			},
+		],
+		icon: "",
+		overlay: "",
+	},
+	nap: {
+		backgrounds: [
+			{
+				image: "",
+				video: "",
+			},
+		],
+		icon: "",
+		overlay: "",
+	},
+};
 
 const loadStore = async (): Promise<Store> => {
 	await updateSettingsData();
@@ -26,7 +69,8 @@ const updateSettingsData = async () => {
 	const updatedSettingsData: Settings = {
 		version: settingsData.version ?? CURRENT_DATA_VERSION,
 		isFirstLaunch: settingsData.isFirstLaunch ?? true,
-		lastUsedVersion: settingsData.lastUsedVersion ?? await invoke<string>("elysiae_version"),
+		lastUsedVersion:
+			settingsData.lastUsedVersion ?? (await invoke<string>("elysiae_version")),
 		selectedGame: settingsData.selectedGame ?? "hk4e",
 		voLanguage: settingsData.voLanguage ?? "en",
 		blockNotifications: settingsData.blockNotifications ?? false,
@@ -37,12 +81,7 @@ const updateSettingsData = async () => {
 			proton: null,
 			jadeite: null,
 		},
-		cachedBackgrounds: settingsData.cachedBackgrounds ?? {
-			[Variants.BH3]: [],
-			[Variants.HK4E]: [],
-			[Variants.HKRPG]: [],
-			[Variants.NAP]: [],
-		},
+		cachedBackgrounds: settingsData.cachedBackgrounds ?? defaultCachedData,
 	};
 
 	await writeTextFile(SETTINGS_PATH, JSON.stringify(updatedSettingsData));
@@ -50,11 +89,13 @@ const updateSettingsData = async () => {
 };
 
 const migrateSettings = async (data: Settings) => {
-	for (let i = data.version; i < CURRENT_DATA_VERSION; i++) {
-		switch (
-			data.version
-			// unused as no migration is needed right now
-		) {
+	// Start at the next data version, continue until the current data version is reached
+	for (let i = data.version + 1; i <= CURRENT_DATA_VERSION; i++) {
+		switch (data.version) {
+			case 2: {
+				data.cachedBackgrounds = defaultCachedData;
+				break;
+			}
 		}
 	}
 };
