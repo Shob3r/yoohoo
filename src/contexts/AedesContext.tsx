@@ -6,11 +6,7 @@ import { convertFileSrc, exists, mkdir, readDir, remove } from "../lib/Fs";
 import { getOption, setOption } from "../lib/Settings";
 import { gameCodeToVariant } from "../lib/VariantConverter";
 import { downloadFileNoProgress } from "../lib/Web";
-import type {
-	AedesAssetPaths,
-	GameCodes,
-	ResolvedAssetPaths,
-} from "../types";
+import type { AedesAssetPaths, GameCodes, ResolvedAssetPaths } from "../types";
 
 interface AedesContextType {
 	cachedPaths: AedesAssetPaths | null;
@@ -27,6 +23,7 @@ export const AedesContext = createContext<AedesContextType>({
 });
 
 const AEDES_ASSETS_BASE = "https://aedes.elysiae.app/";
+const ASSET_DATA_URL = `${AEDES_ASSETS_BASE}/assets/assetData.json`;
 
 const toCachePath = (path: string): string => {
 	const parts = path.split("/");
@@ -63,8 +60,48 @@ const resolveAssets = async (
 	return resolved;
 };
 
-const basenameOf = (path: string): string => {
-	return path.split("/").pop() ?? path;
+const hasAnyAssets = (data: AedesAssetPaths): boolean =>
+	Object.values(data).some(
+		(paths) =>
+			paths.icon !== "" ||
+			paths.overlay !== "" ||
+			paths.backgrounds.some(
+				(bg) => bg.image !== "" || (bg.video ?? "") !== "",
+			),
+	);
+
+const collectEndpointPaths = (data: AedesAssetPaths): string[] => {
+	const paths: string[] = [];
+	for (const p of Object.values(data)) {
+		if (p.icon) paths.push(p.icon);
+		if (p.overlay) paths.push(p.overlay);
+		for (const bg of p.backgrounds) {
+			if (bg.image) paths.push(bg.image);
+			if (bg.video) paths.push(bg.video);
+		}
+	}
+	return paths;
+};
+
+const collectLocalPaths = async (): Promise<string[]> => {
+	const paths: string[] = [];
+	await Promise.all(
+		["bh3", "hk4e", "hkrpg", "nap"].flatMap((gameCode) =>
+			["bg", "overlay", "icon"].map(async (assetType) => {
+				const dir = await join("cache", gameCode, assetType);
+				if (!(await exists(dir))) {
+					await mkdir(dir);
+					return;
+				}
+				const files = await readDir(dir);
+				const filePaths = await Promise.all(
+					files.map((file) => join(dir, file.name)),
+				);
+				paths.push(...filePaths);
+			}),
+		),
+	);
+	return paths;
 };
 
 export const AedesProvider = ({
@@ -72,141 +109,97 @@ export const AedesProvider = ({
 }: {
 	children: ComponentChildren;
 }) => {
-	const [fsCache, setCache] = useState<AedesAssetPaths | null>(null);
-	const [resolvedCache, setResolvedCache] = useState<ResolvedAssetPaths | null>(
-		null,
-	);
-	const [isLoading, setIsLoading] = useState<boolean>(true);
+	const [cachedPaths, setCachedPaths] = useState<AedesAssetPaths | null>(null);
+	const [resolvedAssets, setResolvedAssets] =
+		useState<ResolvedAssetPaths | null>(null);
+	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
-	const fetchCountRef = useRef(0);
-
-	/*
-	 * Implementation method:
-	 * On Launch:
-	 *  1. fetch cached path data from settings file, set cache variable to that
-	 *
-	 * Cache updater:
-	 *  1. Find files that exist locally but are on the endpoint
-	 *  2. Find files that exist on the endpoint but don't exist locally
-	 *  3. Download all files found in step 3
-	 *  4. Update cached data path setting, refresh cache variable
-	 *  5. Delete all files found in step 2
-	 *  backgrounds images/videos, game overlays, and game icons are all stored in their own folder in appDataDir().
-	 */
-
-	const fetchData = async () => {
-		const fetchId = ++fetchCountRef.current;
-
-		setIsLoading(true);
-		setError(null);
-
-		try {
-			const saved = await getOption<AedesAssetPaths>("cachedBackgrounds");
-			if (saved && fetchId === fetchCountRef.current) {
-				setCache(saved);
-				const hasAssetPaths = Object.values(saved).some(
-					(paths) =>
-						paths.icon !== "" ||
-						paths.overlay !== "" ||
-						paths.backgrounds.some(
-							(bg) => bg.image !== "" || (bg.video ?? "") !== "",
-						),
-				);
-				if (hasAssetPaths) {
-					setResolvedCache(await resolveAssets(saved));
-				}
-			}
-
-			const data: AedesAssetPaths = await fetch(
-				`${AEDES_ASSETS_BASE}/assets/assetData.json`,
-			).then((r) => r.json());
-
-			const endpointPaths: string[] = [];
-			const localPaths: string[] = [];
-
-			// Get Web paths
-			for (const [_, paths] of Object.entries(data)) {
-				endpointPaths.push(paths.icon);
-				endpointPaths.push(paths.overlay);
-				paths.backgrounds.forEach((bg) => {
-					endpointPaths.push(bg.image);
-					if (bg.video) endpointPaths.push(bg.video);
-				});
-			}
-
-			// Get local paths:
-			// Iterate through each directory and subdirectory in the appdata cache folder to find file paths that exist on disk
-			await Promise.all(
-				["bh3", "hk4e", "hkrpg", "nap"].flatMap((gameCode) =>
-					["bg", "overlay", "icon"].map(async (assetType) => {
-						const dir = await join("cache", gameCode, assetType);
-						if (!(await exists(dir))) {
-							await mkdir(dir);
-							return;
-						}
-						const files = await readDir(dir);
-						const paths = await Promise.all(
-							files.map((file) => join(dir, file.name)),
-						);
-						localPaths.push(...paths);
-					}),
-				),
-			);
-
-			// Get download/remove arrays (compared by basename so prefix
-			// and gameCode/assetType ordering differences don't break the diff)
-			const localBasenames = new Set(localPaths.map(basenameOf));
-			const endpointBasenames = new Set(endpointPaths.map(basenameOf));
-			const toDownload: string[] = endpointPaths.filter(
-				(path) => !localBasenames.has(basenameOf(path)),
-			);
-			const toDelete: string[] = localPaths.filter(
-				(path) => !endpointBasenames.has(basenameOf(path)),
-			);
-
-			// Download new files
-			await Promise.all(
-				toDownload.map(async (path) => {
-					const url = `${AEDES_ASSETS_BASE}/${path}`;
-					await downloadFileNoProgress(url, toCachePath(path));
-				}),
-			);
-
-			// Update cache tracker
-			if (toDownload.length > 0 && fetchId === fetchCountRef.current) {
-				setCache(data);
-				setResolvedCache(await resolveAssets(data));
-				await setOption<AedesAssetPaths>("cachedBackgrounds", data);
-			}
-
-			// Delete old local files
-			await Promise.all(
-				toDelete.map(async (path) => {
-					if (await exists(path)) {
-						await remove(path);
-					}
-				}),
-			);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-			console.error(err);
-		} finally {
-			setIsLoading(false);
-		}
-	};
+	const abortRef = useRef(false);
 
 	useEffect(() => {
-		fetchData();
-	}, []); // Runs each time the game state switches to fetch new background assets if they are updated while Elysiae is being used
+		abortRef.current = false;
+
+		const init = async () => {
+			let hasData = false;
+
+			try {
+				const saved = await getOption<AedesAssetPaths>("cachedBackgrounds");
+				if (!abortRef.current && saved && hasAnyAssets(saved)) {
+					setCachedPaths(saved);
+					setResolvedAssets(await resolveAssets(saved));
+					hasData = true;
+				}
+			} catch {
+				// proceed to sync
+			}
+
+			if (abortRef.current) return;
+			setIsLoading(false);
+
+			try {
+				const data: AedesAssetPaths = await fetch(ASSET_DATA_URL).then((r) =>
+					r.json(),
+				);
+				if (abortRef.current) return;
+
+				const endpointPaths = collectEndpointPaths(data);
+				const expectedLocal = new Set(endpointPaths.map(toCachePath));
+				const actualLocal = new Set(await collectLocalPaths());
+
+				const toDownload = endpointPaths.filter(
+					(path) => !actualLocal.has(toCachePath(path)),
+				);
+				const toDelete = [...actualLocal].filter(
+					(path) => !expectedLocal.has(path),
+				);
+
+				if (toDownload.length > 0) {
+					await Promise.all(
+						toDownload.map(async (path) => {
+							if (abortRef.current) return;
+							await downloadFileNoProgress(
+								`${AEDES_ASSETS_BASE}/${path}`,
+								toCachePath(path),
+							);
+						}),
+					);
+				}
+
+				if (toDelete.length > 0) {
+					await Promise.all(
+						toDelete.map(async (path) => {
+							if (await exists(path)) {
+								await remove(path);
+							}
+						}),
+					);
+				}
+
+				const changed = toDownload.length > 0 || toDelete.length > 0;
+				if (changed && !abortRef.current) {
+					setCachedPaths(data);
+					setResolvedAssets(await resolveAssets(data));
+					await setOption("cachedBackgrounds", data);
+					hasData = true;
+				}
+			} catch {
+				// sync failure is fine if cached data exists
+			}
+
+			if (!hasData && !abortRef.current) {
+				setError("Failed to load assets");
+			}
+		};
+
+		init();
+		return () => {
+			abortRef.current = true;
+		};
+	}, []);
 
 	return (
 		<AedesContext.Provider
-			value={{
-				cachedPaths: fsCache,
-				resolvedAssets: resolvedCache,
-				isLoading: isLoading,
-				error: error,
-			}}
+			value={{ cachedPaths, resolvedAssets, isLoading, error }}
 		>
 			{children}
 		</AedesContext.Provider>
