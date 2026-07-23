@@ -34,7 +34,7 @@ To use Elysiae, Your system must meet the following requirements:
 
 ## Building From Source / Contributing to Elysiae
 
-Please see [Contributing](https://github.com/elysiae-project/elysiae/blob/main/CONTRIBUTING.md)
+Please see [`CONTRIBUTING.md`](https://github.com/elysiae-project/elysiae/blob/main/CONTRIBUTING.md)
 
 ## For the lawyers of the "anime game" company
 
