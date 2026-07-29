@@ -1,4 +1,3 @@
-use anyhow::Context;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -20,10 +19,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 fn main() -> glib::ExitCode {
     // Set environment variables required to get proton working
     unsafe {
-        let compat_path = full_path(None, Some(BaseDirectory::Compat))
-            .context("compat path doesn't exist!")
-            .map_err(|e| e.to_string())
-            .unwrap();
+        let compat_path = full_path(None, Some(BaseDirectory::Compat)).unwrap(); // If this fails then the app shouldn't be running in the first place
 
         set_var("STEAM_COMPAT_DATA_PATH", compat_path);
         set_var("STEAM_COMPAT_CLIENT_INSTALL_PATH", "");
