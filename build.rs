@@ -15,6 +15,13 @@ fn main() {
         );
         std::process::exit(1);
     }
+
+    if !is_wayland() {
+        eprintln!(
+            "Elyisae is only supported on Desktop Environments running with the wayland Compositor. Please switch to using wayland to continue building"
+        );
+        std::process::exit(2)
+    }
 }
 
 fn kernel_version_at_least_6_14_0() -> bool {
@@ -40,4 +47,8 @@ fn version_at_least(release: &str, min: (u64, u64, u64)) -> bool {
     let patch = parts.next().unwrap_or(0);
 
     (major, minor, patch) >= min
+}
+
+fn is_wayland() -> bool {
+    std::env::var("WAYLAND_DISPLAY").is_ok()
 }
