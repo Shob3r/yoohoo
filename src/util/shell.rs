@@ -1,13 +1,11 @@
 use std::process::Command;
 
-pub fn exec_shell(
-    command: String,
-    args: Vec<String>,
-) -> Result<(), &'static str> {
+use anyhow::{Context, Result};
+
+pub fn exec_shell(command: String, args: Vec<String>) -> Result<()> {
     Command::new(command)
-        .args(&args)
+        .args(args)
         .spawn()
-        .expect("Command failed!");
+        .context("Command Failed!")?;
     Ok(())
 }
-
