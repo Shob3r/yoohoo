@@ -5,9 +5,9 @@ use gtk::{Application, ApplicationWindow, glib};
 use gtk::{Button, prelude::*};
 use std::env::set_var;
 
-use crate::lib::fs::{BaseDirectory, full_path};
+use crate::core::fs::{BaseDirectory, full_path};
 
-pub mod lib;
+pub mod core;
 pub mod util;
 
 const APP_ID: &str = "app.elysiae.Elysiae";
