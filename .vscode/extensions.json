@@ -1,0 +1,16 @@
+{
+    "recommendations": [
+        "wayou.vscode-todo-highlight",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "donjayamanne.githistory",
+        "bodil.blueprint-gtk",
+        "yzhang.markdown-all-in-one",
+        "mesonbuild.mesonbuild",
+        "redhat.vscode-xml",
+        "redhat.vscode-yaml",
+        "github.vscode-pull-request-github",
+        "github.vscode-github-actions",
+        "vadimcn.vscode-lldb"
+    ]
+}
