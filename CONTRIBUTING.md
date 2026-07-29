@@ -19,4 +19,28 @@ To compile Elysiae, you should have the following present on your system:
 7. ninja >= 1.13.0
 8. gtk4 build libraries >= 4.22
 
-### Installing libraries with mise
+## Before you launch
+
+If you use Visual Studio Code, rust-analyzer will not be able to start due to the specified toolchain in `rust-toolchain` not being available. To correct this, run:
+
+```sh
+# In the repo dir
+rustup toolchain install
+```
+
+## Creating Elysiae Builds
+
+<!--This WILL be changed once meson is implemented-->
+
+To create and start a developer build, run:
+
+```sh
+cargo run
+```
+
+To create a release build, run:
+
+```sh
+# The compiled binary will be created in ./target/release
+cargo build --release 
+```
