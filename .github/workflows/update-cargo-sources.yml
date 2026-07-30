@@ -6,6 +6,8 @@ on:
             - "Cargo.lock"
             - "Cargo.toml"
             - ".github/workflows/update-download-sources.yml"
+        branches:
+          - main
     workflow_dispatch:
 
 jobs:
