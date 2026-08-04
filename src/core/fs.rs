@@ -1,5 +1,6 @@
 use flate2::read::GzDecoder as Gz;
 use fs_extra::dir::get_size;
+use sha256::try_digest;
 use std::{
     fs::{self, create_dir_all},
     path::PathBuf,
@@ -36,11 +37,11 @@ pub enum BaseDirectory {
 /// Used for getting paths and base directories for filesystem operations that
 /// require two paths instead of one
 pub struct MultiPathOptions {
-    init_path: PathBuf,
-    init_path_base_dir: Option<BaseDirectory>,
-    dest_path: PathBuf,
-    dest_path_base_dir: Option<BaseDirectory>,
-    overwrite: Option<bool>,
+    pub init_path: PathBuf,
+    pub init_path_base_dir: Option<BaseDirectory>,
+    pub dest_path: PathBuf,
+    pub dest_path_base_dir: Option<BaseDirectory>,
+    pub overwrite: Option<bool>,
 }
 
 /// Wrapper function for std::fs::exists(), but relative to a base directory
@@ -75,11 +76,6 @@ pub fn read_file(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<Vec<u8>>
 /// directory (~/.local/share/elysiae)
 pub fn write_file(p: PathBuf, contents: &[u8], base_dir: Option<BaseDirectory>) -> Result<()> {
     let fp = full_path(Some(p), base_dir)?;
-    ensure!(
-        fp.try_exists()?,
-        "The Path \"{}\" could not be found on disk",
-        fp.to_string_lossy()
-    );
 
     ensure!(
         !fp.is_dir(),
@@ -269,6 +265,24 @@ pub fn extract_file(options: MultiPathOptions, flatten: Option<bool>) -> Result<
     }
 
     Ok(())
+}
+
+/// Validates the integrity of a file relative to a base bath against the
+/// expected sha256sum of the file. If no base directory is provided, the base
+/// directory will default to the App Data Directory (~/.local/share/elysiae)
+pub fn verify_sha256sum(
+    file: PathBuf,
+    base_dir: Option<BaseDirectory>,
+    expected_sum: String,
+) -> Result<bool> {
+    let fp = full_path(Some(file), base_dir).context("Could not resolve full path")?;
+
+    // Get the file hash. If getting the hash from the file fails,
+    // default to an empty string, which can indicate to the function
+    // that the file hashes do not match
+    let fh = try_digest(fp).unwrap_or("".to_string());
+
+    Ok(fh.eq(&expected_sum))
 }
 
 /// Gets the size of a directory, relative to a Base directory. Size is returned
