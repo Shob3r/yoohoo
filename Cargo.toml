@@ -32,6 +32,8 @@ futures-util = "0.3.33"
 uuid = { version = "1.24.0", features = ["v4"] }
 sha256 = "1.6.0"
 
+irmin = { git = "https://github.com/elysiae-project/irmin", branch = "main"}
+
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.7.0"
 tikv-jemalloc-ctl = "0.7.0"
