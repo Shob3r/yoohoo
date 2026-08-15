@@ -232,3 +232,7 @@ pub fn exec_proton(app_path: PathBuf) -> Result<()> {
     exec_shell(proton_path_str, &[str_path.to_owned()])?;
     Ok(())
 }
+
+pub fn launch_game() -> Result<()> {
+    todo!()
+}
