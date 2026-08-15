@@ -1,5 +1,5 @@
 # Set up the project
-project('Elysiae', 'rust', version: '1.0.0', meson_version: '>= 1.11')
+project('Elysiae', 'rust', version: '1.0.0', meson_version: '>= 1.11.0')
 
 gnome = import('gnome')
 base_id = 'app.elysiae.Elysiae'
@@ -18,6 +18,7 @@ localedir = get_option('prefix') / get_option('localedir')
 datadir = get_option('prefix') / get_option('datadir')
 pkgdatadir = datadir / meson.project_name()
 
+subdir('data')
 subdir('src')
 
 # Execute these tasks after installing

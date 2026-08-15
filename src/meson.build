@@ -1,5 +1,3 @@
-message('Build Elysiae executable')
-
 cargo = find_program('cargo')
 cargo_options = ['--manifest-path', meson.project_source_root() / 'Cargo.toml']
 cargo_options += ['--target-dir', meson.project_build_root() / 'target']
@@ -16,6 +14,7 @@ custom_target(
     build_by_default: true,
     build_always_stale: true,
     output: meson.project_name(),
+    depends: resources,
     console: true,
     install: true,
     install_dir: bindir,
