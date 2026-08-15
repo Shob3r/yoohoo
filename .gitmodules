@@ -1,0 +1,3 @@
+[submodule "src/core/irmin"]
+	path = src/core/irmin
+	url = https://github.com/elysiae-project/irmin.git
