@@ -1,0 +1,31 @@
+<schemalist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <schema id="app.elysiae.Elysiae">
+        <key name="version" type="i">
+            <default>3</default>
+            <summary>Internal settings revision version</summary>
+        </key>
+        <key name="is-first-launch" type="b">
+            <default>true</default>
+            <summary>Weather or not this is the first time the system has launched Elysiae</summary>
+        </key>
+        <key name="last-used-version" type="s">
+            <default>"0.0.0"</default>
+            <summary>Last used version of elysiae the user has ran on this system</summary>
+        </key>
+        <key name="vo-lang" type="">
+
+        </key>
+        <key name="window-width" type="i">
+            <default>-1</default>
+            <summary>Default window width</summary>
+        </key>
+        <key name="window-height" type="i">
+            <default>-1</default>
+            <summary>Default window height</summary>
+        </key>
+        <key name="is-maximized" type="b">
+            <default>false</default>
+            <summary>Default window maximized behaviour</summary>
+        </key>
+    </schema>
+</schemalist>
