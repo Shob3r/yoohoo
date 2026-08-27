@@ -1,10 +1,14 @@
 option(
   'profile',
   type: 'combo',
-  choices: [
-    'default',
-    'development'
-  ],
+  choices: ['default', 'development'],
   value: 'default',
-  description: 'The build profile for Elysiae. One of "default" or "development".'
+  description: 'Build profile: "default" produces a release build with the stable application ID, "development" produces a debug build with the .Devel application ID.'
+)
+
+option(
+  'skip-post-install-scripts',
+  type: 'boolean',
+  value: false,
+  description: 'Skip gnome.post_install() scripts (icon cache, GSettings schema compile, desktop database update). Useful for local development builds that are never installed.'
 )
