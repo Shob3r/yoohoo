@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     core::fs::{
-        BaseDirectory::{self}, MultiPathOptions, exists, extract_file, full_path, mkdir, read_file, remove, verify_sha256sum, write_file,
-    }, util::{
+        BaseDirectory::{self},
+        MultiPathOptions, exists, extract_file, full_path, mkdir, read_file, remove,
+        verify_sha256sum, write_file,
+    },
+    util::{
         shell::exec_shell,
         web::{download_file, fetch_data},
     },

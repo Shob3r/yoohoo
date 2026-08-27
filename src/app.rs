@@ -19,7 +19,6 @@ pub fn build_app() -> gtk::Application {
     });
 
     app.connect_activate(build_ui);
-
     app
 }
 
@@ -39,4 +38,7 @@ fn build_ui(app: &gtk::Application) {
         window.present();
         return;
     }
+
+    let window = crate::window::build_window(app);
+    window.present();
 }

@@ -1,29 +1,13 @@
-blueprint_compiler = find_program('blueprint-compiler')
-
-blueprint_sources = files('ui/window.blp')
-
-ui_files = []
-foreach blp : blueprint_sources
-    ui_file = custom_target(
-        blp.full_path().underscorify(),
-        input: blp,
-        output: '@BASENAME@.ui',
-        command: [
-            blueprint_compiler,
-            'compile',
-            '--output', '@OUTPUT@',
-            '@INPUT@',
-        ],
-    )
-    ui_files += ui_file
-endforeach
-
 resources = gnome.compile_resources(
-    'resources',
-    'resources.gresource.xml',
-    gresource_bundle: true,
-    source_dir: [meson.current_source_dir(), meson.current_build_dir()],
-    dependencies: ui_files,
-    install: true,
-    install_dir: pkgdatadir,
+  'resources',
+  'resources.gresource.xml',
+  gresource_bundle: true,
+  source_dir: [meson.current_source_dir(), meson.current_build_dir()],
+  install: true,
+  install_dir: pkgdatadir,
 )
+
+resources_path = meson.current_build_dir() / 'resources.gresource'
+
+gschema_dir = datadir / 'glib-2.0' / 'schemas'
+install_data('app.elysiae.Elysiae.gschema.xml', install_dir: gschema_dir)

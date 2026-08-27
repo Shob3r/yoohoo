@@ -1,8 +1,5 @@
 cargo = find_program('cargo', native: true, required: true)
 
-# Base options shared by every cargo invocation. Profile-specific flags
-# (--release) only apply to the actual build, not to the convenience run
-# targets which are meant for fast local iteration.
 base_cargo_options = [
   '--manifest-path', meson.project_source_root() / 'Cargo.toml',
   '--target-dir', meson.project_build_root() / 'target',
@@ -15,14 +12,8 @@ else
   rust_target = 'release'
 endif
 
-# `cargo fmt` rejects --target-dir and --release, so it only takes the
-# manifest path.
 fmt_options = ['--manifest-path', meson.project_source_root() / 'Cargo.toml']
 
-# When building inside a flatpak build dir the prefix is /app and the build
-# tree is ephemeral, so the install path must be baked into the binary.
-# Everywhere else point at the build-tree bundle so `ninja && build/src/Elysiae`
-# works straight away without an install step.
 if get_option('prefix') == '/app'
   resources_file = pkgdatadir / 'resources.gresource'
 else
