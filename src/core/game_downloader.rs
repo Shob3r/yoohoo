@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::OnceLock};
 
 use crate::core::fs::{BaseDirectory, exists, full_path};
 use anyhow::{Ok, Result};
-use irmin::{DownloadHandle, Sophon};
+use irmin::{ControlState, DownloadHandle, Sophon};
 
 static DOWNLOAD_HANDLE: OnceLock<DownloadHandle> = OnceLock::new();
 
@@ -21,48 +21,52 @@ fn download_handle() -> DownloadHandle {
 /// Downloads a fresh copy of a game code and a copy of the voice-over files for
 /// the game in a valid requested language
 pub async fn download_game(game: String, lang: &str) -> Result<()> {
-    let inst_path = get_install_path(&game)?;
-    let s = Sophon::builder(game, inst_path)
-        .vo_lang(lang)
-        .verify_mode(irmin::VerifyMode::None)
-        .build();
+    if !download_active()? {
+        let inst_path = get_install_path(&game)?;
+        let s = Sophon::builder(game, inst_path)
+            .vo_lang(lang)
+            .verify_mode(irmin::VerifyMode::None)
+            .build();
 
-    s.download(&download_handle(), |p| {
-        // Todo
-    })
-    .await?;
+        s.download(&download_handle(), |p| {
+            // Todo
+        })
+        .await?;
 
-    s.verify_integrity(|p| {}).await?;
+        s.verify_integrity(|p| {}).await?;
+    }
 
     Ok(())
 }
 
 /// Downloads updates/preinstalls and applies preinstalls during an update if
 /// one is available one is available
-pub async fn update_downloader(game: String, lang: &str) -> Result<()> {
-    let update = update_status(game.clone()).await?;
-    let handle = download_handle();
-    let inst_path = get_install_path(&game)?;
-    let s = Sophon::builder(game, inst_path)
-        .vo_lang(lang)
-        .verify_mode(irmin::VerifyMode::None)
-        .build();
+pub async fn download_update(game: String, lang: &str) -> Result<()> {
+    if !download_active()? {
+        let update = update_status(game.clone()).await?;
+        let handle = download_handle();
+        let inst_path = get_install_path(&game)?;
+        let s = Sophon::builder(game, inst_path)
+            .vo_lang(lang)
+            .verify_mode(irmin::VerifyMode::None)
+            .build();
 
-    match update {
-        UpdateAvailability::Preinstall => {
-            s.preinstall(&handle, |p| {
-                //todo
-            })
-            .await?;
+        match update {
+            UpdateAvailability::Preinstall => {
+                s.preinstall(&handle, |p| {
+                    //todo
+                })
+                .await?;
+            }
+            UpdateAvailability::Outdated => {
+                // TODO: Preinstall check
+                s.update(&handle, |p| {
+                    // todo
+                })
+                .await?;
+            }
+            UpdateAvailability::NotInstalled | UpdateAvailability::Updated => {}
         }
-        UpdateAvailability::Outdated => {
-            // TODO: Preinstall check
-            s.update(&handle, |p| {
-                // todo
-            })
-            .await?;
-        }
-        UpdateAvailability::NotInstalled | UpdateAvailability::Updated => {}
     }
 
     Ok(())
@@ -88,14 +92,17 @@ async fn update_status(game: String) -> Result<UpdateAvailability> {
 }
 
 // Pauses/Resumes an acive sophon download
-pub fn toggle_downloading() {
-    let handle = download_handle();
-    
-    if handle.is_paused() {
-        handle.resume();
-    } else {
-        handle.pause();
+pub fn toggle_downloading() -> Result<()> {
+    if download_active()? {
+        let handle = download_handle();
+        if handle.is_paused() {
+            handle.resume();
+        } else {
+            handle.pause();
+        }
     }
+
+    Ok(())
 }
 
 /// Cancels a sophon operation
@@ -119,4 +126,14 @@ fn get_install_path(game: &str) -> Result<PathBuf> {
 /// Checks if a game is installed
 pub fn game_installed(game: &str) -> Result<bool> {
     Ok(exists(game_rel_path(game), Some(BaseDirectory::AppData))?)
+}
+
+// Checks if the download handle is active. In the case of Elysiae, "Active"
+// means that the handle is reporting that the download is in progress or has
+// been paused
+fn download_active() -> Result<bool> {
+    let handle = download_handle();
+    let state: irmin::ControlState = handle.get_state();
+
+    Ok(state == ControlState::Running || state == ControlState::Paused)
 }

@@ -32,7 +32,7 @@ futures-util = "0.3.33"
 uuid = { version = "1.24.0", features = ["v4"] }
 sha256 = "1.6.0"
 
-irmin = { git = "https://github.com/elysiae-project/irmin"}
+irmin = { git = "https://github.com/elysiae-project/irmin", rev = "678581c01b8bb35406474d864f4a466a001d8f29" }
 # adw = { version = "0.9.2", package = "libadwaita", features = ["v1_9"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
