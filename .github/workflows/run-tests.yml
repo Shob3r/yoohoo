@@ -27,7 +27,7 @@ jobs:
       - name: Install system dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S gtk4 freetype2 rustup --noconfirm
+          pacman -S base-devel llvm clang gtk4 freetype2 rustup --noconfirm
 
       - name: Run tests
         run: |
