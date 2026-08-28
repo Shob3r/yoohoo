@@ -9,10 +9,11 @@ use std::env::set_var;
 use crate::core::fs::{BaseDirectory, full_path};
 
 mod app;
-mod config;
 mod core;
 mod util;
+mod widgets;
 mod window;
+mod fonts;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -26,8 +27,8 @@ fn main() -> glib::ExitCode {
         set_var("STEAM_COMPAT_DATA_PATH", compat_path);
         set_var("STEAM_COMPAT_CLIENT_INSTALL_PATH", "");
     }
-    let res = gio::Resource::load(config::resources_file()).expect("Could not load gresource file");
-    gio::resources_register(&res);
+    gio::resources_register_include!("elysiae.gresource")
+        .expect("Failed to register resources.");
 
     let app = app::build_app();
 

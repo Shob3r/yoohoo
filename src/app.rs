@@ -5,16 +5,17 @@ use gtk::{
     style_context_add_provider_for_display,
 };
 
-use crate::config;
+use crate::fonts;
 
-const OVERRIDE_EVERY_OTHER_THEME_THAT_COULD_BE_DEFINED_BY_A_USER_PRIORITY: u32 = u32::MAX;
+const APP_ID: &'static str = "app.elysiae.Elysiae";
+const OVERRIDE_EVERY_OTHER_THEME_THAT_COULD_BE_DEFINED_BY_A_USER_PRIORITY: u32 = u32::MAX; // lol
+const APP_FONT: &[u8] = include_bytes!("../data/PretendardVariable.woff2");
 
 pub fn build_app() -> gtk::Application {
-    let app = gtk::Application::builder()
-        .application_id(config::app_id())
-        .build();
+    let app = gtk::Application::builder().application_id(APP_ID).build();
 
     app.connect_startup(|_| {
+        fonts::load_app_fonts(&[("PretendardVariable.woff2", APP_FONT)]);
         load_css();
     });
 
