@@ -25,6 +25,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt update
+          sudo apt full-upgrade -y
           sudo apt install -y libgtk-4-dev libfreetype-dev
 
       - name: Install Rust
