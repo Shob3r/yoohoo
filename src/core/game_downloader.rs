@@ -1,8 +1,7 @@
 use std::{path::PathBuf, sync::OnceLock};
 
 use crate::{
-    core::fs::{BaseDirectory, exists, full_path},
-    util::normalize_game_name,
+    core::fs::{BaseDirectory, exists, full_path, write_file}, util::{normalize_game_name, settings::get_option},
 };
 use anyhow::{Ok, Result};
 use irmin::{ControlState, DownloadHandle, Sophon};
@@ -26,7 +25,7 @@ fn download_handle() -> DownloadHandle {
 pub async fn download_game(game: String, lang: &str) -> Result<()> {
     if !download_active()? {
         let inst_path = get_install_path(&game)?;
-        let s = Sophon::builder(game, inst_path)
+        let s = Sophon::builder(game.clone(), inst_path)
             .vo_lang(lang)
             .verify_mode(irmin::VerifyMode::None)
             .build();
@@ -37,6 +36,9 @@ pub async fn download_game(game: String, lang: &str) -> Result<()> {
         .await?;
 
         s.verify_integrity(|p| {}).await?;
+    }
+    if get_option("generate-desktop-shortcut").try_into().unwrap() {
+        generate_desktop_file(&game)?;
     }
 
     Ok(())
@@ -141,7 +143,7 @@ fn download_active() -> Result<bool> {
     Ok(state == ControlState::Running || state == ControlState::Paused)
 }
 
-fn generate_desktop_file(game: &str) -> Result<String> {
+fn generate_desktop_file(game: &str) -> Result<()> {
     let game_name = normalize_game_name(game)?;
     let deep_link_uri = format!("elysiae://open-game/{game}");
     let icon_path = ""; // TODO: Implement icon path fetching function
@@ -149,6 +151,9 @@ fn generate_desktop_file(game: &str) -> Result<String> {
     let contents = format!(
         "Name={game_name}\nComment=Play {game_name} with Elysiae\nExec=xdg-open {deep_link_uri}\nType=Application\nCategories=Game\nIcon={icon_path}"
     );
+
+    let path = PathBuf::from(format!("{}.desktop", game_name));
+    let _ = write_file(path, contents.as_bytes(), Some(BaseDirectory::Desktop))?;
     
-    Ok(contents)
+    Ok(())
 }
