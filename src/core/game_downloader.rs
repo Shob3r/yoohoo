@@ -1,6 +1,9 @@
 use std::{path::PathBuf, sync::OnceLock};
 
-use crate::core::fs::{BaseDirectory, exists, full_path};
+use crate::{
+    core::fs::{BaseDirectory, exists, full_path},
+    util::normalize_game_name,
+};
 use anyhow::{Ok, Result};
 use irmin::{ControlState, DownloadHandle, Sophon};
 
@@ -136,4 +139,16 @@ fn download_active() -> Result<bool> {
     let state: irmin::ControlState = handle.get_state();
 
     Ok(state == ControlState::Running || state == ControlState::Paused)
+}
+
+fn generate_desktop_file(game: &str) -> Result<String> {
+    let game_name = normalize_game_name(game)?;
+    let deep_link_uri = format!("elysiae://open-game/{game}");
+    let icon_path = ""; // TODO: Implement icon path fetching function
+
+    let contents = format!(
+        "Name={game_name}\nComment=Play {game_name} with Elysiae\nExec=xdg-open {deep_link_uri}\nType=Application\nCategories=Game\nIcon={icon_path}"
+    );
+    
+    Ok(contents)
 }
