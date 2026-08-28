@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "**.ui": "xml",
+        "rust-toolchain": "toml"
+    }
+}

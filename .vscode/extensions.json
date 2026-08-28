@@ -4,8 +4,6 @@
         "rust-lang.rust-analyzer",
         "tamasfe.even-better-toml",
         "donjayamanne.githistory",
-        "bodil.blueprint-gtk",
-        "yzhang.markdown-all-in-one",
         "mesonbuild.mesonbuild",
         "redhat.vscode-xml",
         "redhat.vscode-yaml",
