@@ -1,4 +1,6 @@
 fn main() {
+    compile_resources();
+
     #[cfg(not(target_os = "linux"))]
     compile_error!(
         "Elysiae is only supported on Linux hosts. Please build in a Linux environment\nIf you are on Windows, You may want to consider taking a look at WSL: https://aka.ms/wsl"
@@ -22,6 +24,16 @@ fn main() {
         );
         std::process::exit(2)
     }
+}
+
+/// Compiles the gresource bundle into OUT_DIR (picked up by
+/// `gio::resources_register_include!`) following the gtk4-rs book pattern.
+fn compile_resources() {
+    glib_build_tools::compile_resources(
+        &["data"],
+        "data/resources.gresource.xml",
+        "elysiae.gresource",
+    );
 }
 
 fn kernel_version_at_least_6_14_0() -> bool {
