@@ -12,17 +12,9 @@ fn main() {
     );
 
     if !kernel_version_at_least_6_14_0() {
-        eprintln!(
-            "Elysiae is only supported on Linux Kernel version 6.14 or later. Please run a system update before attempting to compile Elysiae again"
+        println!(
+            "WARNING: Elysiae is designed to run on Linux kernel version 6.14 or later. Please update the kernel if you encounter performance issues while playing games"
         );
-        std::process::exit(1);
-    }
-
-    if !is_wayland() {
-        eprintln!(
-            "Elyisae is only supported on Desktop Environments running with the wayland Compositor. Please switch to using wayland to continue building"
-        );
-        std::process::exit(2)
     }
 }
 
@@ -59,8 +51,4 @@ fn version_at_least(release: &str, min: (u64, u64, u64)) -> bool {
     let patch = parts.next().unwrap_or(0);
 
     (major, minor, patch) >= min
-}
-
-fn is_wayland() -> bool {
-    std::env::var("WAYLAND_DISPLAY").is_ok()
 }
