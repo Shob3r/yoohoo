@@ -2,6 +2,11 @@
 <gresources>
     <gresource prefix="/app/elysiae/Elysiae">
         <file compressed="true" preprocess="xml-stripblanks">window.ui</file>
+        <file compressed="true" preprocess="xml-stripblanks">ui/progressbar.ui</file>
+        <file compressed="true" preprocess="xml-stripblanks">ui/button.ui</file>
+        <file compressed="true" preprocess="xml-stripblanks">ui/background.ui</file>
+        <file compressed="true" preprocess="xml-stripblanks">ui/titlebar.ui</file>
+        <file compressed="true" preprocess="xml-stripblanks">ui/settings.ui</file>
         <file compressed="true">style.css</file>
     </gresource>
 </gresources>

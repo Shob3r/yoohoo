@@ -1,0 +1,30 @@
+
+* {
+    font-family: "Pretendard Variable";
+}
+
+:root {
+    --bg-color: oklch(0.1732 0.0295 273.73);
+}
+
+.progressbar {
+
+
+}
+
+.button {
+
+
+}
+
+.background {
+    background-color: var(--bg-color);
+}
+
+.titlebar {
+    font-size: 1.25rem;
+}
+
+.settings {
+
+}

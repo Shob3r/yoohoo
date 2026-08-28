@@ -122,6 +122,8 @@ impl GameModule {
                     self.save_to.clone(),
                     Some(BaseDirectory::AppData),
                     Some(Box::new(|progress| {
+                        // TODO: make some sort of proper event handler in the UI once it gets
+                        // created
                         info!(
                             "{}/{} ({}%)",
                             progress.downloaded,
