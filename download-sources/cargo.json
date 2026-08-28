@@ -2,8 +2,8 @@
     {
         "type": "git",
         "url": "https://github.com/elysiae-project/irmin",
-        "commit": "ef84b62bcbf1cc5d7c867e5ae4593f456a652b34",
-        "dest": "flatpak-cargo/git/irmin-ef84b62"
+        "commit": "678581c01b8bb35406474d864f4a466a001d8f29",
+        "dest": "flatpak-cargo/git/irmin-678581c"
     },
     {
         "type": "archive",
@@ -1841,12 +1841,12 @@
     {
         "type": "shell",
         "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/irmin-ef84b62/.\" \"cargo/vendor/irmin\""
+            "cp -r --reflink=auto \"flatpak-cargo/git/irmin-678581c/.\" \"cargo/vendor/irmin\""
         ]
     },
     {
         "type": "inline",
-        "contents": "[package]\nname = \"irmin\"\nversion = \"1.0.0\"\ndescription = \"Sophon game downloader\"\nauthors = [\"The Elysiae Project\"]\nedition = \"2024\"\nrust-version = \"1.92.0\"\n\n[lib]\nname = \"irmin\"\ncrate-type = [\"lib\"]\n\n[dependencies]\nfutures-util = \"0.3\"\nserde_json = \"1\"\nfast-md5 = \"1.0\"\nprost = \"0.14\"\nhex = \"0.4\"\nthiserror = \"2\"\nsha2 = \"0.11\"\nlibc = \"0.2\"\nrustc-hash = \"2\"\nlz4 = \"1\"\nflate2 = \"1\"\nlog = \"0.4\"\n\n[dependencies.tokio]\nversion = \"1\"\nfeatures = [\"rt\", \"rt-multi-thread\", \"sync\", \"time\", \"macros\", \"io-util\"]\n\n[dependencies.tokio-util]\nversion = \"0.7\"\nfeatures = [\"io\", \"io-util\"]\n\n[dependencies.serde]\nversion = \"1\"\nfeatures = [\"derive\", \"rc\"]\n\n[dependencies.reqwest]\nversion = \"0.13\"\nfeatures = [\"stream\", \"json\"]\n\n[dependencies.zstd]\nversion = \"0.13\"\nfeatures = [\"experimental\"]\n\n[dependencies.dashmap]\nversion = \"6\"\nfeatures = [\"serde\"]\n\n[dependencies.xxhash-rust]\nversion = \"0.8\"\nfeatures = [\"xxh64\"]\n\n[dependencies.zip]\nversion = \"8\"\ndefault-features = false\nfeatures = [\"deflate\"]\n\n[target.\"cfg(not(target_env = \\\"msvc\\\"))\".dependencies.tikv-jemallocator]\nversion = \"0.7\"\noptional = true\n\n[target.\"cfg(not(target_env = \\\"msvc\\\"))\".dependencies.tikv-jemalloc-ctl]\nversion = \"0.7\"\noptional = true\n\n[dev-dependencies]\nwiremock = \"0.6\"\ncriterion = \"0.8\"\ntempfile = \"3\"\n\n[features]\nsophon-profiling = [\"dep:tikv-jemallocator\", \"dep:tikv-jemalloc-ctl\", \"tikv-jemallocator/stats\", \"tikv-jemalloc-ctl/stats\"]\ndownload-cli = []\nbenchmark = []\n\n[[bench]]\nname = \"sophon_bench\"\nharness = false\nrequired-features = [\"benchmark\"]\n\n[[bin]]\nname = \"download_version\"\npath = \"src/bin/download_version.rs\"\nrequired-features = [\"download-cli\"]\n\n[[bin]]\nname = \"download_preinstall\"\npath = \"src/bin/download_preinstall.rs\"\nrequired-features = [\"download-cli\"]\n\n[[bin]]\nname = \"download_update\"\npath = \"src/bin/download_update.rs\"\nrequired-features = [\"download-cli\"]\n\n[[bin]]\nname = \"bench_memory\"\npath = \"src/bin/bench_memory.rs\"\nrequired-features = [\"benchmark\"]\n\n[profile.release]\nopt-level = 3\nlto = true\ncodegen-units = 1\npanic = \"abort\"\nstrip = true\n\n[profile.dev.package.\"*\"]\nopt-level = 2\n",
+        "contents": "[package]\nname = \"irmin\"\nversion = \"1.0.0\"\ndescription = \"Sophon game downloader\"\nauthors = [\"The Elysiae Project\"]\nedition = \"2024\"\nrust-version = \"1.92.0\"\n\n[lib]\nname = \"irmin\"\ncrate-type = [\"lib\"]\n\n[dependencies]\nfutures-util = \"0.3\"\nserde_json = \"1\"\nfast-md5 = \"1.0\"\nprost = \"0.14\"\nhex = \"0.4\"\nthiserror = \"2\"\nsha2 = \"0.11\"\nlibc = \"0.2\"\nrustc-hash = \"2\"\nlz4 = \"1\"\nflate2 = \"1\"\nlog = \"0.4\"\n\n[dependencies.tokio]\nversion = \"1\"\nfeatures = [\"rt\", \"rt-multi-thread\", \"sync\", \"time\", \"macros\", \"io-util\", \"signal\"]\n\n[dependencies.tokio-util]\nversion = \"0.7\"\nfeatures = [\"io\", \"io-util\"]\n\n[dependencies.serde]\nversion = \"1\"\nfeatures = [\"derive\", \"rc\"]\n\n[dependencies.reqwest]\nversion = \"0.13\"\nfeatures = [\"stream\", \"json\"]\n\n[dependencies.zstd]\nversion = \"0.13\"\nfeatures = [\"experimental\"]\n\n[dependencies.dashmap]\nversion = \"6\"\nfeatures = [\"serde\"]\n\n[dependencies.xxhash-rust]\nversion = \"0.8\"\nfeatures = [\"xxh64\"]\n\n[dependencies.zip]\nversion = \"8\"\ndefault-features = false\nfeatures = [\"deflate\"]\n\n[target.\"cfg(not(target_env = \\\"msvc\\\"))\".dependencies.tikv-jemallocator]\nversion = \"0.7\"\noptional = true\n\n[target.\"cfg(not(target_env = \\\"msvc\\\"))\".dependencies.tikv-jemalloc-ctl]\nversion = \"0.7\"\noptional = true\n\n[dev-dependencies]\nwiremock = \"0.6\"\ncriterion = \"0.8\"\ntempfile = \"3\"\n\n[features]\nsophon-profiling = [\"dep:tikv-jemallocator\", \"dep:tikv-jemalloc-ctl\", \"tikv-jemallocator/stats\", \"tikv-jemalloc-ctl/stats\"]\nbenchmark = []\n\n[[bench]]\nname = \"sophon_bench\"\nharness = false\nrequired-features = [\"benchmark\"]\n\n[[bin]]\nname = \"bench_memory\"\npath = \"src/bin/bench_memory.rs\"\nrequired-features = [\"benchmark\"]\n\n[profile.release]\nopt-level = 3\nlto = true\ncodegen-units = 1\npanic = \"abort\"\nstrip = true\n\n[profile.dev.package.\"*\"]\nopt-level = 2\n",
         "dest": "cargo/vendor/irmin",
         "dest-filename": "Cargo.toml"
     },
@@ -4796,7 +4796,7 @@
     },
     {
         "type": "inline",
-        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/elysiae-project/irmin\"]\ngit = \"https://github.com/elysiae-project/irmin\"\nreplace-with = \"vendored-sources\"\nbranch = \"main\"\n",
+        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/elysiae-project/irmin\"]\ngit = \"https://github.com/elysiae-project/irmin\"\nreplace-with = \"vendored-sources\"\nrev = \"678581c01b8bb35406474d864f4a466a001d8f29\"\n",
         "dest": "cargo",
         "dest-filename": "config"
     }
