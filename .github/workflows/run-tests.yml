@@ -12,6 +12,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
     strategy:
       matrix:
         include:
@@ -24,12 +26,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt update
-          sudo apt full-upgrade -y
-          sudo apt install -y libgtk-4-dev libfreetype-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+          pacman -Syu
+          pacman -S gtk4 freetype2 rustup
 
       - name: Run tests
-        run: cargo test --workspace -- --include-ignored
+        run: |
+          rustup install
+          cargo test --workspace -- --include-ignored
