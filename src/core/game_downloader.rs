@@ -1,7 +1,8 @@
 use std::{path::PathBuf, sync::OnceLock};
 
 use crate::{
-    core::fs::{BaseDirectory, exists, full_path, write_file}, util::{normalize_game_name, settings::get_option},
+    core::fs::{BaseDirectory, exists, full_path, write_file},
+    util::{normalize_game_name, notifications::broadcast_notification, settings::get_option},
 };
 use anyhow::{Ok, Result};
 use irmin::{ControlState, DownloadHandle, Sophon};
@@ -41,6 +42,7 @@ pub async fn download_game(game: String, lang: &str) -> Result<()> {
         generate_desktop_file(&game)?;
     }
 
+    broadcast_notification("Download Complete");
     Ok(())
 }
 
@@ -62,6 +64,7 @@ pub async fn download_update(game: String, lang: &str) -> Result<()> {
                     //todo
                 })
                 .await?;
+                broadcast_notification("Preinstall Download Complete");
             }
             UpdateAvailability::Outdated => {
                 // TODO: Preinstall check
@@ -69,6 +72,7 @@ pub async fn download_update(game: String, lang: &str) -> Result<()> {
                     // todo
                 })
                 .await?;
+                broadcast_notification("Update Complete");
             }
             UpdateAvailability::NotInstalled | UpdateAvailability::Updated => {}
         }
@@ -143,6 +147,7 @@ fn download_active() -> Result<bool> {
     Ok(state == ControlState::Running || state == ControlState::Paused)
 }
 
+/// Writes a desktop entry for a specified game to the desktop folder
 fn generate_desktop_file(game: &str) -> Result<()> {
     let game_name = normalize_game_name(game)?;
     let deep_link_uri = format!("elysiae://open-game/{game}");
@@ -154,6 +159,6 @@ fn generate_desktop_file(game: &str) -> Result<()> {
 
     let path = PathBuf::from(format!("{}.desktop", game_name));
     let _ = write_file(path, contents.as_bytes(), Some(BaseDirectory::Desktop))?;
-    
+
     Ok(())
 }
