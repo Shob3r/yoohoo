@@ -74,7 +74,7 @@ pub async fn download_file(
 }
 
 /// Makes a request to an api endpoint and parses it to a desired struct
-pub async fn fetch_data<T>(url: String) -> Result<T>
+pub async fn fetch_data<T>(url: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {
@@ -93,7 +93,7 @@ where
 
 /// Checks if a provided string is in the format of a url. It does not check
 /// if the destination is a real location
-fn is_url(url: &String) -> bool {
+fn is_url(url: &str) -> bool {
     match Url::parse(url) {
         Ok(_) => true,
         Err(_) => false,

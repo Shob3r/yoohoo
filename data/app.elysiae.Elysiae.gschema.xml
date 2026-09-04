@@ -16,9 +16,13 @@
             <default>true</default>
             <summary>Automatically create a desktop file of a newly installed game</summary>
         </key>
-        <key name="Allow Notifications">
+        <key name="allow-notifications" type="b">
             <default>true</default>
             <summary>Send desktop notifications for status updates in Elysiae (i.e. Game downloads/updates completing)</summary>
+        </key>
+        <key name="language" type="s">
+            <default>en-us</default>
+            <summary>Launcher Language</summary>
         </key>
     </schema>
 </schemalist>

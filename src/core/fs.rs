@@ -2,7 +2,7 @@ use flate2::read::GzDecoder as Gz;
 use fs_extra::dir::get_size;
 use sha256::try_digest;
 use std::{
-    fs::{self, create_dir_all},
+    fs::{self, DirEntry, create_dir_all},
     path::PathBuf,
 };
 use tar::Archive as Tar;
@@ -295,6 +295,21 @@ pub fn get_dir_size(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<u64> 
     let size = get_size(fp).context("Could not get size of directory")?;
 
     Ok(size)
+}
+
+pub fn read_dir(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<Vec<DirEntry>> {
+    let fp = full_path(Some(p), base_dir).context("The path could not be resolved")?;
+
+    Ok(std::fs::read_dir(fp)?.collect::<Result<_, _>>()?)
+}
+
+pub fn read_dir_as_paths(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<Vec<PathBuf>> {
+    let fp = full_path(Some(p), base_dir).context("The path could not be resolved")?;
+
+    Ok(std::fs::read_dir(fp)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect::<Vec<_>>())
 }
 
 /// Joins a specified base directory with a relative path
