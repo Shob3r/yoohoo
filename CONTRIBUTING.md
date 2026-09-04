@@ -11,11 +11,12 @@ Elyisae *must* run on a Linux system in order to successfully compile. If you ar
 To compile Elysiae, you should have the following present on your system:
 
 1. A x86_64 or aarch64 CPU
-2. Linux Kernel >= 6.14
-3. Rustup (any recent version)
+2. Linux Kernel >= 6.14 (Recommended)
+3. Rustup or an installation of Rust >= 1.98.0
 4. FreeType >= 2.9.1
 5. GTK >= 4.22
-6. A few gigabytes of free storage space
+6. Any modern version of LLVM/Clang
+7. A few gigabytes of free storage space for builds
 
 ### Installing Dependencies
 
@@ -23,28 +24,16 @@ To compile Elysiae, you should have the following present on your system:
 
 ```sh
 sudo apt update
-sudo apt install libgtk-4-dev libfreetype-dev
+sudo apt install libgtk-4-dev libfreetype-dev build-essential llvm clang -y
 
-# Rustup might exist in a repo if you use a derivative of debian, but it is likely that it's outdated. use curl to install the latest version:
+# Rustup might exist in a repo if you use a derivative of debian, but it is likely outdated. use curl to install the latest version instead:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
 #### Arch-Based
 
 ```sh
-sudo pacman -Syu rustup freetype2 gtk4 --noconfirm
-```
-
-#### Fedora-Based
-
-```sh
-sudo dnf install gtk4-devel freetype-devel rustup
-```
-
-#### SUSE-Based
-
-```sh
-sudo zypper install gtk4-devel freetype2-devel rustup
+sudo pacman -Syu rustup freetype2 gtk4 base-devel llvm clang --noconfirm
 ```
 
 ## Post-clone
