@@ -20,7 +20,7 @@ const COMPONENTS_URL_BASE: &str = "https://aedes.elysiae.app/components/";
 const ARCH: &str = std::env::consts::ARCH;
 const MAX_RETRIES: i32 = 5;
 
-struct GameModule {
+pub struct GameModule {
     component_name: String,
     extract_to: PathBuf,
     save_to: PathBuf,
@@ -44,7 +44,7 @@ struct ComponentRelease {
 
 impl GameModule {
     /// Creates a new GameModule instance
-    fn new(
+    pub fn new(
         component_name: String,
         extract_to: PathBuf,
         save_to: PathBuf,
@@ -104,7 +104,7 @@ impl GameModule {
             "{}{}-{}.json",
             COMPONENTS_URL_BASE, &self.component_name, ARCH
         );
-        let res = fetch_data::<Vec<ComponentRelease>>(url).await?;
+        let res = fetch_data::<Vec<ComponentRelease>>(&url).await?;
         let latest_release = res
             .into_iter()
             .next()

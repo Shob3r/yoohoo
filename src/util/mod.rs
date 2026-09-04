@@ -2,10 +2,9 @@ pub mod settings;
 pub mod web;
 pub mod shell;
 pub mod cache;
+pub mod notifications;
 
 use anyhow::Result;
-
-const ASSETS_BASE: &str = "https://aedes.elysiae.app/";
 
 pub fn normalize_game_name(game_code: &str) -> Result<String> {
     let res = match game_code {
