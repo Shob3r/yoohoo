@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt::format, path::PathBuf};
 
 use anyhow::Result;
 use log::info;
@@ -72,16 +72,17 @@ impl GameModule {
     fn should_update(&mut self, release_data: &ComponentRelease) -> Result<bool> {
         // None used as the fs functions fall back to the app data dir, which is where
         // this file is meant to be saved to
-        let p = full_path(None, Some(BaseDirectory::AppData))?
-            .join("components")
-            .join(&self.tracker_file_name);
+        let p = full_path(
+            Some(PathBuf::from("components").join(&self.tracker_file_name)),
+            None,
+        )?;
         let e = exists(p.clone(), None)?;
         let latest = &release_data.tag;
         if e {
-            let data = read_file(p.clone(), None)?;
+            let data = read_file(p, None)?;
             let deserialized_data = serde_json::from_slice::<InstalledComponentsData>(&data)?;
 
-            Ok(deserialized_data.version.eq(latest))
+            Ok(deserialized_data.version.ne(latest))
         } else {
             Ok(true)
         }
@@ -120,7 +121,7 @@ impl GameModule {
                 download_file(
                     latest_release_url.clone(),
                     self.save_to.clone(),
-                    Some(BaseDirectory::AppData),
+                    None,
                     Some(Box::new(|progress| {
                         // TODO: make some sort of proper event handler in the UI once it gets
                         // created
@@ -128,7 +129,7 @@ impl GameModule {
                             "{}/{} ({}%)",
                             progress.downloaded,
                             progress.total,
-                            (progress.downloaded / progress.total)
+                            (progress.downloaded / progress.total) * 100
                         );
                     })),
                 )
@@ -190,9 +191,10 @@ impl GameModule {
             version: new_version,
         };
         let str = serde_json::to_string_pretty(&data)?;
-        let p = full_path(None, Some(BaseDirectory::AppData))?
-            .join("components")
-            .join(&self.tracker_file_name);
+        let p = full_path(
+            Some(PathBuf::from("components").join(&self.tracker_file_name)),
+            None,
+        )?;
         write_file(p, str.as_bytes(), None)?;
         Ok(())
     }
@@ -220,24 +222,18 @@ pub async fn update_all_modules() -> Result<()> {
     Ok(())
 }
 
-pub fn proton_prefix() -> Result<PathBuf> {
-    let app_data = full_path(None, Some(BaseDirectory::AppData))?;
-    Ok(app_data.join("proton"))
-}
-
+/// Checks if all components have been installed
 pub fn components_installed() -> Result<bool> {
-    todo!()
+    // For now, only proton is installed, so this is an easy check to see if proton itself has been extracted to the proper directory. In the future however, if new components do get added, a more robust way to detect component installs could be useful (perhaps via an exclusive components folder and making sure it contains all components or something similar)
+    Ok(exists(PathBuf::from("proton"), None)?)
 }
 
 pub fn exec_proton(app_path: PathBuf) -> Result<()> {
-    let proton_path = proton_prefix()?;
+    let proton_path = full_path(Some(PathBuf::from("proton")), None)?;
     let proton_path_str = proton_path.to_str().unwrap();
-    let fp = full_path(Some(app_path), Some(BaseDirectory::AppData))?;
+
+    let fp = full_path(Some(app_path), None)?;
     let str_path = fp.to_str().unwrap();
     exec_shell(proton_path_str, &[str_path.to_owned()])?;
     Ok(())
-}
-
-pub fn launch_game() -> Result<()> {
-    todo!()
 }
