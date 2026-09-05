@@ -6,10 +6,17 @@ use crate::{
         game::Game,
         proton_manager::exec_proton,
     },
-    util::{normalize_game_name, notifications::broadcast_notification, settings::get_option},
+    util::{
+        cache::{AssetType, get_cached_asset_paths},
+        notifications::broadcast_notification,
+        settings::get_option,
+    },
 };
-use anyhow::{Error, Ok, Result};
-use irmin::{ControlState, DownloadHandle, Sophon};
+use anyhow::{Context, Error, Ok, Result, bail};
+use irmin::{
+    ControlState, DownloadHandle, Sophon,
+    SophonProgress::{self, CalculatingDownloads, FetchingManifest},
+};
 
 static DOWNLOAD_HANDLE: OnceLock<DownloadHandle> = OnceLock::new();
 
@@ -27,7 +34,11 @@ fn download_handle() -> DownloadHandle {
 
 /// Downloads a fresh copy of a game code and a copy of the voice-over files for
 /// the game in a valid requested language
-pub async fn download_game(game: Game, lang: &str) -> Result<()> {
+pub async fn download_game(
+    game: Game,
+    lang: &str,
+    sender: async_channel::Sender<SophonProgress>,
+) -> Result<()> {
     if !download_active()? {
         let inst_path = game.install_path();
         let s = Sophon::builder(game.code(), inst_path)
@@ -35,12 +46,15 @@ pub async fn download_game(game: Game, lang: &str) -> Result<()> {
             .verify_mode(irmin::VerifyMode::None)
             .build();
 
-        s.download(&download_handle(), |p| {
-            // Todo
+        s.download(&download_handle(), move |progress| {
+            let _ = sender.clone().try_send(progress);
         })
         .await?;
 
-        s.verify_integrity(|p| {}).await?;
+        s.verify_integrity(move |p| {
+            // figure this out later
+        })
+        .await?;
     }
     if get_option("generate-desktop-shortcut").try_into().unwrap() {
         generate_desktop_file(game)?;
@@ -52,7 +66,11 @@ pub async fn download_game(game: Game, lang: &str) -> Result<()> {
 
 /// Downloads updates/preinstalls and applies preinstalls during an update if
 /// one is available one is available
-pub async fn download_update(game: Game, lang: &str) -> Result<()> {
+pub async fn download_update(
+    game: Game,
+    lang: &str,
+    sender: async_channel::Sender<SophonProgress>,
+) -> Result<()> {
     if !download_active()? {
         let update = update_status(game).await?;
         let handle = download_handle();
@@ -64,16 +82,16 @@ pub async fn download_update(game: Game, lang: &str) -> Result<()> {
 
         match update {
             UpdateAvailability::Preinstall => {
-                s.preinstall(&handle, |p| {
-                    //todo
+                s.preinstall(&handle, move |p| {
+                    let _ = sender.clone().try_send(p);
                 })
                 .await?;
                 broadcast_notification("Preinstall Download Complete");
             }
             UpdateAvailability::Outdated => {
                 // TODO: Check if a preinstall is download before downloading an update
-                s.update(&handle, |p| {
-                    // todo
+                s.update(&handle, move |p| {
+                    let _ = sender.clone().try_send(p);
                 })
                 .await?;
                 broadcast_notification("Update Complete");
@@ -147,10 +165,19 @@ fn download_active() -> Result<bool> {
 fn generate_desktop_file(game: Game) -> Result<()> {
     let game_name = game.display_name();
     let deep_link_uri = format!("elysiae://open-game/{}", game.code());
-    let icon_path = ""; // TODO: Implement icon path fetching function
+    let icon_data = get_cached_asset_paths(game, AssetType::Icon)?;
+    let icon_path = icon_data
+        .first()
+        .context("No Cached icon available")?;
 
     let contents = format!(
-        "Name={game_name}\nComment=Play {game_name} with Elysiae\nExec=xdg-open {deep_link_uri}\nType=Application\nCategories=Game\nIcon={icon_path}"
+        "Name={game_name}\n
+        Comment=Play {game_name} with Elysiae\n
+        Exec=xdg-open {deep_link_uri}\n
+        Type=Application\n
+        Categories=Game\n
+        Icon={}",
+        icon_path.to_string_lossy()
     );
 
     let path = PathBuf::from(format!("{}.desktop", game_name));
