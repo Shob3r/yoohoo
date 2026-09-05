@@ -1,10 +1,14 @@
 use std::{path::PathBuf, sync::OnceLock};
 
 use crate::{
-    core::fs::{BaseDirectory, exists, full_path, write_file},
+    core::{
+        fs::{BaseDirectory, exists, full_path, write_file},
+        game::Game,
+        proton_manager::exec_proton,
+    },
     util::{normalize_game_name, notifications::broadcast_notification, settings::get_option},
 };
-use anyhow::{Ok, Result};
+use anyhow::{Error, Ok, Result};
 use irmin::{ControlState, DownloadHandle, Sophon};
 
 static DOWNLOAD_HANDLE: OnceLock<DownloadHandle> = OnceLock::new();
@@ -23,10 +27,10 @@ fn download_handle() -> DownloadHandle {
 
 /// Downloads a fresh copy of a game code and a copy of the voice-over files for
 /// the game in a valid requested language
-pub async fn download_game(game: String, lang: &str) -> Result<()> {
+pub async fn download_game(game: Game, lang: &str) -> Result<()> {
     if !download_active()? {
-        let inst_path = get_install_path(&game)?;
-        let s = Sophon::builder(game.clone(), inst_path)
+        let inst_path = game.install_path();
+        let s = Sophon::builder(game.code(), inst_path)
             .vo_lang(lang)
             .verify_mode(irmin::VerifyMode::None)
             .build();
@@ -39,7 +43,7 @@ pub async fn download_game(game: String, lang: &str) -> Result<()> {
         s.verify_integrity(|p| {}).await?;
     }
     if get_option("generate-desktop-shortcut").try_into().unwrap() {
-        generate_desktop_file(&game)?;
+        generate_desktop_file(game)?;
     }
 
     broadcast_notification("Download Complete");
@@ -48,12 +52,12 @@ pub async fn download_game(game: String, lang: &str) -> Result<()> {
 
 /// Downloads updates/preinstalls and applies preinstalls during an update if
 /// one is available one is available
-pub async fn download_update(game: String, lang: &str) -> Result<()> {
+pub async fn download_update(game: Game, lang: &str) -> Result<()> {
     if !download_active()? {
-        let update = update_status(game.clone()).await?;
+        let update = update_status(game).await?;
         let handle = download_handle();
-        let inst_path = get_install_path(&game)?;
-        let s = Sophon::builder(game, inst_path)
+        let inst_path = game.install_path();
+        let s = Sophon::builder(game.code(), inst_path)
             .vo_lang(lang)
             .verify_mode(irmin::VerifyMode::None)
             .build();
@@ -67,7 +71,7 @@ pub async fn download_update(game: String, lang: &str) -> Result<()> {
                 broadcast_notification("Preinstall Download Complete");
             }
             UpdateAvailability::Outdated => {
-                // TODO: Preinstall check
+                // TODO: Check if a preinstall is download before downloading an update
                 s.update(&handle, |p| {
                     // todo
                 })
@@ -82,13 +86,13 @@ pub async fn download_update(game: String, lang: &str) -> Result<()> {
 }
 
 /// Gets the status of the game supplied as a parameter
-async fn update_status(game: String) -> Result<UpdateAvailability> {
-    if !game_installed(&game)? {
+async fn update_status(game: Game) -> Result<UpdateAvailability> {
+    if !exists(game.install_path(), None)? {
         return Ok(UpdateAvailability::NotInstalled);
     }
 
-    let inst_path = get_install_path(&game)?;
-    let s = Sophon::builder(game, inst_path).build();
+    let inst_path = game.install_path();
+    let s = Sophon::builder(game.code(), inst_path).build();
     let res = s.check_update().await?;
 
     Ok(if res.preinstall_available && !res.preinstall_downloaded {
@@ -120,21 +124,13 @@ pub fn cancel_download() {
 }
 
 /// Path relative to a hypothetical game installed, named after its game code
-fn game_rel_path(game: &str) -> PathBuf {
-    PathBuf::from(format!("games/{game}"))
-}
-
-/// Gets the full path to a game install, provided by game_rel_path
-fn get_install_path(game: &str) -> Result<PathBuf> {
-    Ok(full_path(
-        Some(game_rel_path(game)),
-        Some(BaseDirectory::AppData),
-    )?)
+fn game_rel_path(game: Game) -> PathBuf {
+    PathBuf::from("games").join(game.code())
 }
 
 /// Checks if a game is installed
-pub fn game_installed(game: &str) -> Result<bool> {
-    Ok(exists(game_rel_path(game), Some(BaseDirectory::AppData))?)
+pub fn game_installed(game: Game) -> Result<bool> {
+    Ok(exists(game_rel_path(game), None)?)
 }
 
 // Checks if the download handle is active. In the case of Elysiae, "Active"
@@ -148,9 +144,9 @@ fn download_active() -> Result<bool> {
 }
 
 /// Writes a desktop entry for a specified game to the desktop folder
-fn generate_desktop_file(game: &str) -> Result<()> {
-    let game_name = normalize_game_name(game)?;
-    let deep_link_uri = format!("elysiae://open-game/{game}");
+fn generate_desktop_file(game: Game) -> Result<()> {
+    let game_name = game.display_name();
+    let deep_link_uri = format!("elysiae://open-game/{}", game.code());
     let icon_path = ""; // TODO: Implement icon path fetching function
 
     let contents = format!(
@@ -161,4 +157,8 @@ fn generate_desktop_file(game: &str) -> Result<()> {
     let _ = write_file(path, contents.as_bytes(), Some(BaseDirectory::Desktop))?;
 
     Ok(())
+}
+
+pub fn launch_game(game: Game) -> Result<()> {
+    exec_proton(game.install_path().join(game.executable()))
 }
