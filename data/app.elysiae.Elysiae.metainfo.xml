@@ -13,7 +13,7 @@
         <p>Elysiae is a unified and performant game launcher for "Anime Games" from a certain Chinese video game company</p>
         <p></p>
     </description>
-    <launchable type="desktop-id">app.elysiae.Elysiase.desktop</launchable>
+    <launchable type="desktop-id">app.elysiae.Elysiae.desktop</launchable>
     <categories>
         <category>Utility</category>
         <category>Game</category>
