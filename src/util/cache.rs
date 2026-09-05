@@ -103,8 +103,9 @@ pub async fn update_cache() -> Result<()> {
 }
 
 pub fn get_cached_asset_paths(
-    game_code: &str,
-    asset_type: Option<AssetType>,
+    game: Game,
+    asset_type: AssetType,
 ) -> Result<Vec<PathBuf>> {
+    
     todo!()
 }
