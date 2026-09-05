@@ -3,7 +3,7 @@ use fs_extra::dir::get_size;
 use sha256::try_digest;
 use std::{
     fs::{self, DirEntry, create_dir_all},
-    path::PathBuf,
+    path::{Component, PathBuf},
 };
 use tar::Archive as Tar;
 use xz::read::XzDecoder as Xz;
@@ -297,13 +297,12 @@ pub fn get_dir_size(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<u64> 
     Ok(size)
 }
 
-pub fn read_dir(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<Vec<DirEntry>> {
-    let fp = full_path(Some(p), base_dir).context("The path could not be resolved")?;
-
-    Ok(std::fs::read_dir(fp)?.collect::<Result<_, _>>()?)
-}
-
-pub fn read_dir_as_paths(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<Vec<PathBuf>> {
+/// Wrapper function for std::fs::read_dir, relative to a user-specified "base directory"
+/// Values are returned as a PathBuf Vector rather than a DirEntry Vector because it is more useful to Elysiae in that form
+///
+/// If no base directory is provided, the function will default to the app data
+/// directory (~/.local/share/elysiae)
+pub fn read_dir(p: PathBuf, base_dir: Option<BaseDirectory>) -> Result<Vec<PathBuf>> {
     let fp = full_path(Some(p), base_dir).context("The path could not be resolved")?;
 
     Ok(std::fs::read_dir(fp)?
@@ -333,13 +332,23 @@ pub fn full_path(p: Option<PathBuf>, base_dir: Option<BaseDirectory>) -> Result<
                 .join("elysiae")
                 .join("proton-data"),
         },
-        None => d.home_dir().to_path_buf(),
+        None => d.data_local_dir().to_path_buf().join("elysiae"),
     };
 
-    let final_path = match p {
-        Some(x) => dir_path.join(x),
-        None => dir_path,
-    };
+    match p {
+        Some(x) => join_beneath(dir_path, x),
+        None => Ok(dir_path),
+    }
+}
 
-    Ok(final_path)
+fn join_beneath(base: PathBuf, relative: PathBuf) -> Result<PathBuf> {
+    ensure!(
+        relative
+            .components()
+            .all(|c| matches!(c, Component::Normal(_))),
+        "path must be a relative path without '.' or '..': {}",
+        relative.display()
+    );
+
+    Ok(base.join(relative))
 }
