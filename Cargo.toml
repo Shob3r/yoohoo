@@ -32,7 +32,7 @@ memfd = "0.6.5"
 async-channel = "2.5.0"
 
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
