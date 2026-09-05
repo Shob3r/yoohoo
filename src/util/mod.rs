@@ -1,10 +1,10 @@
-pub mod settings;
-pub mod web;
-pub mod shell;
 pub mod cache;
 pub mod notifications;
+pub mod settings;
+pub mod shell;
+pub mod web;
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 
 pub fn normalize_game_name(game_code: &str) -> Result<String> {
     let res = match game_code {
@@ -16,6 +16,8 @@ pub fn normalize_game_name(game_code: &str) -> Result<String> {
         "\x6e\x61\x70" => "\x5a\x65\x6e\x6c\x65\x73\x73\x20\x5a\x6f\x6e\x65\x20\x5a\x65\x72\x6f",
         _ => "",
     };
-
-    Ok(res.into())
+    if res != "" {
+        return Ok(res.into());
+    }
+    Err(Error::msg("Game name is invalid"))
 }
