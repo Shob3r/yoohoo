@@ -1,6 +1,3 @@
-#[cfg(not(target_env = "msvc"))]
-use tikv_jemallocator::Jemalloc;
-
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -14,10 +11,6 @@ mod util;
 mod widgets;
 mod window;
 mod fonts;
-
-#[cfg(not(target_env = "msvc"))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() -> glib::ExitCode {
     // Set environment variables required to get proton working
