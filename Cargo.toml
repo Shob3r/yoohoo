@@ -6,7 +6,7 @@ rust-version = "1.98.0"
 edition = "2024"
 
 [dependencies]
-gtk = { version = "0.11.4", package = "gtk4", features = ["v4_22"] }
+gtk = { version = "0.11.4", package = "gtk4", features = ["v4_22", "gnome_50"] }
 
 zstd = "0.13.3"
 xz = "0.1.0"

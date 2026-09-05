@@ -31,6 +31,5 @@ fn main() -> glib::ExitCode {
         .expect("Failed to register resources.");
 
     let app = app::build_app();
-
     app.run()
 }
